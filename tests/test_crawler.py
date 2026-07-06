@@ -250,5 +250,69 @@ class CrawlerDiagnosticTests(unittest.TestCase):
         self.assertIn("页面有内容", message)
 
 
+class CrawlerScaleTests(unittest.TestCase):
+    def make_page(self, status, start, count):
+        rows = []
+        for index in range(count):
+            subject_id = 8000000 + start + index
+            title = f"{status}-{start + index}"
+            rows.append(
+                f'<div class="item"><a href="https://movie.douban.com/subject/{subject_id}/">'
+                f"<em>{title}</em></a><img alt=\"{title}\" src=\"https://img.example/{subject_id}.jpg\">"
+                '<li class="intro">2024 / 中国大陆 / 剧情 / 导演 / 演员</li>'
+                '<span class="rating5-t"></span></div>'
+            )
+        return "<html><body>" + "".join(rows) + "</body></html>"
+
+    def test_crawl_default_pages_cover_242_collect_and_34_wish(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        def fake_fetcher(user_id, status, start, cookie="", timeout=12):
+            if status == "collect" and start < 240:
+                return self.make_page(status, start, 15)
+            if status == "collect" and start == 240:
+                return self.make_page(status, start, 2)
+            if status == "wish" and start < 30:
+                return self.make_page(status, start, 15)
+            if status == "wish" and start == 30:
+                return self.make_page(status, start, 4)
+            return "<html><body></body></html>"
+
+        result = crawl_user_collections(
+            "moviefan123",
+            max_pages=40,
+            include_wish=True,
+            expected_collect=242,
+            expected_wish=34,
+            fetcher=fake_fetcher,
+            sleep_seconds=0,
+        )
+
+        self.assertEqual(len([x for x in result.items if x.source.endswith(":collect")]), 242)
+        self.assertEqual(len([x for x in result.items if x.source.endswith(":wish")]), 34)
+        self.assertEqual(result.completeness["collect_percent"], 100)
+        self.assertEqual(result.completeness["wish_percent"], 100)
+        self.assertGreater(len(result.diagnostics), 0)
+
+    def test_crawl_clamps_max_pages_to_200(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        calls = []
+
+        def fake_fetcher(user_id, status, start, cookie="", timeout=12):
+            calls.append(start)
+            return self.make_page(status, start, 15)
+
+        crawl_user_collections(
+            "moviefan123",
+            max_pages=999,
+            include_wish=False,
+            fetcher=fake_fetcher,
+            sleep_seconds=0,
+        )
+
+        self.assertEqual(len(calls), 200)
+
+
 if __name__ == "__main__":
     unittest.main()

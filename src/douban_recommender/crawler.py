@@ -244,28 +244,69 @@ def redact_cookie_from_message(message: str, cookie: str) -> str:
     return redacted_message
 
 
+def calculate_completeness(
+    collect_count: int,
+    wish_count: int,
+    expected_collect: int | None,
+    expected_wish: int | None,
+) -> dict[str, object]:
+    def percent(actual: int, expected: int | None) -> int | None:
+        if not expected:
+            return None
+        return min(100, int(round(actual * 100 / max(expected, 1))))
+
+    collect_percent = percent(collect_count, expected_collect)
+    wish_percent = percent(wish_count, expected_wish)
+    return {
+        "collect_count": collect_count,
+        "wish_count": wish_count,
+        "expected_collect": expected_collect,
+        "expected_wish": expected_wish,
+        "collect_percent": collect_percent,
+        "wish_percent": wish_percent,
+        "is_complete": (collect_percent in (None, 100)) and (wish_percent in (None, 100)),
+    }
+
+
 def crawl_user_collections(
     user_id_or_url: str,
     cookie: str = "",
-    max_pages: int = 8,
+    max_pages: int = 40,
     include_wish: bool = True,
+    include_do: bool = False,
+    expected_collect: int | None = None,
+    expected_wish: int | None = None,
     page_size: int = 15,
     fetcher: Callable[..., str] | None = None,
     sleep_seconds: float = 0.15,
 ) -> CrawlResult:
     user_id = normalize_douban_user_id(user_id_or_url)
-    limited_pages = max(1, min(60, int(max_pages)))
+    limited_pages = max(1, min(200, int(max_pages)))
     fetch = fetcher or fetch_user_collection_page
-    statuses = ["collect", "wish"] if include_wish else ["collect"]
-    result = CrawlResult()
+    statuses = ["collect"]
+    if include_wish:
+        statuses.append("wish")
+    if include_do:
+        statuses.append("do")
+    result = CrawlResult(expected_collect=expected_collect, expected_wish=expected_wish)
     seen: set[str] = set()
     empty_page_seen = False
     for status in statuses:
         for page_index in range(limited_pages):
             start = page_index * page_size
+            url = build_user_collection_url(user_id, status, start)
             try:
                 page_html = fetch(user_id, status, start, cookie=cookie, timeout=12)
                 page_items = parse_user_collection_html(page_html, status=status)
+                classification, message = classify_collection_page(page_html, len(page_items))
+                result.diagnostics.append(PageDiagnostic(
+                    status=status,
+                    start=start,
+                    url=url,
+                    item_count=len(page_items),
+                    classification=classification,
+                    message=message,
+                ))
                 result.pages_ok += 1
                 if not page_items:
                     empty_page_seen = True
@@ -280,6 +321,14 @@ def crawl_user_collections(
                 result.pages_failed += 1
                 message = redact_cookie_from_message(str(exc), cookie)
                 result.errors.append(f"{status} start={start}: {message}")
+                result.diagnostics.append(PageDiagnostic(
+                    status=status,
+                    start=start,
+                    url=url,
+                    item_count=0,
+                    classification="network_error",
+                    message=message,
+                ))
                 break
             if sleep_seconds:
                 time.sleep(sleep_seconds)
@@ -289,5 +338,8 @@ def crawl_user_collections(
         result.stopped_reason = "部分分页抓取失败"
     else:
         result.stopped_reason = "已达到页数上限"
+    collect_count = sum(1 for item in result.items if item.source.endswith(":collect"))
+    wish_count = sum(1 for item in result.items if item.source.endswith(":wish"))
+    result.completeness = calculate_completeness(collect_count, wish_count, expected_collect, expected_wish)
     return result
 
