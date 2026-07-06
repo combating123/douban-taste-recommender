@@ -1,0 +1,21 @@
+[project]
+name = "douban-taste-recommender"
+version = "0.1.0"
+description = "Personal movie/series recommender based on Douban ratings, taste profile, and Douban public candidate pools."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+douban-reco = "douban_recommender.cli:main"
+douban-reco-web = "douban_recommender.web:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
