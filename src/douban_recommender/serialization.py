@@ -1,0 +1,57 @@
+﻿from __future__ import annotations
+
+from typing import Any
+
+from .models import MediaItem
+
+
+MEDIA_ITEM_FIELDS = [
+    "title",
+    "my_rating",
+    "douban_rating",
+    "vote_count",
+    "year",
+    "media_type",
+    "genres",
+    "countries",
+    "languages",
+    "directors",
+    "casts",
+    "tags",
+    "url",
+    "douban_id",
+    "cover",
+    "summary",
+    "source",
+]
+
+
+def media_item_to_dict(item: MediaItem) -> dict[str, object]:
+    return {field: getattr(item, field) for field in MEDIA_ITEM_FIELDS}
+
+
+def media_item_from_dict(data: dict[str, Any]) -> MediaItem:
+    clean = {field: data.get(field) for field in MEDIA_ITEM_FIELDS}
+    for list_field in ("genres", "countries", "languages", "directors", "casts", "tags"):
+        value = clean.get(list_field)
+        if isinstance(value, list):
+            clean[list_field] = [str(part).strip() for part in value if str(part).strip()]
+        elif isinstance(value, str) and value.strip():
+            clean[list_field] = [value.strip()]
+        else:
+            clean[list_field] = []
+    return MediaItem(**clean)
+
+
+def redact_cookie(value: str) -> str:
+    parts = []
+    for part in str(value or "").split(";"):
+        text = part.strip()
+        if not text:
+            continue
+        if "=" in text:
+            name = text.split("=", 1)[0].strip()
+            parts.append(f"{name}=<redacted>")
+        else:
+            parts.append("<redacted>")
+    return "; ".join(parts)
