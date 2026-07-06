@@ -45,5 +45,20 @@ class SerializationTests(unittest.TestCase):
         self.assertIn("ck=<redacted>", redacted)
 
 
+class CookieRedactionTextTests(unittest.TestCase):
+    def test_redact_cookie_from_text_removes_raw_cookie_and_values(self):
+        from douban_recommender.serialization import redact_cookie_from_text
+
+        cookie = 'bid=abc123; ck=secret-token; dbcl2="999:user"'
+        message = "failed with bid=abc123 and ck=secret-token in Cookie header"
+
+        redacted = redact_cookie_from_text(message, cookie)
+
+        self.assertNotIn("abc123", redacted)
+        self.assertNotIn("secret-token", redacted)
+        self.assertNotIn("999:user", redacted)
+        self.assertIn("<redacted>", redacted)
+
+
 if __name__ == "__main__":
     unittest.main()

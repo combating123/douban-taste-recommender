@@ -6,6 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReadmeTests(unittest.TestCase):
+    def test_readme_contains_readable_chinese_title(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("豆瓣", text)
+        self.assertIn("CineScope Studio", text)
+        self.assertNotIn("璞嗙摚", text)
+        self.assertNotIn("鎶撳彇", text)
+
     def test_readme_explains_direct_douban_crawler(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("直接抓取豆瓣数据", text)

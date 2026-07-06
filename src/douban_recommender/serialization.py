@@ -55,3 +55,28 @@ def redact_cookie(value: str) -> str:
         else:
             parts.append("<redacted>")
     return "; ".join(parts)
+
+
+def redact_cookie_from_text(value: str, cookie: str) -> str:
+    text = str(value or "")
+    raw_cookie = str(cookie or "").strip()
+    if not raw_cookie:
+        return text
+
+    text = text.replace(raw_cookie, redact_cookie(raw_cookie))
+    text = text.replace(raw_cookie.replace(" ", ""), redact_cookie(raw_cookie))
+    for part in raw_cookie.split(";"):
+        piece = part.strip()
+        if not piece:
+            continue
+        if "=" in piece:
+            name, secret = piece.split("=", 1)
+            name = name.strip()
+            secret = secret.strip().strip('"')
+            if secret:
+                text = text.replace(secret, "<redacted>")
+            if name:
+                text = text.replace(f"{name}={secret}", f"{name}=<redacted>")
+        else:
+            text = text.replace(piece, "<redacted>")
+    return text
