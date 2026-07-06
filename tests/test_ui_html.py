@@ -57,6 +57,35 @@ class UiHtmlTests(unittest.TestCase):
         self.assertIn("state.visibleRecommendations = items", INDEX_HTML)
         self.assertIn("const r = state.visibleRecommendations[index]", INDEX_HTML)
 
+    def test_premium_media_ui_has_hero_rails_and_poster_fallbacks(self):
+        for token in [
+            "heroShowcase",
+            "railWall",
+            "media-rail",
+            "posterFallback",
+            "safePosterImg",
+            "buildMediaRails",
+            "renderMediaRail",
+            "sectionItems",
+            "onerror",
+            "/api/image-proxy",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_premium_media_ui_exposes_rich_metadata_and_people(self):
+        for token in [
+            "metadataLine",
+            "peopleChips",
+            "person-chip",
+            "导演",
+            "主演",
+            "剧情简介",
+            "电影",
+            "电视剧",
+            "动漫",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
     def test_ui_restores_csv_paste_workflow(self):
         self.assertIn("评分 CSV", INDEX_HTML)
         self.assertIn("候选 CSV", INDEX_HTML)

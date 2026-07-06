@@ -6,11 +6,12 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+import urllib.request
 
 from .candidate_planner import build_candidate_plan
 from .crawler import crawl_user_collections, redact_cookie_from_message
-from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
+from .douban_sources import enrich_media_items, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .profiler import build_taste_profile
 from .recommender import recommend
@@ -57,6 +58,21 @@ def diagnostic_to_dict(diag) -> dict:
         return dict(diag.__dict__)
     return {"message": str(diag)}
 
+
+def fetch_proxy_image(url: str) -> tuple[bytes, str]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("invalid image url")
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+        "Referer": "https://movie.douban.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    })
+    with urllib.request.urlopen(request, timeout=12) as response:
+        content_type = response.headers.get("Content-Type") or "image/jpeg"
+        return response.read(), content_type.split(";")[0]
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "DoubanTasteRecommender/0.1"
 
@@ -64,7 +80,8 @@ class Handler(BaseHTTPRequestHandler):
         print("[web] " + fmt % args)
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         try:
             if path in {"/", "/index.html"}:
                 self.send_text(INDEX_HTML, content_type="text/html; charset=utf-8")
@@ -74,6 +91,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_text(read_text_file(SAMPLE_CANDIDATES), content_type="text/plain; charset=utf-8")
             elif path == "/api/cache":
                 self.send_json(self.handle_cache_get())
+            elif path == "/api/image-proxy":
+                query = parse_qs(parsed.query)
+                image_url = query.get("url", [""])[0]
+                data, content_type = fetch_proxy_image(image_url)
+                self.send_bytes(data, content_type=content_type)
             else:
                 self.send_json({"error": "not found"}, status=404)
         except Exception as exc:
@@ -215,6 +237,9 @@ class Handler(BaseHTTPRequestHandler):
             include_series=bool(payload.get("include_series", True)),
             include_anime=include_anime,
         )
+        if bool(payload.get("enrich_details", True)) and recs:
+            enrich_limit = max(1, min(24, len(recs), int(payload.get("limit") or 120)))
+            enrich_media_items([rec.item for rec in recs[:enrich_limit]], limit=enrich_limit)
         return {
             "profile": profile.summary(),
             "counts": {"rated": len(rated), "candidates": len(candidates)},
@@ -227,6 +252,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_bytes(self, data: bytes, content_type: str = "application/octet-stream", status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
         self.end_headers()
         self.wfile.write(data)
 

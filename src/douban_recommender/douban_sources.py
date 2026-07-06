@@ -242,6 +242,115 @@ def fetch_generic_movie_links(url: str) -> list[MediaItem]:
     return out
 
 
+def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
+    text = page_html or ""
+    title = clean_html(
+        first_match(r'<span[^>]+property=["\']v:itemreviewed["\'][^>]*>(.*?)</span>', text)
+        or first_match(r'<title>(.*?)</title>', text).replace("(豆瓣)", "")
+    )
+    cover = html.unescape(
+        first_match(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', text)
+        or first_match(r'<img[^>]+rel=["\']v:image["\'][^>]+src=["\']([^"\']+)["\']', text)
+    )
+    summary = clean_html(
+        first_match(r'<span[^>]+property=["\']v:summary["\'][^>]*>(.*?)</span>', text)
+        or first_match(r'<div[^>]+class=["\']related-info["\'][^>]*>.*?<span[^>]*>(.*?)</span>', text)
+    )
+    directors = [
+        clean_html(value)
+        for value in re.findall(r'<a[^>]+rel=["\']v:directedBy["\'][^>]*>(.*?)</a>', text, flags=re.S)
+        if clean_html(value)
+    ]
+    casts = [
+        clean_html(value)
+        for value in re.findall(r'<a[^>]+rel=["\']v:starring["\'][^>]*>(.*?)</a>', text, flags=re.S)
+        if clean_html(value)
+    ]
+    genres = [
+        clean_html(value)
+        for value in re.findall(r'<span[^>]+property=["\']v:genre["\'][^>]*>(.*?)</span>', text, flags=re.S)
+        if clean_html(value)
+    ]
+    countries = parse_list(clean_html(first_match(r'制片国家/地区:</span>\s*([^<]+)<', text)))
+    languages = parse_list(clean_html(first_match(r'语言:</span>\s*([^<]+)<', text)))
+    year = None
+    year_text = (
+        first_match(r'property=["\']v:initialReleaseDate["\'][^>]+content=["\'](\d{4})', text)
+        or first_match(r'property=["\']v:initialReleaseDate["\'][^>]*>\s*(\d{4})', text)
+        or first_match(r'\((\d{4})\)', title)
+    )
+    if year_text:
+        try:
+            year = int(year_text)
+        except ValueError:
+            year = None
+    return MediaItem(
+        title=title,
+        year=year,
+        genres=genres,
+        countries=countries,
+        languages=languages,
+        directors=directors,
+        casts=casts,
+        url=url,
+        douban_id=extract_douban_id(url),
+        cover=cover,
+        summary=summary,
+        source="douban_subject_detail",
+    )
+
+
+def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
+    if detail.title and not item.title:
+        item.title = detail.title
+    if detail.year and not item.year:
+        item.year = detail.year
+    if detail.cover and not item.cover:
+        item.cover = detail.cover
+    if detail.summary and not item.summary:
+        item.summary = detail.summary
+    for field in ["genres", "countries", "languages", "directors", "casts"]:
+        current = list(getattr(item, field) or [])
+        for value in getattr(detail, field) or []:
+            if value and value not in current:
+                current.append(value)
+        setattr(item, field, current)
+    if detail.douban_id and not item.douban_id:
+        item.douban_id = detail.douban_id
+    if detail.url and not item.url:
+        item.url = detail.url
+    return item
+
+
+def enrich_media_items(
+    items: list[MediaItem],
+    fetcher=None,
+    limit: int = 12,
+    sleep_seconds: float = 0.05,
+) -> list[MediaItem]:
+    fetch = fetcher or (lambda url: http_get(url, accept_json=False))
+    enriched = 0
+    for item in items:
+        if enriched >= limit:
+            break
+        url = item.url or (f"https://movie.douban.com/subject/{item.douban_id}/" if item.douban_id else "")
+        if not url or "movie.douban.com/subject/" not in url:
+            continue
+        if item.summary and item.directors and item.casts and item.genres and item.cover:
+            continue
+        try:
+            payload = fetch(url)
+            html_text = payload.decode("utf-8", errors="ignore") if isinstance(payload, bytes) else str(payload)
+            detail = parse_subject_detail_html(html_text, url=url)
+            merge_subject_detail(item, detail)
+            enriched += 1
+        except Exception:
+            continue
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+    return items
+
+
 def http_get(url: str, accept_json: bool = True, timeout: int = 12) -> bytes:
     headers = dict(DEFAULT_HEADERS)
     if not accept_json:

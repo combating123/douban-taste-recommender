@@ -36,6 +36,11 @@ class WebApiTests(unittest.TestCase):
         except urllib.error.HTTPError as error:
             return json.loads(error.read().decode("utf-8"))
 
+    def get_raw(self, path):
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, response.headers.get("Content-Type"), response.read()
+
     def test_crawl_api_returns_items_and_never_echoes_cookie(self):
         original = web_module.crawl_user_collections
 
@@ -193,6 +198,62 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(response["counts"]["candidates"], 2)
         self.assertEqual({item["title"] for item in response["results"]}, {"CSV候选A", "CSV候选B"})
+
+    def test_recommend_api_can_enrich_top_recommendations_with_subject_details(self):
+        original = getattr(web_module, "enrich_media_items", None)
+        calls = []
+
+        def fake_enrich(items, limit=12, sleep_seconds=0.05):
+            calls.append((len(items), limit))
+            items[0].summary = "补全后的剧情简介"
+            items[0].directors = ["辛爽"]
+            items[0].casts = ["秦昊"]
+            return items
+
+        web_module.enrich_media_items = fake_enrich
+        try:
+            response = self.post_json("/api/recommend", {
+                "ratings_csv": "title,my_rating,media_type,genres,tags\n我看过的片,5,电影,剧情,看过\n",
+                "candidates_csv": "title,media_type,douban_rating,genres,tags,url,douban_id\n候选片,电影,8.6,剧情,现实主义,https://movie.douban.com/subject/33404425/,33404425\n",
+                "fetch_douban": False,
+                "use_sample_candidates": False,
+                "include_movies": True,
+                "include_series": True,
+                "enrich_details": True,
+                "limit": 5,
+            })
+        finally:
+            if original is None:
+                delattr(web_module, "enrich_media_items")
+            else:
+                web_module.enrich_media_items = original
+
+        self.assertEqual(calls, [(1, 1)])
+        self.assertEqual(response["results"][0]["summary"], "补全后的剧情简介")
+        self.assertEqual(response["results"][0]["directors"], ["辛爽"])
+        self.assertEqual(response["results"][0]["casts"], ["秦昊"])
+
+    def test_image_proxy_streams_remote_image_without_cookie(self):
+        original = getattr(web_module, "fetch_proxy_image", None)
+        requested = []
+
+        def fake_fetch(url):
+            requested.append(url)
+            return b"fake-image", "image/jpeg"
+
+        web_module.fetch_proxy_image = fake_fetch
+        try:
+            status, content_type, body = self.get_raw("/api/image-proxy?url=https%3A%2F%2Fimg.example%2Fposter.jpg")
+        finally:
+            if original is None:
+                delattr(web_module, "fetch_proxy_image")
+            else:
+                web_module.fetch_proxy_image = original
+
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "image/jpeg")
+        self.assertEqual(body, b"fake-image")
+        self.assertEqual(requested, ["https://img.example/poster.jpg"])
 
 
 class WebApiShapeTests(unittest.TestCase):

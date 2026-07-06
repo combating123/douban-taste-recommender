@@ -5,6 +5,36 @@ from douban_recommender.douban_sources import fetch_candidates_from_plan
 from douban_recommender.models import MediaItem
 
 
+class SubjectDetailParseTests(unittest.TestCase):
+    def test_parse_subject_detail_html_extracts_summary_people_and_metadata(self):
+        from douban_recommender.douban_sources import parse_subject_detail_html
+
+        html = """
+        <html><head><meta property="og:image" content="https://img.example/poster.jpg"></head>
+        <body>
+          <span property="v:itemreviewed">隐秘的角落</span>
+          <a rel="v:directedBy">辛爽</a>
+          <a rel="v:starring">秦昊</a><a rel="v:starring">王景春</a>
+          <span property="v:genre">剧情</span><span property="v:genre">悬疑</span>
+          <span class="pl">制片国家/地区:</span> 中国大陆<br/>
+          <span property="v:initialReleaseDate" content="2020-06-16">2020</span>
+          <span property="v:summary">孩子、家庭与犯罪的阴影。</span>
+        </body></html>
+        """
+
+        item = parse_subject_detail_html(html, url="https://movie.douban.com/subject/33404425/")
+
+        self.assertEqual(item.title, "隐秘的角落")
+        self.assertEqual(item.douban_id, "33404425")
+        self.assertEqual(item.cover, "https://img.example/poster.jpg")
+        self.assertEqual(item.summary, "孩子、家庭与犯罪的阴影。")
+        self.assertEqual(item.directors, ["辛爽"])
+        self.assertEqual(item.casts, ["秦昊", "王景春"])
+        self.assertEqual(item.genres, ["剧情", "悬疑"])
+        self.assertEqual(item.countries, ["中国大陆"])
+        self.assertEqual(item.year, 2020)
+
+
 class CandidateFetchPlanTests(unittest.TestCase):
     def test_fetch_candidates_from_plan_dedupes_and_keeps_partial_success(self):
         plan = [
