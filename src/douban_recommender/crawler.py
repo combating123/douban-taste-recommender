@@ -149,6 +149,41 @@ def fetch_user_collection_page(user_id: str, status: str, start: int, cookie: st
         return response.read().decode("utf-8", errors="ignore")
 
 
+def redact_cookie_from_message(message: str, cookie: str) -> str:
+    redacted_message = str(message)
+    stripped_cookie = str(cookie or "").strip()
+    if not stripped_cookie:
+        return redacted_message
+
+    redacted_message = redacted_message.replace(stripped_cookie, redact_cookie(stripped_cookie))
+    redacted_message = redacted_message.replace(stripped_cookie.replace(" ", ""), redact_cookie(stripped_cookie))
+
+    for part in stripped_cookie.split(";"):
+        text = part.strip()
+        if not text:
+            continue
+        if "=" in text:
+            name, value = text.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if value:
+                redacted_message = redacted_message.replace(value, "<redacted>")
+            if name:
+                redacted_message = re.sub(
+                    rf"(?i)\b{re.escape(name)}\s*=\s*<redacted>",
+                    f"{name}=<redacted>",
+                    redacted_message,
+                )
+                redacted_message = re.sub(
+                    rf"(?i)\b{re.escape(name)}\s*=\s*{re.escape(value)}",
+                    f"{name}=<redacted>",
+                    redacted_message,
+                )
+        else:
+            redacted_message = redacted_message.replace(text, "<redacted>")
+    return redacted_message
+
+
 def crawl_user_collections(
     user_id_or_url: str,
     cookie: str = "",
@@ -159,7 +194,7 @@ def crawl_user_collections(
     sleep_seconds: float = 0.15,
 ) -> CrawlResult:
     user_id = normalize_douban_user_id(user_id_or_url)
-    limited_pages = max(1, min(60, int(max_pages or 8)))
+    limited_pages = max(1, min(60, int(max_pages)))
     fetch = fetcher or fetch_user_collection_page
     statuses = ["collect", "wish"] if include_wish else ["collect"]
     result = CrawlResult()
@@ -169,7 +204,7 @@ def crawl_user_collections(
         for page_index in range(limited_pages):
             start = page_index * page_size
             try:
-                page_html = fetch(user_id, status, start, cookie=cookie)
+                page_html = fetch(user_id, status, start, cookie=cookie, timeout=12)
                 page_items = parse_user_collection_html(page_html, status=status)
                 result.pages_ok += 1
                 if not page_items:
@@ -183,9 +218,7 @@ def crawl_user_collections(
                         seen.add(key)
             except Exception as exc:
                 result.pages_failed += 1
-                message = str(exc)
-                if cookie:
-                    message = message.replace(cookie, redact_cookie(cookie))
+                message = redact_cookie_from_message(str(exc), cookie)
                 result.errors.append(f"{status} start={start}: {message}")
                 break
             if sleep_seconds:

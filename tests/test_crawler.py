@@ -135,6 +135,61 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertNotIn("hidden", joined)
         self.assertIn("<redacted>", joined)
 
+    def test_crawl_user_collections_redacts_cookie_values_and_partial_headers_from_errors(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        cookie = "bid=secret-cookie-value; ck=hidden-token"
+
+        leak_messages = [
+            "request failed: secret-cookie-value",
+            "request failed: ck=hidden-token",
+            "request failed: bid=secret-cookie-value;ck=hidden-token",
+            "request failed: Cookie: bid=secret-cookie-value",
+        ]
+
+        for leak_message in leak_messages:
+            with self.subTest(leak_message=leak_message):
+                def failing_fetcher(user_id, status, start, cookie="", timeout=12):
+                    raise RuntimeError(leak_message)
+
+                result = crawl_user_collections(
+                    "moviefan123",
+                    cookie=cookie,
+                    max_pages=1,
+                    include_wish=False,
+                    fetcher=failing_fetcher,
+                    sleep_seconds=0,
+                )
+
+                joined = "\n".join(result.errors)
+                self.assertEqual(result.pages_failed, 1)
+                self.assertNotIn("secret-cookie-value", joined)
+                self.assertNotIn("hidden-token", joined)
+                self.assertNotIn("bid=secret-cookie-value", joined)
+                self.assertNotIn("ck=hidden-token", joined)
+                self.assertIn("<redacted>", joined)
+
+    def test_crawl_user_collections_clamps_zero_max_pages_to_one_page(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        calls = []
+
+        def fake_fetcher(user_id, status, start, cookie="", timeout=12):
+            calls.append((status, start, timeout))
+            return COLLECT_HTML
+
+        result = crawl_user_collections(
+            "moviefan123",
+            max_pages=0,
+            include_wish=False,
+            fetcher=fake_fetcher,
+            sleep_seconds=0,
+        )
+
+        self.assertEqual(calls, [("collect", 0, 12)])
+        self.assertEqual(result.pages_ok, 1)
+        self.assertEqual(result.pages_failed, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
