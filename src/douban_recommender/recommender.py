@@ -15,6 +15,12 @@ class Recommendation:
     warnings: list[str] = field(default_factory=list)
     matched_positive: list[str] = field(default_factory=list)
     matched_negative: list[str] = field(default_factory=list)
+    section: str = ""
+    badges: list[str] = field(default_factory=list)
+    quality_label: str = ""
+    short_reason: str = ""
+    risk_label: str = ""
+    is_wishlist: bool = False
 
     def to_dict(self) -> dict[str, object]:
         item = self.item
@@ -39,6 +45,12 @@ class Recommendation:
             "warnings": self.warnings,
             "matched_positive": self.matched_positive,
             "matched_negative": self.matched_negative,
+            "section": self.section,
+            "badges": self.badges,
+            "quality_label": self.quality_label,
+            "short_reason": self.short_reason,
+            "risk_label": self.risk_label,
+            "is_wishlist": self.is_wishlist,
         }
 
 
@@ -49,9 +61,20 @@ def recommend(
     limit: int = 30,
     include_movies: bool = True,
     include_series: bool = True,
+    include_anime: bool = True,
 ) -> list[Recommendation]:
-    seen_titles = {normalize_title(item.title) for item in rated_items if item.title}
-    seen_ids = {item.douban_id for item in rated_items if item.douban_id}
+    watched_items = [
+        item for item in rated_items
+        if "看过" in set(item.tags or []) or item.source.endswith(":collect") or item.my_rating is not None
+    ]
+    wish_items = [
+        item for item in rated_items
+        if "想看" in set(item.tags or []) or item.source.endswith(":wish")
+    ]
+    seen_titles = {normalize_title(item.title) for item in watched_items if item.title}
+    seen_ids = {item.douban_id for item in watched_items if item.douban_id}
+    wish_ids = {item.douban_id for item in wish_items if item.douban_id}
+    wish_titles = {normalize_title(item.title) for item in wish_items if item.title}
 
     deduped: dict[str, MediaItem] = {}
     for item in candidates:
@@ -65,12 +88,24 @@ def recommend(
             continue
         if item.media_type == "电视剧" and not include_series:
             continue
+        if item.media_type == "动漫" and not include_anime:
+            continue
         key = item.douban_id or normalize_title(item.title)
         existing = deduped.get(key)
         if existing is None or item_quality(item) > item_quality(existing):
             deduped[key] = item
 
-    recs = [score_item(item, profile) for item in deduped.values()]
+    recs = []
+    for item in deduped.values():
+        rec = score_item(item, profile)
+        if (item.douban_id and item.douban_id in wish_ids) or normalize_title(item.title) in wish_titles:
+            rec.is_wishlist = True
+            rec.badges.append("想看")
+            rec.score += 2.5
+            if rec.section not in {"必看 Top Picks", "想看优先"}:
+                rec.section = "想看优先"
+        rec.badges = unique_keep_order(rec.badges)
+        recs.append(rec)
     recs.sort(key=lambda r: r.score, reverse=True)
     return recs[:limit]
 
@@ -117,6 +152,16 @@ def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
             score -= delta
             neg_hits.append((f"避雷关键词：{term}", delta, f"keyword:{term}"))
 
+    quality_terms = ["剧情", "叙事", "人物", "口碑", "高分"]
+    if item.douban_rating and item.douban_rating >= 8.5:
+        score += 6.0
+    if any(term in blob for term in quality_terms):
+        score += 4.0
+    costume_terms = ["古装", "武侠", "仙侠", "宫廷", "历史", "朝代", "权谋"]
+    if item.media_type == "电视剧" and any(term in blob for term in costume_terms):
+        score -= 18.0
+        warnings.append("电视剧古装 / 宫廷 / 历史向内容，与你的避雷设置冲突")
+
     if item.douban_rating is not None:
         quality = (float(item.douban_rating) - 7.0) * 3.2
         score += quality
@@ -157,6 +202,18 @@ def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
         score -= 4.0
         warnings.append("负向匹配较多，放在低优先级尝试")
 
+    section = "高分剧情"
+    if item.media_type == "动漫":
+        section = "动漫"
+    elif item.media_type == "电视剧":
+        section = "电视剧"
+    elif item.douban_rating and item.douban_rating >= 8.7:
+        section = "必看 Top Picks"
+    quality_label = "高分佳作" if item.douban_rating and item.douban_rating >= 8.5 else "潜力推荐"
+    short_reason = reasons[0] if reasons else "质量优先策略推荐"
+    risk_label = warnings[0] if warnings else ""
+    badges = [item.media_type] if item.media_type else []
+
     return Recommendation(
         item=item,
         score=score,
@@ -164,6 +221,11 @@ def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
         warnings=unique_keep_order(warnings),
         matched_positive=[x[0] for x in pos_hits[:8]],
         matched_negative=[x[0] for x in neg_hits[:8]],
+        section=section,
+        badges=badges,
+        quality_label=quality_label,
+        short_reason=short_reason,
+        risk_label=risk_label,
     )
 
 
