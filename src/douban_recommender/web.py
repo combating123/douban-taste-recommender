@@ -7,10 +7,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .crawler import crawl_user_collections
 from .douban_sources import fetch_douban_candidates, fetch_url_candidates
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .profiler import build_taste_profile
 from .recommender import recommend
+from .serialization import media_item_from_dict, media_item_to_dict
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_RATINGS = ROOT / "sample_data" / "ratings_sample.csv"
@@ -250,20 +252,54 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/api/recommend":
-            self.send_json({"error": "not found"}, status=404)
-            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            data = self.handle_recommend(payload)
+            if path == "/api/recommend":
+                data = self.handle_recommend(payload)
+            elif path == "/api/crawl-douban":
+                data = self.handle_crawl_douban(payload)
+            else:
+                self.send_json({"error": "not found"}, status=404)
+                return
             self.send_json(data)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
 
+    def handle_crawl_douban(self, payload: dict) -> dict:
+        result = crawl_user_collections(
+            user_id_or_url=payload.get("user_id_or_url") or "",
+            cookie=payload.get("cookie") or "",
+            max_pages=max(1, min(60, int(payload.get("max_pages") or 8))),
+            include_wish=bool(payload.get("include_wish", True)),
+        )
+        return {
+            "items": [media_item_to_dict(item) for item in result.items],
+            "counts": {
+                "items": len(result.items),
+                "pages_ok": result.pages_ok,
+                "pages_failed": result.pages_failed,
+            },
+            "errors": result.errors,
+            "stopped_reason": result.stopped_reason,
+        }
+
     def handle_recommend(self, payload: dict) -> dict:
-        ratings_csv = payload.get("ratings_csv") or ""
-        rated = load_media_csv_from_text(ratings_csv, kind="ratings") if ratings_csv.strip() else load_media_csv(SAMPLE_RATINGS, kind="ratings")
+        rated_items_payload = payload.get("rated_items") or []
+        if rated_items_payload:
+            string_defaults = {
+                "title": "",
+                "media_type": "",
+                "url": "",
+                "douban_id": "",
+                "cover": "",
+                "summary": "",
+                "source": "",
+            }
+            rated = [media_item_from_dict({**string_defaults, **item}) for item in rated_items_payload if isinstance(item, dict)]
+        else:
+            ratings_csv = payload.get("ratings_csv") or ""
+            rated = load_media_csv_from_text(ratings_csv, kind="ratings") if ratings_csv.strip() else load_media_csv(SAMPLE_RATINGS, kind="ratings")
         profile = build_taste_profile(
             rated,
             like_terms=payload.get("like_terms") or "",
