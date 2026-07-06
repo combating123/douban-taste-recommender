@@ -87,6 +87,54 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertIsNone(second.my_rating)
         self.assertIn("想看", second.tags)
 
+    def test_crawl_user_collections_uses_collect_and_wish_until_empty_page(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        calls = []
+
+        def fake_fetcher(user_id, status, start, cookie="", timeout=12):
+            calls.append((user_id, status, start, cookie))
+            if start == 0:
+                return COLLECT_HTML
+            return "<html><body></body></html>"
+
+        result = crawl_user_collections(
+            "https://www.douban.com/people/moviefan123/",
+            cookie="bid=secret",
+            max_pages=2,
+            include_wish=True,
+            fetcher=fake_fetcher,
+            sleep_seconds=0,
+        )
+
+        self.assertEqual(result.pages_ok, 4)
+        self.assertEqual(result.pages_failed, 0)
+        self.assertGreaterEqual(len(result.items), 4)
+        self.assertEqual(calls[0], ("moviefan123", "collect", 0, "bid=secret"))
+        self.assertEqual(calls[2], ("moviefan123", "wish", 0, "bid=secret"))
+        self.assertEqual(result.stopped_reason, "\u5df2\u5230\u8fbe\u7a7a\u767d\u5206\u9875")
+
+    def test_crawl_user_collections_redacts_cookie_from_errors(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        def failing_fetcher(user_id, status, start, cookie="", timeout=12):
+            raise RuntimeError(f"request failed with {cookie}")
+
+        result = crawl_user_collections(
+            "moviefan123",
+            cookie="bid=secret-cookie-value; ck=hidden",
+            max_pages=1,
+            include_wish=False,
+            fetcher=failing_fetcher,
+            sleep_seconds=0,
+        )
+
+        joined = "\n".join(result.errors)
+        self.assertEqual(result.pages_failed, 1)
+        self.assertNotIn("secret-cookie-value", joined)
+        self.assertNotIn("hidden", joined)
+        self.assertIn("<redacted>", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

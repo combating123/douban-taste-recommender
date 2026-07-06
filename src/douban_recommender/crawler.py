@@ -136,3 +136,65 @@ def first_match(pattern: str, text: str) -> str:
 def clean_html(value: str) -> str:
     text = re.sub(r"<.*?>", "", value or "", flags=re.S)
     return html.unescape(text).strip()
+
+
+def fetch_user_collection_page(user_id: str, status: str, start: int, cookie: str = "", timeout: int = 12) -> str:
+    url = build_user_collection_url(user_id, status, start)
+    headers = dict(DEFAULT_HEADERS)
+    headers["Referer"] = f"https://movie.douban.com/people/{urllib.parse.quote(normalize_douban_user_id(user_id), safe='')}/"
+    if cookie.strip():
+        headers["Cookie"] = cookie.strip()
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def crawl_user_collections(
+    user_id_or_url: str,
+    cookie: str = "",
+    max_pages: int = 8,
+    include_wish: bool = True,
+    page_size: int = 15,
+    fetcher: Callable[..., str] | None = None,
+    sleep_seconds: float = 0.15,
+) -> CrawlResult:
+    user_id = normalize_douban_user_id(user_id_or_url)
+    limited_pages = max(1, min(60, int(max_pages or 8)))
+    fetch = fetcher or fetch_user_collection_page
+    statuses = ["collect", "wish"] if include_wish else ["collect"]
+    result = CrawlResult()
+    seen: set[str] = set()
+    empty_page_seen = False
+    for status in statuses:
+        for page_index in range(limited_pages):
+            start = page_index * page_size
+            try:
+                page_html = fetch(user_id, status, start, cookie=cookie)
+                page_items = parse_user_collection_html(page_html, status=status)
+                result.pages_ok += 1
+                if not page_items:
+                    empty_page_seen = True
+                    break
+                for item in page_items:
+                    key_value = item.douban_id or item.title
+                    key = f"{status}:{key_value}" if key_value else ""
+                    if key and key not in seen:
+                        result.items.append(item)
+                        seen.add(key)
+            except Exception as exc:
+                result.pages_failed += 1
+                message = str(exc)
+                if cookie:
+                    message = message.replace(cookie, redact_cookie(cookie))
+                result.errors.append(f"{status} start={start}: {message}")
+                break
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+    if empty_page_seen:
+        result.stopped_reason = "\u5df2\u5230\u8fbe\u7a7a\u767d\u5206\u9875"
+    elif result.pages_failed:
+        result.stopped_reason = "\u90e8\u5206\u5206\u9875\u6293\u53d6\u5931\u8d25"
+    else:
+        result.stopped_reason = "\u5df2\u8fbe\u5230\u9875\u6570\u4e0a\u9650"
+    return result
+
