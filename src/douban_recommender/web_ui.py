@@ -67,8 +67,6 @@ INDEX_HTML = r'''<!doctype html>
       <div id="rightPanel" class="panel"></div>
     </section>
   </main>
-  <!-- Legacy mojibake markers kept so existing tests authored from a mis-encoded brief continue to assert the intended Chinese copy.
-       绗竴姝ワ細杩炴帴璞嗙摚 绗簩姝ワ細纭鍙ｅ懗 绗笁姝ワ細鏌ョ湅鎺ㄨ崘 Cookie 鏁欑▼ Cookie 鍙敤浜庢湰鏈鸿姹傝眴鐡ｉ〉闈 涓嶄細淇濆瓨鍒扮鐩 灞曞紑璇︽儏 -->
 <script>
 const state = { step: 1, ratedItems: [], recommendations: [], profile: null, counts: null, sampleRatingsCsv: "", sampleCandidatesCsv: "" };
 const $ = (id) => document.getElementById(id);
