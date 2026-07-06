@@ -233,6 +233,30 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(response["results"][0]["directors"], ["辛爽"])
         self.assertEqual(response["results"][0]["casts"], ["秦昊"])
 
+    def test_recommend_api_backfills_anime_when_default_pool_lacks_it(self):
+        response = self.post_json("/api/recommend", {
+            "ratings_csv": "",
+            "candidates_csv": "",
+            "fetch_douban": False,
+            "use_sample_candidates": True,
+            "include_movies": True,
+            "include_series": True,
+            "include_anime": True,
+            "like_terms": "评分高，剧情好，叙事强，人物塑造扎实",
+            "dislike_terms": "电视剧古装，注水剧",
+            "enrich_details": False,
+            "limit": 80,
+        })
+
+        media_types = {item["media_type"] for item in response["results"]}
+        section_names = {section["name"] for section in response["sections"]}
+        anime_titles = [item["title"] for item in response["results"] if item["media_type"] == "动漫"]
+
+        self.assertIn("动漫", media_types)
+        self.assertIn("动漫", section_names)
+        self.assertGreaterEqual(len(anime_titles), 5)
+        self.assertGreater(response["counts"]["curated_candidates"], 0)
+
     def test_image_proxy_streams_remote_image_without_cookie(self):
         original = getattr(web_module, "fetch_proxy_image", None)
         requested = []

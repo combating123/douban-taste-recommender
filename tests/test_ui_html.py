@@ -72,10 +72,31 @@ class UiHtmlTests(unittest.TestCase):
         ]:
             self.assertIn(token, INDEX_HTML)
 
+    def test_world_class_ui_contains_category_spotlights_and_image_resilience_guide(self):
+        for token in [
+            "homepage-studio",
+            "tasteDNA",
+            "categorySpotlight",
+            "renderHeroCarousel",
+            "hero-track",
+            "hero-dots",
+            "heroBySection",
+            "spotlightPool",
+            "imageResilienceGuide",
+            "DOUBAN_RECOMMENDER_HTTP_PROXY",
+            "Clash",
+            "V2Ray",
+            "不要粘贴订阅地址",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
     def test_premium_media_ui_exposes_rich_metadata_and_people(self):
         for token in [
             "metadataLine",
             "peopleChips",
+            "peopleCarousel",
+            "person-card",
+            "filterByPerson",
             "person-chip",
             "导演",
             "主演",

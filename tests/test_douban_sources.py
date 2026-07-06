@@ -1,7 +1,7 @@
 import unittest
 
 from douban_recommender.candidate_planner import CandidateQuery
-from douban_recommender.douban_sources import fetch_candidates_from_plan
+from douban_recommender.douban_sources import fetch_candidates_from_plan, fetch_explore, subject_detail_urls
 from douban_recommender.models import MediaItem
 
 
@@ -61,6 +61,39 @@ class CandidateFetchPlanTests(unittest.TestCase):
         self.assertTrue(any(item.media_type == "动漫" for item in report.items))
         self.assertEqual(report.failed_queries, 1)
         self.assertGreaterEqual(report.successful_queries, 2)
+
+    def test_fetch_explore_surfaces_douban_security_message_as_failure(self):
+        def fake_fetcher(url, accept_json=True):
+            return '{"msg":"检测到有异常请求从您的IP发出，请登录再试!","r":1}'.encode("utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "豆瓣探索接口返回风控"):
+            fetch_explore("动漫", fetcher=fake_fetcher)
+
+    def test_candidate_plan_stops_after_repeated_security_failures(self):
+        plan = [CandidateQuery(f"q{i}", "动漫", media_type="动漫") for i in range(30)]
+        calls = []
+
+        def blocked_fetcher(tags, sort="U", start=0, limit=20):
+            calls.append(tags)
+            raise RuntimeError("豆瓣探索接口返回风控或错误：检测到异常请求")
+
+        report = fetch_candidates_from_plan(plan, fetcher=blocked_fetcher, sleep_seconds=0)
+
+        self.assertLess(len(calls), len(plan))
+        self.assertEqual(report.failed_queries, len(calls))
+        self.assertTrue(any("已提前停止" in error for error in report.errors))
+
+    def test_subject_detail_urls_prioritize_mobile_douban_page(self):
+        item = MediaItem(
+            title="隐秘的角落",
+            douban_id="33404425",
+            url="https://movie.douban.com/subject/33404425/",
+        )
+
+        urls = subject_detail_urls(item)
+
+        self.assertEqual(urls[0], "https://m.douban.com/movie/subject/33404425/")
+        self.assertIn("https://movie.douban.com/subject/33404425/", urls)
 
 
 if __name__ == "__main__":

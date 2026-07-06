@@ -63,6 +63,15 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("python -m unittest discover -s tests -v", text)
         self.assertIn("不保存 Cookie", text)
 
+    def test_readme_documents_image_proxy_and_local_clash_without_subscription_url(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("DOUBAN_RECOMMENDER_HTTP_PROXY", text)
+        self.assertIn("Clash", text)
+        self.assertIn("V2Ray", text)
+        self.assertIn("不要粘贴订阅地址", text)
+        self.assertNotIn("liangxin.xyz/api/v1", text)
+
 
 if __name__ == "__main__":
     unittest.main()

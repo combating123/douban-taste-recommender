@@ -110,6 +110,26 @@ Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，不会写入�
 
 粘贴后应用会在发起本机请求后清空输入框。Cookie 不会保存到磁盘，不会进入缓存，不会出现在推荐报告里。
 
+## 海报加载、Clash / V2Ray 代理教程
+
+页面会优先通过本地 `/api/image-proxy` 代理加载海报；如果豆瓣或图片域名被网络拦截，仍会自动切换成本地 SVG 标题海报，避免破图。
+
+如果你的网络需要 Clash、V2Ray 或 v2rayN，请只配置本机 HTTP 代理端口，不要粘贴订阅地址。订阅地址属于敏感配置，不需要也不应该写入项目、日志、缓存或页面输入框。
+
+PowerShell 示例：
+
+```powershell
+cd C:\Users\11616\douban-taste-recommender
+$env:PYTHONPATH = "$PWD\src"
+$env:DOUBAN_RECOMMENDER_HTTP_PROXY = "http://127.0.0.1:7890"
+python -m douban_recommender.web
+```
+
+- Clash 常见 Mixed Port：`http://127.0.0.1:7890`
+- V2Ray / v2rayN：开启 HTTP 代理或 mixed port 后填同样格式
+- 不要粘贴订阅地址；项目只读取本机代理端口环境变量
+- 也兼容常见环境变量：`HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`
+
 ## 隐私与缓存
 
 本地缓存目录：`output/cache/`。

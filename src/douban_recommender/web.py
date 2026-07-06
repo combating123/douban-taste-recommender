@@ -11,7 +11,9 @@ import urllib.request
 
 from .candidate_planner import build_candidate_plan
 from .crawler import crawl_user_collections, redact_cookie_from_message
+from .curated_catalog import backfill_missing_media_types
 from .douban_sources import enrich_media_items, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
+from .douban_sources import build_url_opener
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .profiler import build_taste_profile
 from .recommender import recommend
@@ -65,10 +67,11 @@ def fetch_proxy_image(url: str) -> tuple[bytes, str]:
         raise ValueError("invalid image url")
     request = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
-        "Referer": "https://movie.douban.com/",
+        "Referer": "https://m.douban.com/" if "doubanio.com" in parsed.netloc else "https://movie.douban.com/",
         "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     })
-    with urllib.request.urlopen(request, timeout=12) as response:
+    opener = build_url_opener()
+    with opener.open(request, timeout=12) as response:
         content_type = response.headers.get("Content-Type") or "image/jpeg"
         return response.read(), content_type.split(";")[0]
 
@@ -201,7 +204,8 @@ class Handler(BaseHTTPRequestHandler):
 
         candidates = []
         candidates_csv = payload.get("candidates_csv") or ""
-        if candidates_csv.strip():
+        has_custom_candidates = bool(candidates_csv.strip())
+        if has_custom_candidates:
             candidates.extend(load_media_csv_from_text(candidates_csv, kind="candidates"))
         elif payload.get("use_sample_candidates"):
             candidates.extend(load_media_csv(SAMPLE_CANDIDATES, kind="candidates"))
@@ -219,7 +223,7 @@ class Handler(BaseHTTPRequestHandler):
                 include_anime=include_anime,
                 wishlist=wishlist,
             )
-            report = fetch_candidates_from_plan(plan)
+            report = fetch_candidates_from_plan(plan, sleep_seconds=0.02, max_consecutive_failures=8)
             candidates.extend(report.items)
             if not candidates:
                 candidates.extend(fetch_douban_candidates(
@@ -228,6 +232,15 @@ class Handler(BaseHTTPRequestHandler):
                     include_series=bool(payload.get("include_series", True)),
                     per_query=max(5, min(50, int(payload.get("per_query") or 20))),
                 ))
+        curated_before = len(candidates)
+        if not has_custom_candidates:
+            candidates = backfill_missing_media_types(
+                candidates,
+                include_movies=bool(payload.get("include_movies", True)),
+                include_series=bool(payload.get("include_series", True)),
+                include_anime=include_anime,
+            )
+        curated_added = max(0, len(candidates) - curated_before)
         recs = recommend(
             rated,
             candidates,
@@ -242,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
             enrich_media_items([rec.item for rec in recs[:enrich_limit]], limit=enrich_limit)
         return {
             "profile": profile.summary(),
-            "counts": {"rated": len(rated), "candidates": len(candidates)},
+            "counts": {"rated": len(rated), "candidates": len(candidates), "curated_candidates": curated_added},
             "sections": build_recommendation_sections(recs),
             "results": [rec.to_dict() for rec in recs],
         }
