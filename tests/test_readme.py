@@ -52,6 +52,17 @@ class ReadmeTests(unittest.TestCase):
                 with self.subTest(path=str(path), fragment=fragment):
                     self.assertNotIn(fragment, text)
 
+    def test_readme_documents_cinescope_workflow(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("CineScope Studio", text)
+        self.assertIn("242", text)
+        self.assertIn("34", text)
+        self.assertIn("电影、电视剧、动漫", text)
+        self.assertIn("Cookie 获取教程", text)
+        self.assertIn("python -m unittest discover -s tests -v", text)
+        self.assertIn("不保存 Cookie", text)
+
 
 if __name__ == "__main__":
     unittest.main()
