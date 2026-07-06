@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -29,8 +30,11 @@ class WebApiTests(unittest.TestCase):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return json.loads(error.read().decode("utf-8"))
 
     def test_crawl_api_returns_items_and_never_echoes_cookie(self):
         original = web_module.crawl_user_collections
@@ -50,6 +54,7 @@ class WebApiTests(unittest.TestCase):
                 ],
                 pages_ok=1,
                 pages_failed=0,
+                errors=["collect start=15: 页面结构变化"],
                 stopped_reason="\u5df2\u5230\u8fbe\u7a7a\u767d\u5206\u9875",
             )
 
@@ -66,9 +71,64 @@ class WebApiTests(unittest.TestCase):
 
         serialized = json.dumps(response, ensure_ascii=False)
         self.assertEqual(response["counts"]["items"], 1)
+        self.assertEqual(response["counts"]["collect_count"], 1)
+        self.assertEqual(response["counts"]["wish_count"], 0)
+        self.assertEqual(response["counts"]["stopped_reason"], "\u5df2\u5230\u8fbe\u7a7a\u767d\u5206\u9875")
+        self.assertEqual(response["errors"], ["collect start=15: 页面结构变化"])
         self.assertEqual(response["items"][0]["title"], "\u9690\u79d8\u7684\u89d2\u843d")
         self.assertNotIn("secret-cookie-value", serialized)
         self.assertNotIn("hidden", serialized)
+
+    def test_crawl_api_counts_collect_and_wish_from_sources_and_tags(self):
+        original = web_module.crawl_user_collections
+
+        def fake_crawl(user_id_or_url, cookie="", max_pages=8, include_wish=True):
+            return CrawlResult(
+                items=[
+                    MediaItem(title="看过影片", source="douban_user:collect", tags=["看过"]),
+                    MediaItem(title="想看影片", source="douban_user:wish", tags=["想看"]),
+                    MediaItem(title="标签想看", source="", tags=["想看"]),
+                ],
+                pages_ok=2,
+                pages_failed=1,
+                errors=["wish start=15: 超时"],
+                stopped_reason="部分分页抓取失败",
+            )
+
+        web_module.crawl_user_collections = fake_crawl
+        try:
+            response = self.post_json("/api/crawl-douban", {"user_id_or_url": "moviefan123"})
+        finally:
+            web_module.crawl_user_collections = original
+
+        self.assertEqual(response["counts"]["items"], 3)
+        self.assertEqual(response["counts"]["collect_count"], 1)
+        self.assertEqual(response["counts"]["wish_count"], 2)
+        self.assertEqual(response["counts"]["pages_ok"], 2)
+        self.assertEqual(response["counts"]["pages_failed"], 1)
+        self.assertEqual(response["counts"]["stopped_reason"], "部分分页抓取失败")
+        self.assertEqual(response["errors"], ["wish start=15: 超时"])
+
+    def test_crawl_api_top_level_exception_redacts_cookie(self):
+        original = web_module.crawl_user_collections
+
+        def fake_crawl(user_id_or_url, cookie="", max_pages=8, include_wish=True):
+            raise RuntimeError(f"crawler failed with Cookie: {cookie}")
+
+        web_module.crawl_user_collections = fake_crawl
+        try:
+            response = self.post_json("/api/crawl-douban", {
+                "user_id_or_url": "moviefan123",
+                "cookie": "bid=secret-cookie-value; ck=hidden-token",
+            })
+        finally:
+            web_module.crawl_user_collections = original
+
+        serialized = json.dumps(response, ensure_ascii=False)
+        self.assertIn("error", response)
+        self.assertIn("<redacted>", response["error"])
+        self.assertNotIn("secret-cookie-value", serialized)
+        self.assertNotIn("hidden-token", serialized)
 
     def test_recommend_api_accepts_json_rated_items(self):
         response = self.post_json("/api/recommend", {
@@ -94,6 +154,45 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(response["counts"]["rated"], 1)
         self.assertEqual(response["results"][0]["title"], "\u65b0\u7247")
+
+    def test_recommend_api_uses_legacy_ratings_csv_without_crawled_items(self):
+        response = self.post_json("/api/recommend", {
+            "ratings_csv": "title,my_rating,media_type,genres,tags\n我的旧评分,5,电影,剧情,看过\n",
+            "candidates_csv": "title,media_type,douban_rating,genres,tags\nCSV候选,电影,8.5,剧情,现实主义\n",
+            "fetch_douban": False,
+            "use_sample_candidates": False,
+            "include_movies": True,
+            "include_series": True,
+            "like_terms": "剧情",
+            "dislike_terms": "",
+            "limit": 5,
+        })
+
+        self.assertEqual(response["counts"]["rated"], 1)
+        self.assertEqual(response["counts"]["candidates"], 1)
+        self.assertEqual(response["results"][0]["title"], "CSV候选")
+
+    def test_recommend_api_does_not_double_count_sample_candidates_when_csv_candidates_exist(self):
+        csv_text = (
+            "title,media_type,douban_rating,genres,tags\n"
+            "CSV候选A,电影,8.5,剧情,现实主义\n"
+            "CSV候选B,电视剧,8.6,悬疑,剧集\n"
+        )
+
+        response = self.post_json("/api/recommend", {
+            "ratings_csv": "title,my_rating,media_type,genres,tags\n我的旧评分,5,电影,剧情,看过\n",
+            "candidates_csv": csv_text,
+            "fetch_douban": False,
+            "use_sample_candidates": True,
+            "include_movies": True,
+            "include_series": True,
+            "like_terms": "剧情,悬疑",
+            "dislike_terms": "",
+            "limit": 5,
+        })
+
+        self.assertEqual(response["counts"]["candidates"], 2)
+        self.assertEqual({item["title"] for item in response["results"]}, {"CSV候选A", "CSV候选B"})
 
 
 if __name__ == "__main__":

@@ -61,6 +61,20 @@ class CrawlerParserTests(unittest.TestCase):
         url = build_user_collection_url("moviefan123", "collect", 30)
         self.assertEqual(url, "https://movie.douban.com/people/moviefan123/collect?start=30&sort=time&rating=all&filter=all&mode=grid")
 
+    def test_normalize_douban_user_id_uses_readable_chinese_errors(self):
+        with self.assertRaises(ValueError) as empty_error:
+            normalize_douban_user_id("")
+        self.assertEqual(str(empty_error.exception), "请输入豆瓣用户 ID 或主页链接")
+
+        with self.assertRaises(ValueError) as malformed_error:
+            normalize_douban_user_id("https://example.com/not/douban")
+        self.assertEqual(str(malformed_error.exception), "豆瓣用户 ID 或主页链接格式不正确")
+
+    def test_build_user_collection_url_uses_readable_chinese_status_error(self):
+        with self.assertRaises(ValueError) as status_error:
+            build_user_collection_url("moviefan123", "done", 0)
+        self.assertEqual(str(status_error.exception), "status 只能是 collect 或 wish")
+
     def test_parse_user_collection_html_extracts_title_rating_and_url(self):
         items = parse_user_collection_html(COLLECT_HTML, status="collect")
 
@@ -87,6 +101,24 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertIsNone(second.my_rating)
         self.assertIn("想看", second.tags)
 
+    def test_parse_user_collection_html_infers_series_from_title_or_intro(self):
+        html = """
+        <html><body>
+          <div class="item">
+            <a href="https://movie.douban.com/subject/33404425/"><em>隐秘的角落 第一季</em></a>
+            <li class="intro">2020 / 中国大陆 / 剧情 悬疑 犯罪 / 辛爽 / 秦昊</li>
+          </div>
+          <div class="item">
+            <a href="https://movie.douban.com/subject/99999999/"><em>漫长的季节</em></a>
+            <li class="intro">2023 / 中国大陆 / 电视剧 / 剧情 / 辛爽 / 范伟</li>
+          </div>
+        </body></html>
+        """
+
+        items = parse_user_collection_html(html, status="collect")
+
+        self.assertEqual([item.media_type for item in items], ["电视剧", "电视剧"])
+
     def test_crawl_user_collections_uses_collect_and_wish_until_empty_page(self):
         from douban_recommender.crawler import crawl_user_collections
 
@@ -112,7 +144,7 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.items), 4)
         self.assertEqual(calls[0], ("moviefan123", "collect", 0, "bid=secret"))
         self.assertEqual(calls[2], ("moviefan123", "wish", 0, "bid=secret"))
-        self.assertEqual(result.stopped_reason, "\u5df2\u5230\u8fbe\u7a7a\u767d\u5206\u9875")
+        self.assertEqual(result.stopped_reason, "已到达空白分页")
 
     def test_crawl_user_collections_redacts_cookie_from_errors(self):
         from douban_recommender.crawler import crawl_user_collections

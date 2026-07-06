@@ -20,6 +20,30 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("Cookie 只用于本机请求豆瓣页面", text)
         self.assertIn("不会保存到磁盘", text)
 
+    def test_readme_matches_web_csv_paste_workflow(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("粘贴评分 CSV", text)
+        self.assertIn("粘贴候选 CSV", text)
+        self.assertIn("如果已经粘贴候选 CSV，就不会重复加入本地示例候选", text)
+
+    def test_user_visible_text_has_no_known_mojibake_fragments(self):
+        fragments = [
+            "璇疯緭",
+            "璞嗙摚",
+            "鎶撳彇",
+            "鐢ㄦ埛",
+            "绗竴",
+            "灞曞紑",
+            "鏁欑▼",
+            "鍙ｅ懗",
+        ]
+        paths = [ROOT / "README.md", ROOT / "src" / "douban_recommender" / "crawler.py", ROOT / "src" / "douban_recommender" / "web_ui.py"]
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for fragment in fragments:
+                with self.subTest(path=str(path), fragment=fragment):
+                    self.assertNotIn(fragment, text)
+
 
 if __name__ == "__main__":
     unittest.main()

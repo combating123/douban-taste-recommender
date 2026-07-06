@@ -68,7 +68,7 @@ INDEX_HTML = r'''<!doctype html>
     </section>
   </main>
 <script>
-const state = { step: 1, ratedItems: [], recommendations: [], profile: null, counts: null, sampleRatingsCsv: "", sampleCandidatesCsv: "" };
+const state = { step: 1, ratedItems: [], recommendations: [], profile: null, counts: null, errors: [], ratingsCsv: "", candidatesCsv: "", sampleRatingsCsv: "", sampleCandidatesCsv: "" };
 const $ = (id) => document.getElementById(id);
 function esc(value) { return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[ch])); }
 function setStatus(text) { const el = document.getElementById("status"); if (el) el.textContent = text || ""; }
@@ -101,13 +101,21 @@ function renderCrawlerPanel() {
     <label for="doubanCookie">Cookie（可选）</label>
     <textarea id="doubanCookie" placeholder="公开数据够用就不用填"></textarea>
     <div class="row"><div><label for="maxPages">最多抓取页数</label><input id="maxPages" type="number" min="1" max="60" value="8" /></div><div><label>想看列表</label><label><input id="includeWish" type="checkbox" checked /> 同时抓取想看</label></div></div>
+    <details><summary>没有抓取数据？粘贴 CSV</summary>
+      <p class="hint">保留旧流程：可以直接粘贴评分 CSV 和候选 CSV，不抓取豆瓣也能生成推荐。</p>
+      <label for="ratingsCsv">评分 CSV</label><textarea id="ratingsCsv" placeholder="title,my_rating,media_type,genres,tags">${esc(state.ratingsCsv)}</textarea>
+      <label for="candidatesCsv">候选 CSV</label><textarea id="candidatesCsv" placeholder="title,media_type,douban_rating,genres,tags">${esc(state.candidatesCsv)}</textarea>
+      <div class="actions"><button class="ghost" onclick="useCsvInputs()">使用粘贴的 CSV 继续</button></div>
+    </details>
     ${renderCookieGuide()}
     <div class="actions"><button onclick="crawlDouban()">开始抓取</button><button class="secondary" onclick="loadSample()">使用示例数据</button></div>
     <div id="status" class="status"></div>`;
   renderCrawlSummary();
 }
 function renderCrawlSummary() {
-  $("rightPanel").innerHTML = `<h2>抓取结果</h2>` + (state.ratedItems.length ? `<div class="statbar"><div class="stat"><b>${state.ratedItems.length}</b>条数据</div><div class="stat"><b>${state.counts?.pages_ok ?? "-"}</b>成功页</div><div class="stat"><b>${state.counts?.pages_failed ?? "-"}</b>失败页</div></div><h3>最近抓到</h3><ul class="mini-list">${state.ratedItems.slice(0,5).map(x => `<li>${esc(x.title)} ${x.my_rating ? "· 我的评分 " + x.my_rating : ""}</li>`).join("")}</ul><div class="actions"><button onclick="goStep(2)">下一步：确认口味</button></div>` : `<div class="empty">还没有数据。你可以抓取豆瓣，也可以使用示例数据先试跑。</div>`);
+  const hasCrawlInfo = state.ratedItems.length || state.counts || state.errors.length;
+  const errorSummary = state.errors.length ? `<h3>错误摘要</h3><ul class="mini-list">${state.errors.slice(0,5).map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+  $("rightPanel").innerHTML = `<h2>抓取结果</h2>` + (hasCrawlInfo ? `<div class="statbar"><div class="stat"><b>${state.counts?.collect_count ?? 0}</b>看过数量</div><div class="stat"><b>${state.counts?.wish_count ?? 0}</b>想看数量</div><div class="stat"><b>${state.counts?.pages_ok ?? "-"}</b>成功页</div><div class="stat"><b>${state.counts?.pages_failed ?? "-"}</b>失败页</div></div><p class="hint">停止原因：${esc(state.counts?.stopped_reason || "-")}</p>${errorSummary}<h3>最近抓到</h3><ul class="mini-list">${state.ratedItems.slice(0,5).map(x => `<li>${esc(x.title)} ${x.my_rating ? "· 我的评分 " + x.my_rating : ""}</li>`).join("")}</ul><div class="actions"><button onclick="goStep(2)">下一步：确认口味</button></div>` : `<div class="empty">还没有数据。你可以抓取豆瓣，也可以粘贴 CSV 或使用示例数据先试跑。</div>`);
 }
 function renderTastePanel() {
   $("leftPanel").innerHTML = `<h2>第二步：确认口味</h2>
@@ -152,9 +160,22 @@ async function crawlDouban() {
   if (!res.ok || data.error) { setStatus("抓取失败：" + (data.error || "请求失败")); return; }
   state.ratedItems = data.items || [];
   state.counts = data.counts || {};
+  state.errors = data.errors || [];
   state.sampleRatingsCsv = "";
   state.sampleCandidatesCsv = "";
+  state.ratingsCsv = "";
+  state.candidatesCsv = "";
   renderCrawlerPanel();
+}
+function useCsvInputs() {
+  state.ratedItems = [];
+  state.ratingsCsv = $("ratingsCsv").value;
+  state.candidatesCsv = $("candidatesCsv").value;
+  state.sampleRatingsCsv = "";
+  state.sampleCandidatesCsv = "";
+  state.counts = null;
+  state.errors = [];
+  goStep(2);
 }
 async function loadSample() {
   const [ratings, candidates] = await Promise.all([
@@ -164,12 +185,16 @@ async function loadSample() {
   state.ratedItems = [];
   state.sampleRatingsCsv = ratings;
   state.sampleCandidatesCsv = candidates;
+  state.ratingsCsv = "";
+  state.candidatesCsv = "";
   state.counts = { pages_ok: "-", pages_failed: "-" };
+  state.errors = [];
   goStep(2);
 }
 async function recommend() {
   setStatus("正在生成推荐。");
-  const payload = { rated_items:state.ratedItems, ratings_csv: state.ratedItems.length ? "" : state.sampleRatingsCsv, candidates_csv: state.sampleCandidatesCsv, like_terms:$("likeTerms").value, dislike_terms:$("dislikeTerms").value, include_movies:$("includeMovies").checked, include_series:$("includeSeries").checked, fetch_douban:$("fetchDouban").checked, use_sample_candidates:$("useSampleCandidates").checked, limit:Number($("limit").value || 30) };
+  const candidateCsv = state.candidatesCsv || state.sampleCandidatesCsv;
+  const payload = { rated_items:state.ratedItems, ratings_csv: state.ratedItems.length ? "" : (state.ratingsCsv || state.sampleRatingsCsv), candidates_csv: candidateCsv, like_terms:$("likeTerms").value, dislike_terms:$("dislikeTerms").value, include_movies:$("includeMovies").checked, include_series:$("includeSeries").checked, fetch_douban:$("fetchDouban").checked, use_sample_candidates: candidateCsv ? false : $("useSampleCandidates").checked, limit:Number($("limit").value || 30) };
   const res = await fetch("/api/recommend", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
   const data = await res.json();
   if (!res.ok || data.error) { setStatus("推荐失败：" + (data.error || "请求失败")); return; }

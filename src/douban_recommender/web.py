@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .crawler import crawl_user_collections
+from .crawler import crawl_user_collections, redact_cookie_from_message
 from .douban_sources import fetch_douban_candidates, fetch_url_candidates
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .profiler import build_taste_profile
@@ -41,6 +41,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        payload = {}
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -53,7 +54,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(data)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, status=500)
+            cookie = payload.get("cookie") if isinstance(payload, dict) else ""
+            self.send_json({"error": redact_cookie_from_message(str(exc), cookie or "")}, status=500)
 
     def handle_crawl_douban(self, payload: dict) -> dict:
         result = crawl_user_collections(
@@ -62,12 +64,16 @@ class Handler(BaseHTTPRequestHandler):
             max_pages=max(1, min(60, int(payload.get("max_pages") or 8))),
             include_wish=bool(payload.get("include_wish", True)),
         )
+        collect_count, wish_count = count_crawl_sources(result.items)
         return {
             "items": [media_item_to_dict(item) for item in result.items],
             "counts": {
                 "items": len(result.items),
+                "collect_count": collect_count,
+                "wish_count": wish_count,
                 "pages_ok": result.pages_ok,
                 "pages_failed": result.pages_failed,
+                "stopped_reason": result.stopped_reason,
             },
             "errors": result.errors,
             "stopped_reason": result.stopped_reason,
@@ -96,11 +102,11 @@ class Handler(BaseHTTPRequestHandler):
         )
 
         candidates = []
-        if payload.get("use_sample_candidates"):
-            candidates.extend(load_media_csv(SAMPLE_CANDIDATES, kind="candidates"))
         candidates_csv = payload.get("candidates_csv") or ""
         if candidates_csv.strip():
             candidates.extend(load_media_csv_from_text(candidates_csv, kind="candidates"))
+        elif payload.get("use_sample_candidates"):
+            candidates.extend(load_media_csv(SAMPLE_CANDIDATES, kind="candidates"))
         urls_text = payload.get("candidate_urls") or ""
         urls = [x.strip() for x in urls_text.replace("\n", ",").split(",") if x.strip()]
         if urls:
@@ -141,6 +147,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+
+def count_crawl_sources(items) -> tuple[int, int]:
+    collect_count = 0
+    wish_count = 0
+    for item in items:
+        source = str(getattr(item, "source", "") or "")
+        tags = set(getattr(item, "tags", []) or [])
+        if source.endswith(":wish") or "想看" in tags:
+            wish_count += 1
+        else:
+            collect_count += 1
+    return collect_count, wish_count
 
 
 def main(argv: list[str] | None = None) -> int:

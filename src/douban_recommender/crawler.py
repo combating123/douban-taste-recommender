@@ -51,19 +51,19 @@ class CrawlResult:
 def normalize_douban_user_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
-        raise ValueError("璇疯緭鍏ヨ眴鐡ｇ敤鎴?ID 鎴栦富椤甸摼鎺?")
+        raise ValueError("请输入豆瓣用户 ID 或主页链接")
     match = re.search(r"douban\.com/people/([^/?#]+)/?", text)
     if match:
         return urllib.parse.unquote(match.group(1)).strip()
     text = text.strip("/")
     if "/" in text or "?" in text or "#" in text:
-        raise ValueError("璞嗙摚鐢ㄦ埛 ID 鎴栦富椤甸摼鎺ユ牸寮忎笉姝ｇ‘")
+        raise ValueError("豆瓣用户 ID 或主页链接格式不正确")
     return text
 
 
 def build_user_collection_url(user_id: str, status: str, start: int) -> str:
     if status not in {"collect", "wish"}:
-        raise ValueError("status 鍙兘鏄?collect 鎴?wish")
+        raise ValueError("status 只能是 collect 或 wish")
     safe_user_id = urllib.parse.quote(normalize_douban_user_id(user_id), safe="")
     return f"https://movie.douban.com/people/{safe_user_id}/{status}?start={int(start)}&sort=time&rating=all&filter=all&mode=grid"
 
@@ -87,11 +87,12 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
         people_parts = [part.strip() for part in re.split(r"\s*/\s*", intro) if part.strip()]
         directors, casts = split_people_from_intro(people_parts)
         tag = "想看" if status == "wish" else "看过"
+        media_type = infer_media_type(title, intro)
         items.append(MediaItem(
             title=title,
             my_rating=my_rating,
             year=parse_year(intro),
-            media_type="电影",
+            media_type=media_type,
             genres=genres,
             countries=countries,
             directors=directors,
@@ -105,6 +106,32 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
             raw={"intro": intro},
         ))
     return items
+
+
+def infer_media_type(title: str, intro: str) -> str:
+    blob = f"{title or ''} {intro or ''}".lower()
+    series_markers = [
+        "电视剧",
+        "剧集",
+        "连续剧",
+        "网剧",
+        "迷你剧",
+        "美剧",
+        "英剧",
+        "日剧",
+        "韩剧",
+        "国产剧",
+        "港剧",
+        "台剧",
+        "season",
+        "series",
+        "episode",
+    ]
+    if any(marker in blob for marker in series_markers):
+        return "电视剧"
+    if re.search(r"第[一二三四五六七八九十0-9\d]+季", title or ""):
+        return "电视剧"
+    return "电影"
 
 
 def split_item_blocks(page_html: str) -> list[str]:
@@ -224,10 +251,10 @@ def crawl_user_collections(
             if sleep_seconds:
                 time.sleep(sleep_seconds)
     if empty_page_seen:
-        result.stopped_reason = "\u5df2\u5230\u8fbe\u7a7a\u767d\u5206\u9875"
+        result.stopped_reason = "已到达空白分页"
     elif result.pages_failed:
-        result.stopped_reason = "\u90e8\u5206\u5206\u9875\u6293\u53d6\u5931\u8d25"
+        result.stopped_reason = "部分分页抓取失败"
     else:
-        result.stopped_reason = "\u5df2\u8fbe\u5230\u9875\u6570\u4e0a\u9650"
+        result.stopped_reason = "已达到页数上限"
     return result
 
