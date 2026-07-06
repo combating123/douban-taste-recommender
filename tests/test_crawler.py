@@ -223,5 +223,32 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertEqual(result.pages_failed, 0)
 
 
+class CrawlerDiagnosticTests(unittest.TestCase):
+    def test_classify_login_required_page(self):
+        from douban_recommender.crawler import classify_collection_page
+
+        classification, message = classify_collection_page("<html>登录后查看更多 请登录</html>", 0)
+
+        self.assertEqual(classification, "login_required")
+        self.assertIn("需要 Cookie", message)
+
+    def test_classify_security_check_page(self):
+        from douban_recommender.crawler import classify_collection_page
+
+        classification, message = classify_collection_page("<html>检测到有异常请求 captcha verify</html>", 0)
+
+        self.assertEqual(classification, "security_check")
+        self.assertIn("安全验证", message)
+
+    def test_classify_nonempty_parse_failure(self):
+        from douban_recommender.crawler import classify_collection_page
+
+        html = '<a href="https://movie.douban.com/subject/1234567/">片名</a>'
+        classification, message = classify_collection_page(html, 0)
+
+        self.assertEqual(classification, "parse_failed_nonempty")
+        self.assertIn("页面有内容", message)
+
+
 if __name__ == "__main__":
     unittest.main()

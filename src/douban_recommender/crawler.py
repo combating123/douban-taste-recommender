@@ -40,12 +40,45 @@ COUNTRY_WORDS = [
 
 
 @dataclass
+class PageDiagnostic:
+    status: str
+    start: int
+    url: str
+    http_status: int | None = None
+    item_count: int = 0
+    classification: str = ""
+    message: str = ""
+
+
+@dataclass
 class CrawlResult:
     items: list[MediaItem] = field(default_factory=list)
     pages_ok: int = 0
     pages_failed: int = 0
     errors: list[str] = field(default_factory=list)
     stopped_reason: str = ""
+    diagnostics: list[PageDiagnostic] = field(default_factory=list)
+    expected_collect: int | None = None
+    expected_wish: int | None = None
+    completeness: dict[str, object] = field(default_factory=dict)
+
+
+def classify_collection_page(page_html: str, parsed_count: int) -> tuple[str, str]:
+    text = clean_html(page_html or "")
+    lower = text.lower()
+    if parsed_count > 0:
+        return "ok_with_items", f"解析到 {parsed_count} 条"
+    if any(marker in text for marker in ["登录后", "请登录", "登陆后", "加入豆瓣"]):
+        return "login_required", "页面提示需要登录或需要 Cookie 才能查看完整数据"
+    if any(marker in lower for marker in ["captcha", "verify"]) or any(marker in text for marker in ["异常请求", "安全验证", "机器人"]):
+        return "security_check", "豆瓣返回安全验证页，建议稍后重试或减少页数"
+    if "仅自己可见" in text or "没有权限" in text:
+        return "privacy_or_permission", "页面可能受隐私或权限限制"
+    if "movie.douban.com/subject/" in (page_html or ""):
+        return "parse_failed_nonempty", "页面有内容但当前解析器未识别到标准条目"
+    if len(text.strip()) < 80:
+        return "true_empty_page", "已到达真实空白分页"
+    return "parse_failed_nonempty", "页面有内容但解析结果为空"
 
 
 def normalize_douban_user_id(value: str) -> str:
