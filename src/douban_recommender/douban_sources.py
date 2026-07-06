@@ -6,8 +6,10 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from typing import Iterable
 
+from .candidate_planner import CandidateQuery
 from .io import extract_douban_id, parse_list
 from .models import MediaItem
 from .profiler import KNOWN_GENRES, TasteProfile
@@ -18,6 +20,43 @@ DEFAULT_HEADERS = {
     "Referer": "https://movie.douban.com/explore",
     "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
 }
+
+
+@dataclass
+class CandidateFetchReport:
+    items: list[MediaItem] = field(default_factory=list)
+    successful_queries: int = 0
+    failed_queries: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def fetch_candidates_from_plan(
+    plan: list[CandidateQuery],
+    fetcher=None,
+    sleep_seconds: float = 0.15,
+) -> CandidateFetchReport:
+    fetch = fetcher or fetch_explore
+    report = CandidateFetchReport()
+    seen: set[str] = set()
+    for query in plan:
+        try:
+            rows = fetch(tags=query.tags, sort=query.sort, start=query.start, limit=query.limit)
+            report.successful_queries += 1
+        except Exception as exc:
+            report.failed_queries += 1
+            report.errors.append(f"{query.channel} {query.tags} start={query.start}: {exc}")
+            rows = []
+        for row in rows:
+            if not row.media_type or row.media_type == "电影":
+                row.media_type = query.media_type
+            row.source = row.source or f"douban_plan:{query.channel}:{query.tags}"
+            key = row.douban_id or row.title
+            if key and key not in seen:
+                report.items.append(row)
+                seen.add(key)
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+    return report
 
 
 def fetch_douban_candidates(
