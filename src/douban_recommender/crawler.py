@@ -138,11 +138,28 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
             source=f"douban_user:{status}",
             raw={"intro": intro},
         ))
+    fallback_items = parse_fallback_subject_links(page_html or "", status=status)
+    seen_ids = {item.douban_id for item in items if item.douban_id}
+    seen_titles = {item.title for item in items if item.title}
+    for item in fallback_items:
+        if (item.douban_id and item.douban_id in seen_ids) or item.title in seen_titles:
+            continue
+        items.append(item)
     return items
 
 
 def infer_media_type(title: str, intro: str) -> str:
     blob = f"{title or ''} {intro or ''}".lower()
+    anime_markers = [
+        "动画",
+        "动漫",
+        "番剧",
+        "日本动画",
+        "剧场版",
+        "anime",
+    ]
+    if any(marker in blob for marker in anime_markers):
+        return "动漫"
     series_markers = [
         "电视剧",
         "剧集",
@@ -165,6 +182,32 @@ def infer_media_type(title: str, intro: str) -> str:
     if re.search(r"第[一二三四五六七八九十0-9\d]+季", title or ""):
         return "电视剧"
     return "电影"
+
+
+def parse_fallback_subject_links(page_html: str, status: str) -> list[MediaItem]:
+    items: list[MediaItem] = []
+    seen: set[str] = set()
+    pattern = r'''<a[^>]+href=["'](https://movie\.douban\.com/subject/(\d+)/?[^"']*)["'][^>]*>(.*?)</a>'''
+    for match in re.finditer(pattern, page_html or "", flags=re.S | re.I):
+        url = html.unescape(match.group(1))
+        subject_id = match.group(2)
+        inner = match.group(3)
+        local = page_html[max(0, match.start() - 300): match.end() + 300]
+        title = clean_html(first_match(r'''<img[^>]+alt=["']([^"']+)["']''', inner + local)) or clean_html(inner)
+        cover = html.unescape(first_match(r'''<img[^>]+src=["']([^"']+)["']''', inner + local))
+        if not title or subject_id in seen:
+            continue
+        seen.add(subject_id)
+        tag = "想看" if status == "wish" else "看过"
+        items.append(MediaItem(
+            title=title,
+            url=url,
+            douban_id=subject_id,
+            cover=cover,
+            tags=[tag],
+            source=f"douban_user:{status}",
+        ))
+    return items
 
 
 def split_item_blocks(page_html: str) -> list[str]:

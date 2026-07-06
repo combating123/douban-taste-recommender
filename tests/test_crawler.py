@@ -314,5 +314,37 @@ class CrawlerScaleTests(unittest.TestCase):
         self.assertEqual(len(calls), 200)
 
 
+class CrawlerParserVariantTests(unittest.TestCase):
+    def test_parse_subject_links_when_item_class_missing(self):
+        from douban_recommender.crawler import parse_user_collection_html
+
+        html = (
+            '<html><body><div class="grid-view">'
+            '<a href="https://movie.douban.com/subject/1292052/">'
+            '<img alt="肖申克的救赎" src="https://img.example/s.jpg"></a>'
+            '<span class="rating5-t"></span></div></body></html>'
+        )
+
+        items = parse_user_collection_html(html, status="collect")
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].title, "肖申克的救赎")
+        self.assertEqual(items[0].douban_id, "1292052")
+        self.assertEqual(items[0].cover, "https://img.example/s.jpg")
+
+    def test_parse_anime_media_type_from_intro(self):
+        from douban_recommender.crawler import parse_user_collection_html
+
+        html = (
+            '<div class="item"><a href="https://movie.douban.com/subject/20495023/">'
+            '<em>排球少年</em></a><img alt="排球少年" src="https://img.example/h.jpg">'
+            '<li class="intro">2014 / 日本 / 动画 运动 / 满仲劝 / 村濑步</li></div>'
+        )
+
+        items = parse_user_collection_html(html, status="collect")
+
+        self.assertEqual(items[0].media_type, "动漫")
+
+
 if __name__ == "__main__":
     unittest.main()
