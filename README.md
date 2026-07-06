@@ -133,3 +133,11 @@ Cookie 是可选项。Cookie 只用于本机请求豆瓣页面，不会保存到
 
 如果抓取失败，先确认豆瓣网页本身能正常打开，再把最多抓取页数调小后重试。
 
+
+## 测试
+
+标准测试入口使用 `unittest discover`：
+
+```powershell
+$env:PYTHONPATH="$PWD\src"; $env:PYTHONDONTWRITEBYTECODE=1; python -m unittest discover -s tests -v
+```
