@@ -48,6 +48,15 @@ class UiHtmlTests(unittest.TestCase):
         self.assertIn("<details", INDEX_HTML)
         self.assertIn("展开详情", INDEX_HTML)
 
+    def test_checkbox_controls_are_not_full_width(self):
+        self.assertIn('input[type="checkbox"]', INDEX_HTML)
+        self.assertIn("accent-color:var(--gold)", INDEX_HTML)
+
+    def test_filtered_section_detail_uses_visible_recommendations(self):
+        self.assertIn("visibleRecommendations", INDEX_HTML)
+        self.assertIn("state.visibleRecommendations = items", INDEX_HTML)
+        self.assertIn("const r = state.visibleRecommendations[index]", INDEX_HTML)
+
     def test_ui_restores_csv_paste_workflow(self):
         self.assertIn("评分 CSV", INDEX_HTML)
         self.assertIn("候选 CSV", INDEX_HTML)
