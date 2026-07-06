@@ -1,23 +1,61 @@
 from __future__ import annotations
 
 import json
+import inspect
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .candidate_planner import build_candidate_plan
 from .crawler import crawl_user_collections, redact_cookie_from_message
-from .douban_sources import fetch_douban_candidates, fetch_url_candidates
+from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .profiler import build_taste_profile
 from .recommender import recommend
 from .serialization import media_item_from_dict, media_item_to_dict
+from .storage import CacheStore, default_cache_dir
 from .web_ui import INDEX_HTML
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_RATINGS = ROOT / "sample_data" / "ratings_sample.csv"
 SAMPLE_CANDIDATES = ROOT / "sample_data" / "candidates_sample.csv"
+CACHE = CacheStore(default_cache_dir(ROOT))
+
+
+def build_recommendation_sections(recs) -> list[dict[str, object]]:
+    order = ["必看 Top Picks", "高分剧情", "电影", "电视剧", "动漫", "想看优先", "冷门惊喜"]
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for rec in recs:
+        name = rec.section or rec.item.media_type or "全部"
+        grouped.setdefault(name, []).append(rec.to_dict())
+
+    sections: list[dict[str, object]] = []
+    for name in order:
+        rows = grouped.pop(name, [])
+        if rows:
+            sections.append({"name": name, "count": len(rows), "items": rows})
+    for name, rows in grouped.items():
+        sections.append({"name": name, "count": len(rows), "items": rows})
+    return sections
+
+
+def call_crawl_user_collections(**kwargs):
+    signature = inspect.signature(crawl_user_collections)
+    accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    if accepts_kwargs:
+        return crawl_user_collections(**kwargs)
+    filtered = {key: value for key, value in kwargs.items() if key in signature.parameters}
+    return crawl_user_collections(**filtered)
+
+
+def diagnostic_to_dict(diag) -> dict:
+    if isinstance(diag, dict):
+        return dict(diag)
+    if hasattr(diag, "__dict__"):
+        return dict(diag.__dict__)
+    return {"message": str(diag)}
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "DoubanTasteRecommender/0.1"
@@ -34,6 +72,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_text(read_text_file(SAMPLE_RATINGS), content_type="text/plain; charset=utf-8")
             elif path == "/sample/candidates":
                 self.send_text(read_text_file(SAMPLE_CANDIDATES), content_type="text/plain; charset=utf-8")
+            elif path == "/api/cache":
+                self.send_json(self.handle_cache_get())
             else:
                 self.send_json({"error": "not found"}, status=404)
         except Exception as exc:
@@ -47,8 +87,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if path == "/api/recommend":
                 data = self.handle_recommend(payload)
-            elif path == "/api/crawl-douban":
-                data = self.handle_crawl_douban(payload)
+            elif path in {"/api/crawl-douban", "/api/sync-douban"}:
+                data = self.handle_sync_douban(payload)
             else:
                 self.send_json({"error": "not found"}, status=404)
                 return
@@ -57,14 +97,46 @@ class Handler(BaseHTTPRequestHandler):
             cookie = payload.get("cookie") if isinstance(payload, dict) else ""
             self.send_json({"error": redact_cookie_from_message(str(exc), cookie or "")}, status=500)
 
-    def handle_crawl_douban(self, payload: dict) -> dict:
-        result = crawl_user_collections(
+    def do_DELETE(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            if path == "/api/cache":
+                self.send_json(self.handle_cache_delete())
+            else:
+                self.send_json({"error": "not found"}, status=404)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=500)
+
+    def handle_cache_get(self) -> dict:
+        items, report = CACHE.load_library()
+        summary = CACHE.summary()
+        return {
+            "cache_dir": summary.cache_dir,
+            "files": summary.files,
+            "library_count": len(items),
+            "sync_report": report,
+        }
+
+    def handle_cache_delete(self) -> dict:
+        return {"removed": CACHE.clear()}
+
+    def handle_sync_douban(self, payload: dict) -> dict:
+        result = call_crawl_user_collections(
             user_id_or_url=payload.get("user_id_or_url") or "",
             cookie=payload.get("cookie") or "",
-            max_pages=max(1, min(60, int(payload.get("max_pages") or 8))),
+            max_pages=max(1, min(200, int(payload.get("max_pages") or 40))),
             include_wish=bool(payload.get("include_wish", True)),
+            include_do=bool(payload.get("include_do", False)),
+            expected_collect=int(payload["expected_collect"]) if str(payload.get("expected_collect") or "").strip() else None,
+            expected_wish=int(payload["expected_wish"]) if str(payload.get("expected_wish") or "").strip() else None,
         )
         collect_count, wish_count = count_crawl_sources(result.items)
+        diagnostics = [diagnostic_to_dict(diag) for diag in getattr(result, "diagnostics", [])]
+        CACHE.save_library(result.items, {
+            "counts": getattr(result, "completeness", {}),
+            "diagnostics": diagnostics,
+            "stopped_reason": result.stopped_reason,
+        })
         return {
             "items": [media_item_to_dict(item) for item in result.items],
             "counts": {
@@ -75,9 +147,13 @@ class Handler(BaseHTTPRequestHandler):
                 "pages_failed": result.pages_failed,
                 "stopped_reason": result.stopped_reason,
             },
+            "diagnostics": diagnostics,
+            "completeness": getattr(result, "completeness", {}),
             "errors": result.errors,
             "stopped_reason": result.stopped_reason,
         }
+
+    handle_crawl_douban = handle_sync_douban
 
     def handle_recommend(self, payload: dict) -> dict:
         rated_items_payload = payload.get("rated_items") or []
@@ -111,24 +187,38 @@ class Handler(BaseHTTPRequestHandler):
         urls = [x.strip() for x in urls_text.replace("\n", ",").split(",") if x.strip()]
         if urls:
             candidates.extend(fetch_url_candidates(urls))
+        include_anime = bool(payload.get("include_anime", True))
         if payload.get("fetch_douban"):
-            candidates.extend(fetch_douban_candidates(
+            wishlist = [item for item in rated if "想看" in set(item.tags or [])]
+            plan = build_candidate_plan(
                 profile,
                 include_movies=bool(payload.get("include_movies", True)),
                 include_series=bool(payload.get("include_series", True)),
-                per_query=max(5, min(50, int(payload.get("per_query") or 20))),
-            ))
+                include_anime=include_anime,
+                wishlist=wishlist,
+            )
+            report = fetch_candidates_from_plan(plan)
+            candidates.extend(report.items)
+            if not candidates:
+                candidates.extend(fetch_douban_candidates(
+                    profile,
+                    include_movies=bool(payload.get("include_movies", True)),
+                    include_series=bool(payload.get("include_series", True)),
+                    per_query=max(5, min(50, int(payload.get("per_query") or 20))),
+                ))
         recs = recommend(
             rated,
             candidates,
             profile,
-            limit=max(1, min(100, int(payload.get("limit") or 30))),
+            limit=max(1, min(300, int(payload.get("limit") or 120))),
             include_movies=bool(payload.get("include_movies", True)),
             include_series=bool(payload.get("include_series", True)),
+            include_anime=include_anime,
         )
         return {
             "profile": profile.summary(),
             "counts": {"rated": len(rated), "candidates": len(candidates)},
+            "sections": build_recommendation_sections(recs),
             "results": [rec.to_dict() for rec in recs],
         }
 

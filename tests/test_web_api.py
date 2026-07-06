@@ -195,5 +195,26 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual({item["title"] for item in response["results"]}, {"CSV候选A", "CSV候选B"})
 
 
+class WebApiShapeTests(unittest.TestCase):
+    def test_build_recommendation_sections_groups_by_section(self):
+        from douban_recommender.web import build_recommendation_sections
+        from douban_recommender.recommender import Recommendation
+
+        recs = [
+            Recommendation(item=MediaItem(title="电影A"), score=90, section="必看 Top Picks"),
+            Recommendation(item=MediaItem(title="动画B"), score=88, section="动漫"),
+        ]
+
+        sections = build_recommendation_sections(recs)
+
+        self.assertEqual(sections[0]["name"], "必看 Top Picks")
+        self.assertEqual(sections[0]["count"], 1)
+        self.assertEqual(sections[1]["name"], "动漫")
+
+    def test_handler_has_cache_methods(self):
+        self.assertTrue(hasattr(Handler, "handle_cache_get"))
+        self.assertTrue(hasattr(Handler, "handle_cache_delete"))
+
+
 if __name__ == "__main__":
     unittest.main()
