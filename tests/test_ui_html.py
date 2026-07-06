@@ -4,6 +4,26 @@ from douban_recommender.web_ui import INDEX_HTML
 
 
 class UiHtmlTests(unittest.TestCase):
+    def test_ui_contains_cinescope_dashboard_landmarks(self):
+        html = INDEX_HTML
+
+        self.assertIn("CineScope Studio", html)
+        self.assertIn("cinematic-hero", html)
+        self.assertIn("syncTimeline", html)
+        self.assertIn("poster-grid", html)
+        self.assertIn("detailDrawer", html)
+        self.assertIn("评分高，剧情好，叙事强", html)
+        self.assertIn("电视剧古装", html)
+        self.assertIn("includeAnime", html)
+        self.assertIn("/api/sync-douban", html)
+        self.assertIn("/api/cache", html)
+
+    def test_ui_has_no_legacy_plain_title_only_experience(self):
+        html = INDEX_HTML
+
+        self.assertNotIn("豆瓣口味影视推荐器</h1>", html)
+        self.assertIn("私人影视策展器", html)
+
     def test_ui_uses_three_clear_steps(self):
         self.assertIn("第一步：连接豆瓣", INDEX_HTML)
         self.assertIn("第二步：确认口味", INDEX_HTML)
