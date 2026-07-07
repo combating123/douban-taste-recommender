@@ -105,6 +105,17 @@ class UiHtmlTests(unittest.TestCase):
         ]:
             self.assertIn(token, INDEX_HTML)
 
+    def test_image_resilience_guide_uses_inner_scroll_code_block(self):
+        for token in [
+            ".resilience-card code",
+            "overflow-x:auto",
+            "white-space:pre",
+            "word-break:normal",
+            "proxy-command",
+            "复制代理命令",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
     def test_premium_media_ui_exposes_rich_metadata_and_people(self):
         for token in [
             "metadataLine",
@@ -207,7 +218,7 @@ class UiHtmlTests(unittest.TestCase):
         for token in [
             "inputInsight",
             "previewDoubanInput",
-            "oninput=\"previewDoubanInput()\"",
+            "oninput=\"persistCrawlerControls(); previewDoubanInput()\"",
             "不是同步失败",
             "复制的是主页链接，不是授权凭证",
             "response.recovery?.status === 'needs_cookie'",
@@ -225,6 +236,50 @@ class UiHtmlTests(unittest.TestCase):
             "grid-template-columns:repeat(auto-fit,minmax(min(100%,",
             ".quick-actions button",
             ".poster-body h3",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_crawler_controls_remember_profile_counts_and_session_cookie(self):
+        for token in [
+            "CINESCOPE_PREFS_V2",
+            "CINESCOPE_SESSION_COOKIE",
+            "loadUserPrefs",
+            "saveUserPrefs",
+            "hydrateCrawlerControls",
+            "sessionStorage",
+            "localStorage",
+            "rememberCookieSession",
+            "clearSessionCookie",
+            "defaultDoubanUser",
+            "272042071",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_crawler_controls_bind_prefs_to_visible_inputs(self):
+        for token in [
+            'id="doubanUser"',
+            'oninput="persistCrawlerControls(); previewDoubanInput()"',
+            'id="doubanCookie"',
+            'oninput="persistCrawlerControls()"',
+            'id="expectedCollect"',
+            'id="expectedWish"',
+            'id="maxPages"',
+            'onchange="persistCrawlerControls()"',
+            'id="rememberCookieSession"',
+            "本次浏览器会话自动填 Cookie",
+            "清除会话 Cookie",
+            "hydrateCrawlerControls();",
+            "const prefs = persistCrawlerControls();",
+            "prefs.rememberCookieSession",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_cookie_hint_distinguishes_session_autofill_from_clear_after_sync(self):
+        for token in [
+            "本次浏览器会话已自动填入 Cookie",
+            "Cookie 只保存在 sessionStorage",
+            "未勾选会话记忆时同步后输入框会清空",
+            "rememberCookieSession",
         ]:
             self.assertIn(token, INDEX_HTML)
 

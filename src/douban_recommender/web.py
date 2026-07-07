@@ -11,7 +11,7 @@ import urllib.request
 
 from .candidate_planner import build_candidate_plan
 from .crawler import crawl_user_collections, normalize_douban_user_id, redact_cookie_from_message
-from .curated_catalog import backfill_missing_media_types
+from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
 from .douban_sources import enrich_media_items, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .douban_sources import build_url_opener
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
@@ -278,6 +278,7 @@ class Handler(BaseHTTPRequestHandler):
             candidates.extend(load_media_csv_from_text(candidates_csv, kind="candidates"))
         elif payload.get("use_sample_candidates"):
             candidates.extend(load_media_csv(SAMPLE_CANDIDATES, kind="candidates"))
+        apply_curated_people_photos(apply_curated_posters(candidates))
         urls_text = payload.get("candidate_urls") or ""
         urls = [x.strip() for x in urls_text.replace("\n", ",").split(",") if x.strip()]
         if urls:
@@ -309,6 +310,7 @@ class Handler(BaseHTTPRequestHandler):
                 include_series=bool(payload.get("include_series", True)),
                 include_anime=include_anime,
             )
+        apply_curated_people_photos(apply_curated_posters(candidates))
         curated_added = max(0, len(candidates) - curated_before)
         recs = recommend(
             rated,

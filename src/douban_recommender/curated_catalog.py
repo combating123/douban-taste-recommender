@@ -3,6 +3,114 @@ from __future__ import annotations
 from .models import MediaItem, normalize_title
 
 
+POSTER_URLS_BY_DOUBAN_ID: dict[str, str] = {
+    "27010768": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2561439800.webp",  # 寄生虫
+    "26842702": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2520095279.webp",  # 燃烧
+    "1293182": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2173577632.webp",  # 十二怒汉
+    "1296141": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2927451337.webp",  # 控方证人
+    "21937445": "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2158166535.webp",  # 辩护人
+    "24733428": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2595591069.webp",  # 心灵奇旅
+    "35465232": "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2890906384.webp",  # 漫长的季节
+    "33404425": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2609064048.webp",  # 隐秘的角落
+    "2373195": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2886443948.webp",  # 绝命毒师
+    "25897712": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2218944919.webp",  # 风骚律师
+    "1418192": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p926249640.webp",  # 火线 第一季
+    "35350437": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2869925687.webp",  # 我的解放日志
+    "3430169": "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2225808366.webp",  # 钢之炼金术师FA
+    "23748525": "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2602681134.webp",  # 进击的巨人
+    "1424406": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2011424828.webp",  # 星际牛仔
+    "1460915": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2330163082.webp",  # 混沌武士
+    "1800597": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2242716237.webp",  # 虫师
+    "4925398": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p1948151693.webp",  # 命运石之门
+    "26677934": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2358698477.webp",  # 灵能百分百
+    "36093351": "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2897218476.webp",  # 葬送的芙莉莲
+    "35366293": "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p2880400525.webp",  # 孤独摇滚！
+    "35332568": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2631090442.webp",  # 奇巧计程车
+    "3060542": "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2221083211.webp",  # 夏目友人帐
+    "2340927": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p1995752943.webp",  # 怪化猫
+    "35633650": "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2896940977.webp",  # 坠落的审判
+    "35712804": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2904961420.webp",  # 白日之下
+    "35208463": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2901703469.webp",  # 三大队
+    "35725869": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2901057189.webp",  # 年会不能停！
+    "35209683": "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2899486451.webp",  # 河边的错误
+    "35206444": "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2637459961.webp",  # 模范出租车
+    "30468961": "https://img2.doubanio.com/view/photo/s_ratio_poster/public/p2576977981.webp",  # 想见你
+    "35881324": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2900138920.webp",  # 以爱为营
+}
+
+
+PEOPLE_PHOTOS_BY_DOUBAN_ID: dict[str, dict[str, str]] = {
+    "27010768": {  # 寄生虫
+        "奉俊昊": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fb/Bong_Joon-ho_2017.jpg/330px-Bong_Joon-ho_2017.jpg",
+        "宋康昊": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/df/Song_Gangho_2016.jpg/330px-Song_Gangho_2016.jpg",
+        "李善均": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6f/Lee_Seon-gun_in_Oct_2018.png/330px-Lee_Seon-gun_in_Oct_2018.png",
+    },
+    "1296141": {  # 控方证人
+        "比利·怀尔德": "https://upload.wikimedia.org/wikipedia/commons/d/d0/Billy_Wilder.jpg",
+        "泰隆·鲍华": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/73/Tyrone_Power_-_still.jpg/330px-Tyrone_Power_-_still.jpg",
+        "玛琳·黛德丽": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2d/Marlene_Dietrich_in_No_Highway_%281951%29_%28Cropped%29.png/330px-Marlene_Dietrich_in_No_Highway_%281951%29_%28Cropped%29.png",
+    },
+    "1418192": {  # 火线 第一季
+        "克拉克·约翰森": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Clark_Johnson.jpg/330px-Clark_Johnson.jpg",
+        "多米尼克·韦斯特": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/Dominic_West_%286577113511%29_%28cropped%29.jpg/330px-Dominic_West_%286577113511%29_%28cropped%29.jpg",
+        "约翰·道曼": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/John_Doman_2013_%28cropped_2%29.jpg/330px-John_Doman_2013_%28cropped_2%29.jpg",
+    },
+    "2373195": {  # 绝命毒师
+        "文斯·吉里根": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Vince_Gilligan_at_53rd_Saturn_Awards_2026-03.jpg/330px-Vince_Gilligan_at_53rd_Saturn_Awards_2026-03.jpg",
+        "布莱恩·克兰斯顿": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b1/BryanCranston-byPhilipRomano.jpg/330px-BryanCranston-byPhilipRomano.jpg",
+        "亚伦·保尔": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9a/Aaron_Paul_-_AMC_The_Grove_-_Ash.jpg/330px-Aaron_Paul_-_AMC_The_Grove_-_Ash.jpg",
+    },
+    "25897712": {  # 风骚律师
+        "文斯·吉里根": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Vince_Gilligan_at_53rd_Saturn_Awards_2026-03.jpg/330px-Vince_Gilligan_at_53rd_Saturn_Awards_2026-03.jpg",
+        "鲍勃·奥登科克": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/84/Bob_Odenkirk_at_53rd_Saturn_Awards_2026-02.jpg/330px-Bob_Odenkirk_at_53rd_Saturn_Awards_2026-02.jpg",
+    },
+    "33404425": {  # 隐秘的角落
+        "辛爽": "https://p1-tt.byteimg.com/origin/tos-cn-i-qvj2lq49k0/35423efd92cc4580a817f2021d67e6ff.jpg",
+        "秦昊": "https://i.mydramalist.com/pr8qE_5_c.jpg",
+        "王景春": "https://media.gettyimages.com/id/1186966482/photo/san-sebastian-spain-chinese-actor-wang-jingchun-poses-during-a-portrait-session-at-maria.jpg?s=612x612&w=gi&k=20&c=qZvKvwZTEbUyk6IEPxqbQSc55U0dj3S-6BrZPfuOZnc=",
+        "荣梓杉": "https://media.gettyimages.com/id/1311831746/photo/shanghai-china-actor-rong-zishan-attends-2021-signs-of-the-times-awards-on-april-10-2021-in.jpg?s=612x612&w=gi&k=20&c=laMzh9nfS8ICovqcfrWshbWjA5E3avQtrMBQ72ix3Xg=",
+    },
+    "35465232": {  # 漫长的季节
+        "辛爽": "https://p1-tt.byteimg.com/origin/tos-cn-i-qvj2lq49k0/35423efd92cc4580a817f2021d67e6ff.jpg",
+        "秦昊": "https://i.mydramalist.com/pr8qE_5_c.jpg",
+    },
+    "35633650": {  # 坠落的审判
+        "茹斯汀·特里耶": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/ce/AnatomyOfFallPicCent011123_%281_of_8%29_%2853327939769%29_%28cropped%29.jpg/330px-AnatomyOfFallPicCent011123_%281_of_8%29_%2853327939769%29_%28cropped%29.jpg",
+        "桑德拉·惠勒": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c3/Sandra_H%C3%BCller_at_Berlinale_2026-6.jpg/330px-Sandra_H%C3%BCller_at_Berlinale_2026-6.jpg",
+    },
+    "35366293": {  # 孤独摇滚！
+        "斋藤圭一郎": "https://media.themoviedb.org/t/p/w500/zlRQwhbblqGQudJV4CDycOVJSDH.jpg",
+        "青山吉能": "https://cdn.umamusu.wiki/Yoshino_Aoyama_Portrait.jpg",
+    },
+}
+
+
+def apply_curated_posters(items: list[MediaItem]) -> list[MediaItem]:
+    for item in items:
+        subject_id = str(item.douban_id or "").strip()
+        if subject_id and not item.cover:
+            item.cover = POSTER_URLS_BY_DOUBAN_ID.get(subject_id, "")
+    return items
+
+
+def apply_curated_people_photos(items: list[MediaItem]) -> list[MediaItem]:
+    for item in items:
+        subject_id = str(item.douban_id or "").strip()
+        photo_map = PEOPLE_PHOTOS_BY_DOUBAN_ID.get(subject_id, {})
+        if not photo_map:
+            continue
+        if not isinstance(item.raw, dict):
+            item.raw = {}
+        existing = item.raw.get("people_photos")
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        for name, url in photo_map.items():
+            if name and url and not merged.get(name):
+                merged[name] = url
+        if merged:
+            item.raw["people_photos"] = merged
+    return items
+
+
 def _item(
     title: str,
     media_type: str,
@@ -28,8 +136,10 @@ def _item(
         tags=tags,
         url=f"https://movie.douban.com/subject/{douban_id}/",
         douban_id=douban_id,
+        cover=POSTER_URLS_BY_DOUBAN_ID.get(douban_id, ""),
         summary=summary,
         source="curated_seed",
+        raw={"people_photos": dict(PEOPLE_PHOTOS_BY_DOUBAN_ID[douban_id])} if douban_id in PEOPLE_PHOTOS_BY_DOUBAN_ID else {},
     )
 
 
@@ -86,7 +196,7 @@ def backfill_missing_media_types(
 
     counts = {media_type: len([item for item in candidates if item.media_type == media_type]) for media_type in requested}
     if all(counts.get(media_type, 0) >= minimum_per_type for media_type in requested):
-        return list(candidates)
+        return apply_curated_people_photos(apply_curated_posters(list(candidates)))
 
     seen = {item.douban_id or normalize_title(item.title) for item in candidates if item.title or item.douban_id}
     out = list(candidates)
@@ -96,4 +206,4 @@ def backfill_missing_media_types(
             out.append(item)
             seen.add(key)
             counts[item.media_type] = counts.get(item.media_type, 0) + 1
-    return out
+    return apply_curated_people_photos(apply_curated_posters(out))

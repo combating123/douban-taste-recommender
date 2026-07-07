@@ -63,7 +63,11 @@ INDEX_HTML = r"""<!doctype html>
     .image-resilience { max-width:100%; border-color:rgba(34,211,238,.28); background:rgba(34,211,238,.07); overflow-wrap:anywhere; word-break:break-word; }
     .image-resilience * { max-width:100%; overflow-wrap:anywhere; word-break:break-word; }
     .resilience-card { display:grid; gap:10px; max-width:100%; overflow:hidden; border:1px solid rgba(34,211,238,.18); border-radius:18px; padding:14px; margin-top:12px; background:rgba(2,6,23,.38); }
-    .resilience-card code { display:block; max-width:100%; padding:10px 12px; border-radius:12px; background:rgba(15,23,42,.82); color:#CFFAFE; overflow-wrap:anywhere; word-break:break-word; white-space:pre-wrap; }
+    .resilience-card .hint { white-space:pre-wrap; }
+    .resilience-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+    .proxy-command { min-width:0; max-width:100%; overflow:hidden; border-radius:14px; border:1px solid rgba(34,211,238,.20); background:rgba(15,23,42,.82); }
+    .resilience-card code { display:block; width:100%; max-width:100%; padding:10px 12px; color:#CFFAFE; overflow-x:auto; overflow-y:hidden; overflow-wrap:normal; word-break:normal; white-space:pre; font-size:12px; line-height:1.6; }
+    .copy-mini { padding:8px 10px; border-radius:999px; font-size:12px; flex:0 0 auto; }
     label { display:block; color:var(--text); font-weight:800; margin:14px 0 7px; }
     input, textarea, select { width:100%; border:1px solid var(--line); border-radius:16px; padding:13px 14px; color:var(--text); background:rgba(255,255,255,.08); font:inherit; }
     input[type="checkbox"] { width:18px; height:18px; padding:0; margin:0 8px 0 0; accent-color:var(--gold); vertical-align:middle; }
@@ -152,30 +156,42 @@ INDEX_HTML = r"""<!doctype html>
   </main>
   <aside class="drawer" id="detailDrawer"></aside>
 <script>
-const state = { step:1, items:[], ratedItems:[], counts:{}, completeness:{}, errors:[], diagnostics:[], recommendations:[], visibleRecommendations:[], sections:[], activeSection:'全部', heroIndex:0, heroBySection:{}, ratingsCsv:'', candidatesCsv:'', profile:null, lastCounts:{}, recovery:null, lastUserInput:'', lastUserId:'', lastCookieProvided:false };
+const PREF_KEY = 'CINESCOPE_PREFS_V2';
+const COOKIE_SESSION_KEY = 'CINESCOPE_SESSION_COOKIE';
+const defaultDoubanUser = 'https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m';
+const state = { step:1, items:[], ratedItems:[], counts:{}, completeness:{}, errors:[], diagnostics:[], recommendations:[], visibleRecommendations:[], sections:[], activeSection:'全部', heroIndex:0, heroBySection:{}, ratingsCsv:'', candidatesCsv:'', profile:null, lastCounts:{}, recovery:null, lastUserInput:'', lastUserId:'', lastCookieProvided:false, prefs:null };
 const $ = id => document.getElementById(id);
 function esc(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 function setStatus(text) { const el = $('status'); if (el) el.textContent = text || ''; }
+function safeJsonParse(value, fallback={}) { try { return value ? JSON.parse(value) : fallback; } catch (_) { return fallback; } }
+function loadUserPrefs() { const prefs = safeJsonParse(localStorage.getItem(PREF_KEY), {}); state.prefs = { userInput: prefs.userInput || defaultDoubanUser, expectedCollect: prefs.expectedCollect ?? 242, expectedWish: prefs.expectedWish ?? 34, maxPages: prefs.maxPages ?? 80, includeWish: prefs.includeWish ?? true, rememberCookieSession: prefs.rememberCookieSession ?? false }; return state.prefs; }
+function saveUserPrefs() { const prefs = { userInput:$('doubanUser')?.value.trim() || defaultDoubanUser, expectedCollect:Number($('expectedCollect')?.value || 242), expectedWish:Number($('expectedWish')?.value || 34), maxPages:Number($('maxPages')?.value || 80), includeWish:Boolean($('includeWish')?.checked), rememberCookieSession:Boolean($('rememberCookieSession')?.checked) }; localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); state.prefs = prefs; return prefs; }
+function hydrateCrawlerControls() { const prefs = loadUserPrefs(); if ($('doubanUser')) $('doubanUser').value = prefs.userInput || defaultDoubanUser; if ($('expectedCollect')) $('expectedCollect').value = prefs.expectedCollect ?? 242; if ($('expectedWish')) $('expectedWish').value = prefs.expectedWish ?? 34; if ($('maxPages')) $('maxPages').value = prefs.maxPages ?? 80; if ($('includeWish')) $('includeWish').checked = prefs.includeWish !== false; if ($('rememberCookieSession')) $('rememberCookieSession').checked = Boolean(prefs.rememberCookieSession); const rememberedCookie = sessionStorage.getItem(COOKIE_SESSION_KEY) || ''; if (rememberedCookie && prefs.rememberCookieSession && $('doubanCookie')) { $('doubanCookie').value = rememberedCookie; state.lastCookieProvided = true; } previewDoubanInput(); }
+function persistCrawlerControls() { const prefs = saveUserPrefs(); const cookieValue = $('doubanCookie')?.value.trim() || ''; if (prefs.rememberCookieSession && cookieValue) sessionStorage.setItem(COOKIE_SESSION_KEY, cookieValue); if (!prefs.rememberCookieSession) sessionStorage.removeItem(COOKIE_SESSION_KEY); return prefs; }
+function clearSessionCookie() { sessionStorage.removeItem(COOKIE_SESSION_KEY); if ($('doubanCookie')) $('doubanCookie').value = ''; state.lastCookieProvided = false; previewDoubanInput(); setStatus('已清除本次浏览器会话 Cookie。'); }
+function copyProxyCommand() { const text = '$env:DOUBAN_RECOMMENDER_HTTP_PROXY="http://127.0.0.1:7890"'; navigator.clipboard?.writeText(text); setStatus('代理命令已复制。'); }
 function extractDoubanUserId(value) { const text = String(value || '').trim(); const match = text.match(/douban\.com\/people\/([^/?#]+)/i); if (match) return decodeURIComponent(match[1]); return text && !/[/?#]/.test(text) ? text.replace(/^@/,'') : ''; }
-function renderUserInputInsight() { const input = state.lastUserInput || ''; const userId = state.lastUserId || extractDoubanUserId(input); if (!input) return `<div class="user-input-card anti-overflow"><b>链接识别等待中</b>粘贴豆瓣主页链接或用户 ID；如果豆瓣拦截，会进入 Cookie 解锁流程，避免把登录态问题误判成普通抓取失败。</div>`; const linkLine = userId ? `链接识别成功：已识别豆瓣用户 ${esc(userId)}` : '链接识别失败：请检查豆瓣主页链接是否包含 /people/用户ID/'; const cookieLine = state.lastCookieProvided ? '本次已临时携带 Cookie 请求；Cookie 不保存到磁盘，输入框已自动清空。' : '复制的是主页链接，不是授权凭证；主页链接只能识别用户 ID，不能替代 Request Headers 里的 Cookie。遇到 403 不是同步失败，而是豆瓣要求登录态。'; return `<div class="user-input-card anti-overflow"><b>${linkLine}</b><span>${cookieLine}</span></div>`; }
+function renderUserInputInsight() { const input = state.lastUserInput || ''; const userId = state.lastUserId || extractDoubanUserId(input); if (!input) return `<div class="user-input-card anti-overflow"><b>链接识别等待中</b>粘贴豆瓣主页链接或用户 ID；如果豆瓣拦截，会进入 Cookie 解锁流程，避免把登录态问题误判成普通抓取失败。</div>`; const linkLine = userId ? `链接识别成功：已识别豆瓣用户 ${esc(userId)}` : '链接识别失败：请检查豆瓣主页链接是否包含 /people/用户ID/'; const rememberCookie = Boolean($('rememberCookieSession')?.checked); const hasCookieInBox = Boolean($('doubanCookie')?.value.trim()); const cookieLine = state.lastCookieProvided ? (rememberCookie && hasCookieInBox ? '本次浏览器会话已自动填入 Cookie；Cookie 只保存在 sessionStorage，不写入磁盘、日志、缓存或报告。' : '本次已临时携带 Cookie 请求；未勾选会话记忆时同步后输入框会清空。') : '复制的是主页链接，不是授权凭证；主页链接只能识别用户 ID，不能替代 Request Headers 里的 Cookie。遇到 403 不是同步失败，而是豆瓣要求登录态。'; return `<div class="user-input-card anti-overflow"><b>${linkLine}</b><span>${cookieLine}</span></div>`; }
 function previewDoubanInput() { const box = $('doubanUser'); if (!box) return; state.lastUserInput = box.value.trim(); state.lastUserId = extractDoubanUserId(state.lastUserInput); const insight = $('inputInsight'); if (insight) insight.innerHTML = renderUserInputInsight(); }
 function renderStepNav() { const steps = [['第一步：连接豆瓣','同步看过 / 想看，校验 242 / 34 完整度'],['第二步：确认口味','评分高、剧情好，电视剧古装避雷'],['第三步：查看推荐','电影 / 电视剧 / 动漫海报墙']]; $('stepNav').innerHTML = steps.map((s,i) => `<div class="step-card"><b>${s[0]}</b>${s[1]}</div>`).join(''); }
 function renderCookieGuide() { return `<details><summary>Cookie 教程</summary><ol class="mini-list"><li>打开浏览器并登录豆瓣。</li><li>进入 https://movie.douban.com/。</li><li>按 F12 打开开发者工具，进入 Network / 网络。</li><li>刷新页面，点任意 movie.douban.com 或 www.douban.com 请求。</li><li>在 Headers / 标头里找到 Request Headers。</li><li>复制 Cookie: 后面的整段内容，粘贴到这里。</li></ol><p class="hint">Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，也不会出现在推荐报告里。</p></details>`; }
-function imageResilienceGuide() { return `<details class="image-resilience" open><summary>图片韧性与 Clash / V2Ray 教程</summary><div class="resilience-card" id="imageResilienceGuide"><b>海报加载不出来时优先这样做</b><span class="hint">本项目会先走本地 /api/image-proxy，再失败才切换 SVG 标题海报。若你的网络需要代理，只配置本机 HTTP 代理端口，不要粘贴订阅地址。</span><code>PowerShell: $env:DOUBAN_RECOMMENDER_HTTP_PROXY="http://127.0.0.1:7890"</code><span class="hint">Clash 常见 Mixed Port 是 7890；V2Ray / v2rayN 可开启 HTTP 代理端口后填同样格式。不要粘贴订阅地址，订阅 URL 不会被项目保存，也不应该写进代码。</span></div></details>`; }
+function imageResilienceGuide() { return `<details class="image-resilience" open><summary>图片韧性与 Clash / V2Ray 教程</summary><div class="resilience-card" id="imageResilienceGuide"><div class="resilience-toolbar"><b>海报加载不出来时优先这样做</b><button class="ghost copy-mini" onclick="copyProxyCommand()">复制代理命令</button></div><span class="hint">本项目会先走本地 /api/image-proxy，再失败才切换 SVG 标题海报。若网络需要代理，只填本机 HTTP 代理端口，不要粘贴订阅地址。</span><div class="proxy-command"><code>PowerShell: $env:DOUBAN_RECOMMENDER_HTTP_PROXY="http://127.0.0.1:7890"</code></div><span class="hint">Clash 常见 Mixed Port 是 7890；V2Ray / v2rayN 开启 HTTP 代理端口后填同样格式。长命令会在框内横向滚动，不再撑破侧栏。</span></div></details>`; }
 function renderCrawlerPanel() {
   $('controlPanel').innerHTML = `<h2>第一步：连接豆瓣</h2>
   <div class="control-hero"><span class="badge">Cookie 解锁 · 本地隐私</span><b>把抓取失败变成可恢复流程</b><p class="hint">匿名访问遇到 403 时，页面会直接告诉你：豆瓣要求登录态、需要 Cookie，或可以跳过同步继续用高质量片库生成推荐。</p></div>
   <div class="story-panel"><b>全站同步、口味、推荐和详情统一重做</b><p class="hint">这里不再是冷冰冰的日志区，而是“同步作战室”：目标完整度、失败原因、恢复路线和下一步动作会一起显示。</p></div>
-  <label>豆瓣用户 ID 或主页链接</label><textarea id="doubanUser" class="url-textarea" rows="2" oninput="previewDoubanInput()" placeholder="https://www.douban.com/people/你的ID/"></textarea><div id="inputInsight" class="inputInsight"></div>
-  <label>Cookie（可选）</label><textarea id="doubanCookie" placeholder="如果出现 403 / 登录跳转，把浏览器请求里的 Cookie 粘贴到这里；同步后输入框会自动清空"></textarea>
-  <div class="row"><div><label>期望看过</label><input id="expectedCollect" type="number" value="242"></div><div><label>期望想看</label><input id="expectedWish" type="number" value="34"></div></div>
-  <label>最多抓取页数</label><input id="maxPages" type="number" min="1" max="200" value="60">
-  <label><input id="includeWish" type="checkbox" checked> 同步想看</label>
+  <label>豆瓣用户 ID 或主页链接</label><textarea id="doubanUser" class="url-textarea" rows="2" oninput="persistCrawlerControls(); previewDoubanInput()" placeholder="https://www.douban.com/people/你的ID/"></textarea><div id="inputInsight" class="inputInsight"></div>
+  <label>Cookie（可选）</label><textarea id="doubanCookie" oninput="persistCrawlerControls()" placeholder="如果出现 403 / 登录跳转，把浏览器请求里的 Cookie 粘贴到这里；勾选下方开关后，本次浏览器会话会自动填回"></textarea>
+  <label><input id="rememberCookieSession" type="checkbox" onchange="persistCrawlerControls()"> 本次浏览器会话自动填 Cookie</label>
+  <button class="ghost" onclick="clearSessionCookie()">清除会话 Cookie</button>
+  <div class="row"><div><label>期望看过</label><input id="expectedCollect" type="number" oninput="persistCrawlerControls()"></div><div><label>期望想看</label><input id="expectedWish" type="number" oninput="persistCrawlerControls()"></div></div>
+  <label>最多抓取页数</label><input id="maxPages" type="number" min="1" max="200" oninput="persistCrawlerControls()">
+  <label><input id="includeWish" type="checkbox" onchange="persistCrawlerControls()"> 同步想看</label>
   ${renderCookieGuide()}${imageResilienceGuide()}
   <details><summary>没有抓取数据？粘贴 CSV 继续</summary><label>评分 CSV</label><textarea id="ratingsCsv" placeholder="title,my_rating,media_type,genres,tags">${esc(state.ratingsCsv)}</textarea><label>候选 CSV</label><textarea id="candidatesCsv" placeholder="title,media_type,douban_rating,genres,tags">${esc(state.candidatesCsv)}</textarea><button class="ghost" onclick="useCsvInputs()">使用 CSV 继续</button></details>
   <div class="quick-actions"><button onclick="syncDouban()">同步豆瓣</button><button class="ghost" onclick="continueWithoutSync()">继续用高质量片库生成推荐</button><button class="ghost" onclick="clearCache()">清空缓存</button></div><div id="status" class="hint"></div>`;
+  hydrateCrawlerControls();
   renderCrawlSummary();
-  previewDoubanInput();
 }
 function renderSyncRecovery(recovery) {
   if (!recovery || !recovery.status || recovery.status === 'idle') return '';
@@ -243,13 +259,16 @@ function renderNetworkFailureRecovery(message) { return `<section class="blocked
 async function syncDouban() {
   setStatus('正在同步豆瓣：先识别主页链接，再请求看过 / 想看。');
   const cookieBox = $('doubanCookie');
+  const prefs = persistCrawlerControls();
+  const cookieValue = cookieBox.value.trim();
   state.lastUserInput = $('doubanUser').value.trim();
   state.lastUserId = extractDoubanUserId(state.lastUserInput);
-  state.lastCookieProvided = Boolean(cookieBox.value.trim());
+  state.lastCookieProvided = Boolean(cookieValue);
   previewDoubanInput();
   renderCrawlSummary();
-  const payload = { user_id_or_url:state.lastUserInput, cookie:cookieBox.value, max_pages:Number($('maxPages').value || 40), include_wish:$('includeWish').checked, expected_collect:Number($('expectedCollect').value || 0), expected_wish:Number($('expectedWish').value || 0) };
-  cookieBox.value = '';
+  const payload = { user_id_or_url:state.lastUserInput, cookie:cookieValue, max_pages:Number($('maxPages').value || 40), include_wish:$('includeWish').checked, expected_collect:Number($('expectedCollect').value || 0), expected_wish:Number($('expectedWish').value || 0) };
+  if (prefs.rememberCookieSession && cookieValue) sessionStorage.setItem(COOKIE_SESSION_KEY, cookieValue);
+  cookieBox.value = prefs.rememberCookieSession ? cookieValue : '';
   let res, data = {};
   try {
     res = await fetch('/api/sync-douban', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });

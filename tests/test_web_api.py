@@ -333,6 +333,24 @@ class WebApiTests(unittest.TestCase):
         self.assertFalse({"千与千寻", "机器人总动员", "疯狂动物城", "寻梦环游记", "头脑特工队"} & set(anime_titles))
         self.assertGreater(response["counts"]["curated_candidates"], 0)
 
+    def test_recommend_api_backfills_real_poster_urls_for_default_pool(self):
+        response = self.post_json("/api/recommend", {
+            "ratings_csv": "",
+            "candidates_csv": "",
+            "fetch_douban": False,
+            "use_sample_candidates": True,
+            "include_movies": True,
+            "include_series": True,
+            "include_anime": True,
+            "enrich_details": False,
+            "limit": 30,
+        })
+
+        poster_urls = [item.get("cover") for item in response["results"] if item.get("cover")]
+
+        self.assertGreaterEqual(len(poster_urls), 18)
+        self.assertTrue(all("doubanio.com/view/photo" in url for url in poster_urls))
+
     def test_image_proxy_streams_remote_image_without_cookie(self):
         original = getattr(web_module, "fetch_proxy_image", None)
         requested = []

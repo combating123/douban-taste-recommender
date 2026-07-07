@@ -1,6 +1,11 @@
 import unittest
 
-from douban_recommender.curated_catalog import backfill_missing_media_types, curated_seed_candidates
+from douban_recommender.curated_catalog import (
+    apply_curated_people_photos,
+    apply_curated_posters,
+    backfill_missing_media_types,
+    curated_seed_candidates,
+)
 from douban_recommender.models import MediaItem
 
 
@@ -15,6 +20,69 @@ class CuratedCatalogTests(unittest.TestCase):
         self.assertGreaterEqual(len([item for item in items if item.media_type == "动漫"]), 10)
         self.assertTrue(all(item.douban_id for item in items))
         self.assertTrue(all(item.summary for item in items))
+        self.assertTrue(all(item.cover.startswith("https://img") for item in items))
+
+    def test_curated_poster_map_fills_known_sample_candidates(self):
+        items = [
+            MediaItem(title="控方证人", douban_id="1296141", media_type="电影"),
+            MediaItem(title="漫长的季节", douban_id="35465232", media_type="电视剧"),
+            MediaItem(title="孤独摇滚！", douban_id="35366293", media_type="动漫"),
+        ]
+
+        apply_curated_posters(items)
+
+        self.assertTrue(all(item.cover for item in items))
+        self.assertTrue(all("doubanio.com/view/photo" in item.cover for item in items))
+
+    def test_curated_people_photo_map_fills_known_creators_and_cast(self):
+        items = [
+            MediaItem(
+                title="寄生虫",
+                douban_id="27010768",
+                media_type="电影",
+                directors=["奉俊昊"],
+                casts=["宋康昊", "李善均"],
+            ),
+            MediaItem(
+                title="漫长的季节",
+                douban_id="35465232",
+                media_type="电视剧",
+                directors=["辛爽"],
+                casts=["范伟", "秦昊"],
+            ),
+            MediaItem(
+                title="隐秘的角落",
+                douban_id="33404425",
+                media_type="电视剧",
+                directors=["辛爽"],
+                casts=["秦昊", "王景春", "荣梓杉"],
+            ),
+            MediaItem(
+                title="控方证人",
+                douban_id="1296141",
+                media_type="电影",
+                directors=["比利·怀尔德"],
+                casts=["泰隆·鲍华", "玛琳·黛德丽"],
+            ),
+            MediaItem(
+                title="孤独摇滚！",
+                douban_id="35366293",
+                media_type="动漫",
+                directors=["斋藤圭一郎"],
+                casts=["青山吉能"],
+            ),
+        ]
+
+        apply_curated_people_photos(items)
+
+        for item in items:
+            photos = item.raw.get("people_photos", {})
+            self.assertGreaterEqual(len(photos), 2)
+            self.assertTrue(all(url.startswith("https://") for url in photos.values()))
+
+        hidden_corner = items[2].raw.get("people_photos", {})
+        for name in ["辛爽", "秦昊", "王景春", "荣梓杉"]:
+            self.assertIn(name, hidden_corner)
 
     def test_curated_anime_pool_is_series_not_animated_movies(self):
         items = [item for item in curated_seed_candidates() if item.media_type == "动漫"]
