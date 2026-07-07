@@ -28,6 +28,12 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("Cookie 只用于本机请求豆瓣页面", text)
         self.assertIn("不会保存到磁盘", text)
 
+    def test_readme_explains_profile_url_is_not_cookie(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("主页链接不是 Cookie", text)
+        self.assertIn("https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m", text)
+        self.assertIn("链接识别成功但仍需要 Cookie", text)
+
     def test_readme_matches_web_csv_paste_workflow(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("粘贴评分 CSV", text)

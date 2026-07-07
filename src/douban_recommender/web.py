@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import urllib.request
 
 from .candidate_planner import build_candidate_plan
-from .crawler import crawl_user_collections, redact_cookie_from_message
+from .crawler import crawl_user_collections, normalize_douban_user_id, redact_cookie_from_message
 from .curated_catalog import backfill_missing_media_types
 from .douban_sources import enrich_media_items, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .douban_sources import build_url_opener
@@ -59,6 +59,25 @@ def diagnostic_to_dict(diag) -> dict:
     if hasattr(diag, "__dict__"):
         return dict(diag.__dict__)
     return {"message": str(diag)}
+
+
+def analyze_sync_input(user_id_or_url: str, cookie: str = "") -> dict[str, object]:
+    text = str(user_id_or_url or "").strip()
+    lower = text.lower()
+    is_profile_url = "douban.com/people/" in lower
+    analysis: dict[str, object] = {
+        "user_id": "",
+        "profile_url": is_profile_url,
+        "cookie_provided": bool(str(cookie or "").strip()),
+        "profile_url_is_not_cookie": is_profile_url and not bool(str(cookie or "").strip()),
+        "can_parse": False,
+    }
+    try:
+        analysis["user_id"] = normalize_douban_user_id(text)
+        analysis["can_parse"] = True
+    except Exception as exc:
+        analysis["error"] = str(exc)
+    return analysis
 
 
 def build_sync_recovery(result, collect_count: int, wish_count: int) -> dict[str, object]:
@@ -191,9 +210,12 @@ class Handler(BaseHTTPRequestHandler):
         return {"removed": CACHE.clear()}
 
     def handle_sync_douban(self, payload: dict) -> dict:
+        user_id_or_url = payload.get("user_id_or_url") or ""
+        cookie = payload.get("cookie") or ""
+        input_analysis = analyze_sync_input(user_id_or_url, cookie)
         result = call_crawl_user_collections(
-            user_id_or_url=payload.get("user_id_or_url") or "",
-            cookie=payload.get("cookie") or "",
+            user_id_or_url=user_id_or_url,
+            cookie=cookie,
             max_pages=max(1, min(200, int(payload.get("max_pages") or 40))),
             include_wish=bool(payload.get("include_wish", True)),
             include_do=bool(payload.get("include_do", False)),
@@ -221,6 +243,7 @@ class Handler(BaseHTTPRequestHandler):
             "completeness": getattr(result, "completeness", {}),
             "errors": result.errors,
             "stopped_reason": result.stopped_reason,
+            "input_analysis": input_analysis,
             "recovery": build_sync_recovery(result, collect_count, wish_count),
         }
 

@@ -9,6 +9,10 @@ INDEX_HTML = r"""<!doctype html>
   <style>
     :root { --bg:#070A12; --panel:rgba(16,22,36,.80); --panel2:rgba(255,255,255,.08); --text:#F8FAFC; --muted:#A7B0C0; --line:rgba(255,255,255,.13); --gold:#F5C451; --green:#4ADE80; --red:#FB7185; --blue:#60A5FA; --violet:#A78BFA; --cyan:#22D3EE; }
     * { box-sizing:border-box; }
+    html, body { max-width:100%; overflow-x:hidden; }
+    p, li, summary, label, h1, h2, h3, h4, a, span { min-width:0; max-width:100%; overflow-wrap:anywhere; word-break:break-word; }
+    .anti-overflow, .anti-overflow *, .workspace, .glass-panel, .sync-command-center, .sync-command-center *, .timeline-row, .diagnosis-card, .metric, .story-panel, .blocked-brief, .recovery-action, .playbook-card, .drawer, .drawer *, .poster-body, .poster-body *, .hero-meta, .hero-slide, .rail-title, .tab, .badge, .mini-list, .empty-state, .resilience-card, button, input, textarea, code { min-width:0; max-width:100%; overflow-wrap:anywhere; word-break:break-word; }
+    .row > *, .metric-grid > *, .sync-health > *, .recovery-actions > *, .sync-playbook > *, .hero-showcase > *, .hero-track > *, .rail-head > *, .poster-card, .poster-body, .drawer, .drawer * { min-width:0; max-width:100%; }
     body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; color:var(--text); background:radial-gradient(circle at 12% 0%,#27345C 0,transparent 32%),radial-gradient(circle at 86% 10%,#4C1D95 0,transparent 30%),var(--bg); }
     .app-shell { max-width:1440px; margin:0 auto; padding:28px; }
     .cinematic-hero { min-height:260px; border:1px solid var(--line); border-radius:34px; padding:34px; background:linear-gradient(135deg,rgba(245,196,81,.20),rgba(96,165,250,.12)),rgba(255,255,255,.06); box-shadow:0 30px 100px rgba(0,0,0,.35); position:relative; overflow:hidden; }
@@ -27,6 +31,7 @@ INDEX_HTML = r"""<!doctype html>
     .cinema-nav { display:flex; gap:10px; flex-wrap:wrap; margin-top:20px; }
     .cinema-nav span { padding:9px 12px; border:1px solid var(--line); border-radius:999px; background:rgba(255,255,255,.07); color:var(--muted); font-weight:800; }
     .quick-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+    .quick-actions button { flex:1 1 180px; }
     .story-panel { border:1px solid var(--line); border-radius:24px; padding:18px; background:linear-gradient(135deg,rgba(255,255,255,.09),rgba(255,255,255,.035)); margin:14px 0; }
 
     .control-hero { display:grid; gap:10px; padding:18px; border:1px solid rgba(245,196,81,.22); border-radius:24px; background:radial-gradient(circle at 10% 0%,rgba(245,196,81,.20),transparent 46%),rgba(255,255,255,.06); }
@@ -37,15 +42,18 @@ INDEX_HTML = r"""<!doctype html>
     .health-orb b { display:block; font-size:58px; line-height:1; color:var(--gold); }
     .blocked-brief { border:1px solid rgba(251,113,133,.34); border-radius:24px; padding:18px; background:linear-gradient(135deg,rgba(251,113,133,.16),rgba(245,196,81,.08)); }
     .blocked-brief h3 { margin:4px 0 8px; font-size:26px; }
-    .recovery-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; margin-top:12px; }
+    .recovery-actions { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); gap:10px; margin-top:12px; }
     .recovery-action { padding:12px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,.07); color:var(--text); line-height:1.55; }
-    .diagnosis-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+    .diagnosis-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); gap:12px; }
     .diagnosis-card { padding:14px; border:1px solid var(--line); border-radius:18px; background:rgba(255,255,255,.06); }
     .diagnosis-card b { display:block; color:var(--gold); margin-bottom:6px; }
     .sync-copy { max-width:780px; color:var(--muted); line-height:1.8; }
-    .sync-playbook { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; margin-top:14px; }
+    .sync-playbook { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); gap:12px; margin-top:14px; }
     .playbook-card { border:1px solid rgba(245,196,81,.20); border-radius:20px; padding:14px; background:linear-gradient(145deg,rgba(245,196,81,.10),rgba(96,165,250,.06)); }
     .playbook-card b { display:block; color:var(--text); margin-bottom:6px; }
+    .user-input-card { border:1px solid rgba(96,165,250,.22); border-radius:22px; padding:16px; background:linear-gradient(145deg,rgba(96,165,250,.10),rgba(245,196,81,.06)); color:var(--muted); line-height:1.75; }
+    .user-input-card b { display:block; color:var(--text); margin-bottom:6px; }
+    .inputInsight { margin:10px 0 4px; }
     .recovery-action b { display:block; color:var(--gold); margin-bottom:6px; }
     .progress-meter { height:8px; border-radius:999px; overflow:hidden; background:rgba(255,255,255,.10); margin-top:9px; }
     .progress-meter span { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,var(--gold),var(--cyan)); }
@@ -60,8 +68,9 @@ INDEX_HTML = r"""<!doctype html>
     input, textarea, select { width:100%; border:1px solid var(--line); border-radius:16px; padding:13px 14px; color:var(--text); background:rgba(255,255,255,.08); font:inherit; }
     input[type="checkbox"] { width:18px; height:18px; padding:0; margin:0 8px 0 0; accent-color:var(--gold); vertical-align:middle; }
     textarea { min-height:96px; resize:vertical; }
+    .url-textarea { min-height:54px; resize:vertical; }
     .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    button { border:0; border-radius:16px; padding:12px 16px; font-weight:900; color:#101828; background:var(--gold); cursor:pointer; margin:4px 4px 4px 0; }
+    button { border:0; border-radius:16px; padding:12px 16px; font-weight:900; color:#101828; background:var(--gold); cursor:pointer; margin:4px 4px 4px 0; white-space:normal; }
     button.ghost { color:var(--text); background:rgba(255,255,255,.10); border:1px solid var(--line); }
     details { border:1px solid var(--line); border-radius:18px; padding:12px; background:rgba(255,255,255,.06); margin-top:12px; }
     summary { cursor:pointer; font-weight:900; }
@@ -94,13 +103,13 @@ INDEX_HTML = r"""<!doctype html>
     .rail-strip { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(190px,220px); gap:18px; overflow-x:auto; padding:4px 4px 18px; scroll-snap-type:x proximity; }
     .rail-strip::-webkit-scrollbar { height:10px; }
     .rail-strip::-webkit-scrollbar-thumb { background:rgba(245,196,81,.32); border-radius:999px; }
-    .poster-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:18px; }
+    .poster-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,170px),1fr)); gap:18px; }
     .poster-card { min-height:372px; border:1px solid var(--line); border-radius:24px; overflow:hidden; background:#111827; position:relative; box-shadow:0 20px 50px rgba(0,0,0,.28); transition:.18s ease; }
     .poster-card:hover { transform:translateY(-4px); border-color:rgba(245,196,81,.45); }
     .poster { height:242px; background:linear-gradient(145deg,#1f2937,#334155); display:flex; align-items:center; justify-content:center; text-align:center; padding:0; font-weight:900; }
     .poster img { width:100%; height:100%; object-fit:cover; display:block; }
     .poster-body { padding:14px; }
-    .poster-body h3 { margin:10px 0 8px; }
+    .poster-body h3 { margin:10px 0 8px; line-height:1.24; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .badge { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:4px 8px; color:var(--muted); font-size:12px; margin:2px; }
     .micro-copy { color:var(--muted); font-size:13px; line-height:1.55; margin-top:8px; }
     .people-grid { display:grid; grid-template-columns:1fr; gap:12px; margin:14px 0; }
@@ -143,10 +152,13 @@ INDEX_HTML = r"""<!doctype html>
   </main>
   <aside class="drawer" id="detailDrawer"></aside>
 <script>
-const state = { step:1, items:[], ratedItems:[], counts:{}, completeness:{}, errors:[], diagnostics:[], recommendations:[], visibleRecommendations:[], sections:[], activeSection:'全部', heroIndex:0, heroBySection:{}, ratingsCsv:'', candidatesCsv:'', profile:null, lastCounts:{}, recovery:null };
+const state = { step:1, items:[], ratedItems:[], counts:{}, completeness:{}, errors:[], diagnostics:[], recommendations:[], visibleRecommendations:[], sections:[], activeSection:'全部', heroIndex:0, heroBySection:{}, ratingsCsv:'', candidatesCsv:'', profile:null, lastCounts:{}, recovery:null, lastUserInput:'', lastUserId:'', lastCookieProvided:false };
 const $ = id => document.getElementById(id);
 function esc(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 function setStatus(text) { const el = $('status'); if (el) el.textContent = text || ''; }
+function extractDoubanUserId(value) { const text = String(value || '').trim(); const match = text.match(/douban\.com\/people\/([^/?#]+)/i); if (match) return decodeURIComponent(match[1]); return text && !/[/?#]/.test(text) ? text.replace(/^@/,'') : ''; }
+function renderUserInputInsight() { const input = state.lastUserInput || ''; const userId = state.lastUserId || extractDoubanUserId(input); if (!input) return `<div class="user-input-card anti-overflow"><b>链接识别等待中</b>粘贴豆瓣主页链接或用户 ID；如果豆瓣拦截，会进入 Cookie 解锁流程，避免把登录态问题误判成普通抓取失败。</div>`; const linkLine = userId ? `链接识别成功：已识别豆瓣用户 ${esc(userId)}` : '链接识别失败：请检查豆瓣主页链接是否包含 /people/用户ID/'; const cookieLine = state.lastCookieProvided ? '本次已临时携带 Cookie 请求；Cookie 不保存到磁盘，输入框已自动清空。' : '复制的是主页链接，不是授权凭证；主页链接只能识别用户 ID，不能替代 Request Headers 里的 Cookie。遇到 403 不是同步失败，而是豆瓣要求登录态。'; return `<div class="user-input-card anti-overflow"><b>${linkLine}</b><span>${cookieLine}</span></div>`; }
+function previewDoubanInput() { const box = $('doubanUser'); if (!box) return; state.lastUserInput = box.value.trim(); state.lastUserId = extractDoubanUserId(state.lastUserInput); const insight = $('inputInsight'); if (insight) insight.innerHTML = renderUserInputInsight(); }
 function renderStepNav() { const steps = [['第一步：连接豆瓣','同步看过 / 想看，校验 242 / 34 完整度'],['第二步：确认口味','评分高、剧情好，电视剧古装避雷'],['第三步：查看推荐','电影 / 电视剧 / 动漫海报墙']]; $('stepNav').innerHTML = steps.map((s,i) => `<div class="step-card"><b>${s[0]}</b>${s[1]}</div>`).join(''); }
 function renderCookieGuide() { return `<details><summary>Cookie 教程</summary><ol class="mini-list"><li>打开浏览器并登录豆瓣。</li><li>进入 https://movie.douban.com/。</li><li>按 F12 打开开发者工具，进入 Network / 网络。</li><li>刷新页面，点任意 movie.douban.com 或 www.douban.com 请求。</li><li>在 Headers / 标头里找到 Request Headers。</li><li>复制 Cookie: 后面的整段内容，粘贴到这里。</li></ol><p class="hint">Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，也不会出现在推荐报告里。</p></details>`; }
 function imageResilienceGuide() { return `<details class="image-resilience" open><summary>图片韧性与 Clash / V2Ray 教程</summary><div class="resilience-card" id="imageResilienceGuide"><b>海报加载不出来时优先这样做</b><span class="hint">本项目会先走本地 /api/image-proxy，再失败才切换 SVG 标题海报。若你的网络需要代理，只配置本机 HTTP 代理端口，不要粘贴订阅地址。</span><code>PowerShell: $env:DOUBAN_RECOMMENDER_HTTP_PROXY="http://127.0.0.1:7890"</code><span class="hint">Clash 常见 Mixed Port 是 7890；V2Ray / v2rayN 可开启 HTTP 代理端口后填同样格式。不要粘贴订阅地址，订阅 URL 不会被项目保存，也不应该写进代码。</span></div></details>`; }
@@ -154,7 +166,7 @@ function renderCrawlerPanel() {
   $('controlPanel').innerHTML = `<h2>第一步：连接豆瓣</h2>
   <div class="control-hero"><span class="badge">Cookie 解锁 · 本地隐私</span><b>把抓取失败变成可恢复流程</b><p class="hint">匿名访问遇到 403 时，页面会直接告诉你：豆瓣要求登录态、需要 Cookie，或可以跳过同步继续用高质量片库生成推荐。</p></div>
   <div class="story-panel"><b>全站同步、口味、推荐和详情统一重做</b><p class="hint">这里不再是冷冰冰的日志区，而是“同步作战室”：目标完整度、失败原因、恢复路线和下一步动作会一起显示。</p></div>
-  <label>豆瓣用户 ID 或主页链接</label><input id="doubanUser" placeholder="https://www.douban.com/people/你的ID/">
+  <label>豆瓣用户 ID 或主页链接</label><textarea id="doubanUser" class="url-textarea" rows="2" oninput="previewDoubanInput()" placeholder="https://www.douban.com/people/你的ID/"></textarea><div id="inputInsight" class="inputInsight"></div>
   <label>Cookie（可选）</label><textarea id="doubanCookie" placeholder="如果出现 403 / 登录跳转，把浏览器请求里的 Cookie 粘贴到这里；同步后输入框会自动清空"></textarea>
   <div class="row"><div><label>期望看过</label><input id="expectedCollect" type="number" value="242"></div><div><label>期望想看</label><input id="expectedWish" type="number" value="34"></div></div>
   <label>最多抓取页数</label><input id="maxPages" type="number" min="1" max="200" value="60">
@@ -163,6 +175,7 @@ function renderCrawlerPanel() {
   <details><summary>没有抓取数据？粘贴 CSV 继续</summary><label>评分 CSV</label><textarea id="ratingsCsv" placeholder="title,my_rating,media_type,genres,tags">${esc(state.ratingsCsv)}</textarea><label>候选 CSV</label><textarea id="candidatesCsv" placeholder="title,media_type,douban_rating,genres,tags">${esc(state.candidatesCsv)}</textarea><button class="ghost" onclick="useCsvInputs()">使用 CSV 继续</button></details>
   <div class="quick-actions"><button onclick="syncDouban()">同步豆瓣</button><button class="ghost" onclick="continueWithoutSync()">继续用高质量片库生成推荐</button><button class="ghost" onclick="clearCache()">清空缓存</button></div><div id="status" class="hint"></div>`;
   renderCrawlSummary();
+  previewDoubanInput();
 }
 function renderSyncRecovery(recovery) {
   if (!recovery || !recovery.status || recovery.status === 'idle') return '';
@@ -181,7 +194,7 @@ function syncCommandCenter(c, rows, errorSummary) {
   const wishPercent = Number(completeness.wish_percent ?? (wish ? 100 : 0));
   const health = recovery.status === 'needs_cookie' ? '需要 Cookie' : total ? '可用资料库' : '等待同步';
   const diagnosis = rows || '<div class="empty-state">还没有同步诊断。点击左侧同步；如果出现 403，这里会给出 Cookie 解锁、CSV 兜底和继续推荐路线。</div>';
-  return `<div class="sync-command-center"><section class="sync-health"><div class="health-orb"><div><b>${esc(total)}</b><span>${esc(health)}</span></div></div><div><span class="badge">同步作战室</span><h2>同步诊断</h2><p class="sync-copy">目标是尽量拿到你的 242 部看过和 34 部想看；拿不到时不再只丢出 HTTP Error，而是拆解为登录态、权限、安全验证、解析结构和网络五类问题。</p><div class="metric-grid"><div class="metric"><b>${esc(collect)}</b>看过数量<div class="progress-meter"><span style="width:${Math.max(0, Math.min(100, collectPercent))}%"></span></div></div><div class="metric"><b>${esc(wish)}</b>想看数量<div class="progress-meter"><span style="width:${Math.max(0, Math.min(100, wishPercent))}%"></span></div></div><div class="metric"><b>${esc(c.pages_ok ?? 0)}</b>成功页</div><div class="metric"><b>${esc(c.pages_failed ?? 0)}</b>失败页</div></div></div></section>${renderSyncRecovery(recovery)}<div class="sync-playbook"><div class="playbook-card"><b>1. Cookie 解锁</b><span class="hint">登录豆瓣后复制请求 Cookie，只用于本机抓取。</span></div><div class="playbook-card"><b>2. 本地片库继续</b><span class="hint">不用等抓取成功，也能生成电影 / 电视剧 / 动漫推荐。</span></div><div class="playbook-card"><b>3. CSV 精准导入</b><span class="hint">如果你有导出的评分表，可直接粘贴保持最高完整度。</span></div></div><p class="hint">停止原因：${esc(c.stopped_reason || recovery.headline || '-')}</p>${errorSummary}<div id="syncTimeline" class="timeline diagnosis-grid">${diagnosis}</div></div>`;
+  return `<div class="sync-command-center anti-overflow"><section class="sync-health"><div class="health-orb"><div><b>${esc(total)}</b><span>${esc(health)}</span></div></div><div><span class="badge">同步作战室</span><h2>同步诊断</h2><p class="sync-copy">目标是尽量拿到你的 242 部看过和 34 部想看；拿不到时不再只丢出 HTTP Error，而是拆解为登录态、权限、安全验证、解析结构和网络五类问题。</p><div class="metric-grid"><div class="metric"><b>${esc(collect)}</b>看过数量<div class="progress-meter"><span style="width:${Math.max(0, Math.min(100, collectPercent))}%"></span></div></div><div class="metric"><b>${esc(wish)}</b>想看数量<div class="progress-meter"><span style="width:${Math.max(0, Math.min(100, wishPercent))}%"></span></div></div><div class="metric"><b>${esc(c.pages_ok ?? 0)}</b>成功页</div><div class="metric"><b>${esc(c.pages_failed ?? 0)}</b>失败页</div></div></div></section>${renderUserInputInsight()}${renderSyncRecovery(recovery)}<div class="sync-playbook"><div class="playbook-card"><b>1. Cookie 解锁</b><span class="hint">登录豆瓣后复制请求 Cookie，只用于本机抓取。</span></div><div class="playbook-card"><b>2. 本地片库继续</b><span class="hint">不用等抓取成功，也能生成电影 / 电视剧 / 动漫推荐。</span></div><div class="playbook-card"><b>3. CSV 精准导入</b><span class="hint">如果你有导出的评分表，可直接粘贴保持最高完整度。</span></div></div><p class="hint">停止原因：${esc(c.stopped_reason || recovery.headline || '-')}</p>${errorSummary}<div id="syncTimeline" class="timeline diagnosis-grid">${diagnosis}</div></div>`;
 }
 function renderCrawlSummary() {
   const c = state.counts || {};
@@ -225,7 +238,56 @@ function renderRecommendations() { state.step = 3; renderStepNav(); const sectio
 function openDetail(index) { const r = state.visibleRecommendations[index]; if (!r) return; openDetailObject(r); }
 function openDetailByKey(encodedKey) { const key = decodeURIComponent(encodedKey || ''); const all = [...(state.recommendations || []), ...(state.visibleRecommendations || [])]; const r = all.find(x => itemKey(x) === key); if (r) openDetailObject(r); }
 function openDetailObject(r) { $('detailDrawer').classList.add('open'); $('detailDrawer').innerHTML = `<button class="ghost" onclick="$('detailDrawer').classList.remove('open')">关闭</button><div class="drawer-poster">${safePosterImg(r)}</div><h2>${esc(recTitle(r))}</h2><p class="meta-line">${metadataLine(r)} · 豆瓣 ${esc(r.douban_rating || r.item?.douban_rating || '-')}</p><h3>剧情简介</h3><p class="hint">${esc(r.summary || r.item?.summary || '暂无官方简介，可先根据推荐理由判断是否加入片单。')}</p><h3>演职员胶片带</h3>${peopleCarousel(r)}<div class="people-grid"><div><h3>导演</h3>${peopleChips(recArray(r,'directors'), '导演', r)}</div><div><h3>主演</h3>${peopleChips(recArray(r,'casts'), '主演', r)}</div></div><h3>推荐理由</h3><ul>${(r.reasons || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul><h3>风险提示</h3><ul>${(r.warnings || []).map(x => `<li class="warn">${esc(x)}</li>`).join('') || '<li class="hint">没有明显避雷信号。</li>'}</ul><p><a href="${esc(r.url || '#')}" target="_blank" rel="noreferrer">打开豆瓣</a></p>`; }
-async function syncDouban() { setStatus('正在同步豆瓣。'); const cookieBox = $('doubanCookie'); const payload = { user_id_or_url:$('doubanUser').value, cookie:cookieBox.value, max_pages:Number($('maxPages').value || 40), include_wish:$('includeWish').checked, expected_collect:Number($('expectedCollect').value || 0), expected_wish:Number($('expectedWish').value || 0) }; cookieBox.value = ''; const res = await fetch('/api/sync-douban', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await res.json(); if (!res.ok || data.error) { setStatus('同步失败：' + (data.error || '请求失败')); return; } state.items = data.items || []; state.ratedItems = state.items; state.counts = data.counts || {}; state.completeness = data.completeness || {}; state.diagnostics = data.diagnostics || []; state.errors = data.errors || []; state.recovery = data.recovery || null; renderCrawlSummary(); if (state.recovery?.status === 'needs_cookie') setStatus('豆瓣要求登录态：可粘贴 Cookie 重试，也可继续用高质量片库生成推荐。'); else setStatus(`同步完成：${state.items.length} 条资料已进入口味分析。`); }
+function applySyncData(data) { const input = data.input_analysis || data.inputAnalysis || {}; if (input.user_id) state.lastUserId = input.user_id; if (typeof input.cookie_provided === 'boolean') state.lastCookieProvided = input.cookie_provided; state.items = data.items || []; state.ratedItems = state.items; state.counts = data.counts || {}; state.completeness = data.completeness || {}; state.diagnostics = data.diagnostics || []; state.errors = data.errors || []; state.recovery = data.recovery || null; renderCrawlSummary(); }
+function renderNetworkFailureRecovery(message) { return `<section class="blocked-brief anti-overflow"><span class="badge">本地连接诊断</span><h3>请求没有完成，但这不是同步失败结论</h3><p class="sync-copy">系统已经识别你输入的豆瓣用户；如果这里出现网络、代理或服务端异常，先检查本机服务是否仍在运行。复制的是主页链接，不是授权凭证；真正遇到豆瓣 403 时会进入 Cookie 解锁流程。</p><div class="recovery-actions"><div class="recovery-action"><b>下一步</b>${esc(message || '检查本地服务状态后重试')}</div><div class="recovery-action"><b>仍可继续</b>可直接进入高质量片库模式，电影 / 电视剧 / 动漫都会继续生成推荐。</div></div><div class="quick-actions"><button onclick="continueWithoutSync()">继续用高质量片库生成推荐</button><button class="ghost" onclick="document.getElementById('doubanCookie')?.focus()">粘贴 Cookie 重试</button></div></section>`; }
+async function syncDouban() {
+  setStatus('正在同步豆瓣：先识别主页链接，再请求看过 / 想看。');
+  const cookieBox = $('doubanCookie');
+  state.lastUserInput = $('doubanUser').value.trim();
+  state.lastUserId = extractDoubanUserId(state.lastUserInput);
+  state.lastCookieProvided = Boolean(cookieBox.value.trim());
+  previewDoubanInput();
+  renderCrawlSummary();
+  const payload = { user_id_or_url:state.lastUserInput, cookie:cookieBox.value, max_pages:Number($('maxPages').value || 40), include_wish:$('includeWish').checked, expected_collect:Number($('expectedCollect').value || 0), expected_wish:Number($('expectedWish').value || 0) };
+  cookieBox.value = '';
+  let res, data = {};
+  try {
+    res = await fetch('/api/sync-douban', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const raw = await res.text();
+    try { data = raw ? JSON.parse(raw) : {}; } catch (error) { data = { error: raw || error.message || '服务器返回非 JSON' }; }
+  } catch (error) {
+    state.counts = {};
+    state.completeness = {};
+    state.diagnostics = [];
+    state.errors = [error?.message || String(error)];
+    state.recovery = { status:'network_error', headline:'本地服务或网络请求没有完成', can_continue_without_sync:true, actions:['确认本地服务窗口仍在运行后重试','继续用高质量片库生成推荐','如果豆瓣图片或页面需要代理，只配置本机 HTTP 代理端口'] };
+    renderCrawlSummary();
+    $('mainPanel').insertAdjacentHTML('afterbegin', renderNetworkFailureRecovery(error?.message || String(error)));
+    setStatus('请求没有完成：先看右侧本地连接诊断；这不是主页链接错误。');
+    return;
+  }
+  const response = data || {};
+  if (response.input_analysis?.user_id) state.lastUserId = response.input_analysis.user_id;
+  if (!res.ok || response.error) {
+    if (response.recovery?.status === 'needs_cookie') {
+      applySyncData(response);
+      setStatus('豆瓣要求登录态：链接已识别，但主页链接不是 Cookie；粘贴浏览器 Request Headers 里的 Cookie 后重试，或先继续推荐。');
+      return;
+    }
+    state.counts = response.counts || {};
+    state.completeness = response.completeness || {};
+    state.diagnostics = response.diagnostics || [];
+    state.errors = response.errors?.length ? response.errors : [response.error || '请求没有完成'];
+    state.recovery = response.recovery || { status:'request_error', headline:'同步请求没有完成', can_continue_without_sync:true, actions:['检查输入格式','粘贴 Cookie 重试','继续用高质量片库生成推荐'] };
+    renderCrawlSummary();
+    $('mainPanel').insertAdjacentHTML('afterbegin', renderNetworkFailureRecovery(response.error || '请求没有完成'));
+    setStatus('同步未完成：请看右侧诊断；系统不会把 403 登录态误判为链接错误。');
+    return;
+  }
+  applySyncData(response);
+  if (state.recovery?.status === 'needs_cookie') setStatus('豆瓣要求登录态：可粘贴 Cookie 重试；链接识别成功但主页链接不是 Cookie，也可继续用高质量片库生成推荐。');
+  else setStatus(`同步完成：${state.items.length} 条资料已进入口味分析。`);
+}
 function useCsvInputs() { state.items = []; state.ratedItems = []; state.ratingsCsv = $('ratingsCsv').value; state.candidatesCsv = $('candidatesCsv').value; renderTastePanel(); }
 async function clearCache() { await fetch('/api/cache', { method:'DELETE' }); $('mainPanel').innerHTML = '<div class="empty-state">本地缓存已清空。</div>'; }
 async function recommend() { setStatus('正在生成推荐。'); const payload = { rated_items:state.items, ratings_csv: state.items.length ? '' : state.ratingsCsv, candidates_csv: state.candidatesCsv, like_terms:$('likeTerms').value, dislike_terms:$('dislikeTerms').value, include_movies:$('includeMovies').checked, include_series:$('includeSeries').checked, include_anime:$('includeAnime').checked, fetch_douban:$('fetchDouban').checked, enrich_details:$('enrichDetails') ? $('enrichDetails').checked : true, use_sample_candidates:!state.candidatesCsv, limit:Number($('limit').value || 160) }; const res = await fetch('/api/recommend', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await res.json(); if (!res.ok || data.error) { setStatus('推荐失败：' + (data.error || '请求失败')); return; } state.recommendations = data.results || []; state.sections = data.sections || []; state.profile = data.profile || null; state.lastCounts = data.counts || {}; state.heroBySection = {}; renderRecommendations(); }

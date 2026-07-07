@@ -143,6 +143,52 @@ class WebApiTests(unittest.TestCase):
         self.assertIn("Cookie", response["recovery"]["headline"])
         self.assertIn("继续用高质量片库生成推荐", " ".join(response["recovery"]["actions"]))
 
+    def test_sync_api_reports_input_analysis_for_tracked_profile_url(self):
+        original = web_module.crawl_user_collections
+
+        def fake_crawl(user_id_or_url, cookie="", max_pages=8, include_wish=True):
+            from douban_recommender.crawler import PageDiagnostic
+
+            self.assertEqual(
+                user_id_or_url,
+                "https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m",
+            )
+            self.assertEqual(cookie, "")
+            return CrawlResult(
+                items=[],
+                pages_ok=0,
+                pages_failed=2,
+                stopped_reason="豆瓣要求登录态或 Cookie",
+                diagnostics=[
+                    PageDiagnostic(
+                        status="collect",
+                        start=0,
+                        url="https://movie.douban.com/people/272042071/collect",
+                        http_status=403,
+                        classification="login_required",
+                        message="HTTP 403：豆瓣要求登录态或 Cookie",
+                    )
+                ],
+            )
+
+        web_module.crawl_user_collections = fake_crawl
+        try:
+            response = self.post_json("/api/sync-douban", {
+                "user_id_or_url": "https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m",
+                "cookie": "",
+                "max_pages": 1,
+                "include_wish": True,
+            })
+        finally:
+            web_module.crawl_user_collections = original
+
+        self.assertNotIn("error", response)
+        self.assertEqual(response["input_analysis"]["user_id"], "272042071")
+        self.assertTrue(response["input_analysis"]["profile_url"])
+        self.assertFalse(response["input_analysis"]["cookie_provided"])
+        self.assertTrue(response["input_analysis"]["profile_url_is_not_cookie"])
+        self.assertEqual(response["recovery"]["status"], "needs_cookie")
+
     def test_crawl_api_top_level_exception_redacts_cookie(self):
         original = web_module.crawl_user_collections
 

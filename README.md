@@ -96,6 +96,18 @@ python -m douban_recommender.cli `
 
 Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，不会写入报告，也不会上传到外部服务。
 
+### 主页链接不是 Cookie
+
+你复制的这种主页链接是正确的：
+
+```text
+https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m
+```
+
+应用会把它识别成用户 ID `272042071`。如果右侧提示“链接识别成功但仍需要 Cookie”，说明链接没错；只是豆瓣当前把“看过 / 想看”分页拦在登录态后面。主页链接不是 Cookie，不能替代浏览器 `Request Headers` 里的 Cookie。
+
+遇到这种情况按页面里的 Cookie 教程复制 `Cookie:` 后面的整段内容再重试。同步请求发出后 Cookie 输入框会自动清空，项目不会把 Cookie 写入磁盘、日志、缓存或推荐报告。
+
 ## Cookie 获取教程
 
 1. 打开浏览器并登录豆瓣。

@@ -59,6 +59,10 @@ class CrawlerParserTests(unittest.TestCase):
         url = "https://www.douban.com/people/moviefan123/collect"
         self.assertEqual(normalize_douban_user_id(url), "moviefan123")
 
+    def test_normalize_douban_user_id_extracts_tracking_profile_url(self):
+        url = "https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m"
+        self.assertEqual(normalize_douban_user_id(url), "272042071")
+
     def test_build_user_collection_url_for_collect(self):
         url = build_user_collection_url("moviefan123", "collect", 30)
         self.assertEqual(url, "https://movie.douban.com/people/moviefan123/collect?start=30&sort=time&rating=all&filter=all&mode=grid")

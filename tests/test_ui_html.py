@@ -178,6 +178,56 @@ class UiHtmlTests(unittest.TestCase):
     def test_sync_status_changes_after_cookie_block(self):
         self.assertIn("豆瓣要求登录态：可粘贴 Cookie 重试", INDEX_HTML)
 
+    def test_sync_ui_explains_profile_url_is_not_cookie(self):
+        for token in [
+            "extractDoubanUserId",
+            "state.lastUserInput",
+            "state.lastUserId",
+            "state.lastCookieProvided",
+            "已识别豆瓣用户",
+            "主页链接不是 Cookie",
+            "链接识别成功",
+            "user-input-card",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_global_text_overflow_is_hardened(self):
+        for token in [
+            ".anti-overflow",
+            "min-width:0",
+            "overflow-wrap:anywhere",
+            "word-break:break-word",
+            ".sync-command-center *",
+            ".timeline-row",
+            ".glass-panel",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_sync_ui_has_live_profile_url_intelligence_and_cookie_block_copy(self):
+        for token in [
+            "inputInsight",
+            "previewDoubanInput",
+            "oninput=\"previewDoubanInput()\"",
+            "不是同步失败",
+            "复制的是主页链接，不是授权凭证",
+            "response.recovery?.status === 'needs_cookie'",
+            "renderNetworkFailureRecovery",
+            "input_analysis",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_overflow_hardens_global_layout_hotspots(self):
+        for token in [
+            "html, body",
+            "overflow-x:hidden",
+            "p, li, summary, label, h1, h2, h3, h4, a, span",
+            ".row > *, .metric-grid > *, .sync-health > *, .recovery-actions > *, .sync-playbook > *, .hero-showcase > *, .hero-track > *, .rail-head > *, .poster-card, .poster-body, .drawer, .drawer *",
+            "grid-template-columns:repeat(auto-fit,minmax(min(100%,",
+            ".quick-actions button",
+            ".poster-body h3",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
     def test_html_does_not_contain_legacy_test_marker_comment(self):
         for text in [
             "Legacy",
