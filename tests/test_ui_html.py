@@ -116,6 +116,43 @@ class UiHtmlTests(unittest.TestCase):
         ]:
             self.assertIn(token, INDEX_HTML)
 
+    def test_frontend_backfills_posters_when_api_result_has_empty_cover(self):
+        for token in [
+            "canonicalPosterMap",
+            "canonicalPosterByTitle",
+            "function canonicalPosterFor",
+            "posterUrl(r) || canonicalPosterFor(r)",
+            "控方证人",
+            "1296141",
+            "p2927451337",
+            "图片诊断",
+            "旧服务",
+            "当前结果缺 cover",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_frontend_backfills_people_photos_when_api_result_has_empty_people_photos(self):
+        for token in [
+            "canonicalPeoplePhotoMap",
+            "function canonicalPeoplePhotosFor",
+            "Billy_Wilder.jpg",
+            "比利·怀尔德",
+            "...canonicalPeoplePhotosFor(r)",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_ui_exposes_local_image_diagnostics_hook_without_cookie_storage(self):
+        for token in [
+            "window.__CINESCOPE_DIAGNOSTICS__",
+            "canonicalPosterFor",
+            "peoplePhotoMap",
+            "openDetailObject",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+        diagnostics_slice = INDEX_HTML[INDEX_HTML.index("window.__CINESCOPE_DIAGNOSTICS__"):]
+        self.assertNotIn("doubanCookie", diagnostics_slice)
+        self.assertNotIn("COOKIE_SESSION_KEY", diagnostics_slice)
+
     def test_premium_media_ui_exposes_rich_metadata_and_people(self):
         for token in [
             "metadataLine",

@@ -373,6 +373,48 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(body, b"fake-image")
         self.assertEqual(requested, ["https://img.example/poster.jpg"])
 
+    def test_fetch_proxy_image_retries_direct_when_configured_proxy_refuses_connection(self):
+        original_build_url_opener = web_module.build_url_opener
+        original_build_opener = web_module.urllib.request.build_opener
+        calls = []
+
+        class FailingProxyOpener:
+            def open(self, request, timeout=0):
+                request.set_proxy("127.0.0.1:9", "https")
+                calls.append(("proxy", request.host, timeout))
+                raise urllib.error.URLError(ConnectionRefusedError(10061, "proxy refused"))
+
+        class FakeResponse:
+            headers = {"Content-Type": "image/webp; charset=binary"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"direct-image"
+
+        class DirectOpener:
+            def open(self, request, timeout=0):
+                calls.append(("direct", request.host, timeout))
+                return FakeResponse()
+
+        try:
+            web_module.build_url_opener = lambda: FailingProxyOpener()
+            web_module.urllib.request.build_opener = lambda *handlers: DirectOpener()
+
+            data, content_type = web_module.fetch_proxy_image("https://img.example/poster.webp")
+        finally:
+            web_module.build_url_opener = original_build_url_opener
+            web_module.urllib.request.build_opener = original_build_opener
+
+        self.assertEqual(data, b"direct-image")
+        self.assertEqual(content_type, "image/webp")
+        self.assertEqual([kind for kind, _, _ in calls], ["proxy", "direct"])
+        self.assertEqual(calls[-1][1], "img.example")
+
 
 class WebApiShapeTests(unittest.TestCase):
     def test_build_recommendation_sections_groups_by_section(self):

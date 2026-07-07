@@ -7,6 +7,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+import urllib.error
 import urllib.request
 
 from .candidate_planner import build_candidate_plan
@@ -125,19 +126,32 @@ def build_sync_recovery(result, collect_count: int, wish_count: int) -> dict[str
     }
 
 
-def fetch_proxy_image(url: str) -> tuple[bytes, str]:
+def build_image_request(url: str) -> urllib.request.Request:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("invalid image url")
-    request = urllib.request.Request(url, headers={
+    return urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
         "Referer": "https://m.douban.com/" if "doubanio.com" in parsed.netloc else "https://movie.douban.com/",
         "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     })
+
+
+def fetch_proxy_image(url: str) -> tuple[bytes, str]:
+    request = build_image_request(url)
     opener = build_url_opener()
-    with opener.open(request, timeout=12) as response:
-        content_type = response.headers.get("Content-Type") or "image/jpeg"
-        return response.read(), content_type.split(";")[0]
+    try:
+        with opener.open(request, timeout=12) as response:
+            content_type = response.headers.get("Content-Type") or "image/jpeg"
+            return response.read(), content_type.split(";")[0]
+    except urllib.error.HTTPError:
+        raise
+    except urllib.error.URLError:
+        request = build_image_request(url)
+        direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with direct_opener.open(request, timeout=12) as response:
+            content_type = response.headers.get("Content-Type") or "image/jpeg"
+            return response.read(), content_type.split(";")[0]
 
 
 class Handler(BaseHTTPRequestHandler):

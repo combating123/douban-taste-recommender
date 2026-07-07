@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+from .curated_catalog import PEOPLE_PHOTOS_BY_DOUBAN_ID, POSTER_URLS_BY_DOUBAN_ID, curated_seed_candidates
+
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -159,6 +163,9 @@ INDEX_HTML = r"""<!doctype html>
 const PREF_KEY = 'CINESCOPE_PREFS_V2';
 const COOKIE_SESSION_KEY = 'CINESCOPE_SESSION_COOKIE';
 const defaultDoubanUser = 'https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m';
+const canonicalPosterMap = __CANONICAL_POSTER_MAP__;
+const canonicalPosterByTitle = __CANONICAL_POSTER_BY_TITLE__;
+const canonicalPeoplePhotoMap = __CANONICAL_PEOPLE_PHOTO_MAP__;
 const state = { step:1, items:[], ratedItems:[], counts:{}, completeness:{}, errors:[], diagnostics:[], recommendations:[], visibleRecommendations:[], sections:[], activeSection:'全部', heroIndex:0, heroBySection:{}, ratingsCsv:'', candidatesCsv:'', profile:null, lastCounts:{}, recovery:null, lastUserInput:'', lastUserId:'', lastCookieProvided:false, prefs:null };
 const $ = id => document.getElementById(id);
 function esc(value) { return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
@@ -175,7 +182,7 @@ function renderUserInputInsight() { const input = state.lastUserInput || ''; con
 function previewDoubanInput() { const box = $('doubanUser'); if (!box) return; state.lastUserInput = box.value.trim(); state.lastUserId = extractDoubanUserId(state.lastUserInput); const insight = $('inputInsight'); if (insight) insight.innerHTML = renderUserInputInsight(); }
 function renderStepNav() { const steps = [['第一步：连接豆瓣','同步看过 / 想看，校验 242 / 34 完整度'],['第二步：确认口味','评分高、剧情好，电视剧古装避雷'],['第三步：查看推荐','电影 / 电视剧 / 动漫海报墙']]; $('stepNav').innerHTML = steps.map((s,i) => `<div class="step-card"><b>${s[0]}</b>${s[1]}</div>`).join(''); }
 function renderCookieGuide() { return `<details><summary>Cookie 教程</summary><ol class="mini-list"><li>打开浏览器并登录豆瓣。</li><li>进入 https://movie.douban.com/。</li><li>按 F12 打开开发者工具，进入 Network / 网络。</li><li>刷新页面，点任意 movie.douban.com 或 www.douban.com 请求。</li><li>在 Headers / 标头里找到 Request Headers。</li><li>复制 Cookie: 后面的整段内容，粘贴到这里。</li></ol><p class="hint">Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，也不会出现在推荐报告里。</p></details>`; }
-function imageResilienceGuide() { return `<details class="image-resilience" open><summary>图片韧性与 Clash / V2Ray 教程</summary><div class="resilience-card" id="imageResilienceGuide"><div class="resilience-toolbar"><b>海报加载不出来时优先这样做</b><button class="ghost copy-mini" onclick="copyProxyCommand()">复制代理命令</button></div><span class="hint">本项目会先走本地 /api/image-proxy，再失败才切换 SVG 标题海报。若网络需要代理，只填本机 HTTP 代理端口，不要粘贴订阅地址。</span><div class="proxy-command"><code>PowerShell: $env:DOUBAN_RECOMMENDER_HTTP_PROXY="http://127.0.0.1:7890"</code></div><span class="hint">Clash 常见 Mixed Port 是 7890；V2Ray / v2rayN 开启 HTTP 代理端口后填同样格式。长命令会在框内横向滚动，不再撑破侧栏。</span></div></details>`; }
+function imageResilienceGuide() { return `<details class="image-resilience" open><summary>图片韧性与 Clash / V2Ray 教程</summary><div class="resilience-card" id="imageResilienceGuide"><div class="resilience-toolbar"><b>海报加载不出来时优先这样做</b><button class="ghost copy-mini" onclick="copyProxyCommand()">复制代理命令</button></div><span class="hint">本项目会先走本地 /api/image-proxy；如果代理端口失效，后端会自动改走直连；如果当前结果缺 cover，前端会用内置海报库补图。</span><div class="diagnosis-card anti-overflow"><b>图片诊断</b><span>仍然看到大字标题海报时，通常是旧服务或旧页面缓存：当前页面已内置控方证人等高分片库海报，即使旧服务返回空 cover 也会自动补图。建议只保留一个新端口并 Ctrl+F5 强制刷新。</span></div><div class="proxy-command"><code>PowerShell: $env:DOUBAN_RECOMMENDER_HTTP_PROXY="http://127.0.0.1:7890"</code></div><span class="hint">Clash 常见 Mixed Port 是 7890；V2Ray / v2rayN 开启 HTTP 代理端口后填同样格式。不要粘贴订阅地址；长命令会在框内横向滚动，不再撑破侧栏。</span></div></details>`; }
 function renderCrawlerPanel() {
   $('controlPanel').innerHTML = `<h2>第一步：连接豆瓣</h2>
   <div class="control-hero"><span class="badge">Cookie 解锁 · 本地隐私</span><b>把抓取失败变成可恢复流程</b><p class="hint">匿名访问遇到 403 时，页面会直接告诉你：豆瓣要求登录态、需要 Cookie，或可以跳过同步继续用高质量片库生成推荐。</p></div>
@@ -225,14 +232,17 @@ function recTitle(r) { return r.title || r.item?.title || 'CineScope'; }
 function recType(r) { return r.media_type || r.item?.media_type || ''; }
 function recArray(r, key) { return Array.isArray(r[key]) ? r[key] : (Array.isArray(r.item?.[key]) ? r.item[key] : []); }
 function itemKey(r) { return String(r.douban_id || r.item?.douban_id || recTitle(r)); }
-function posterUrl(r) { const raw = r.cover || r.item?.cover || ''; return /^https?:\/\//.test(raw) ? `/api/image-proxy?url=${encodeURIComponent(raw)}` : raw; }
+function proxiedImageUrl(raw) { return /^https?:\/\//.test(raw || '') ? `/api/image-proxy?url=${encodeURIComponent(raw)}` : (raw || ''); }
+function canonicalPosterFor(r) { const id = String(r.douban_id || r.item?.douban_id || '').trim(); const title = recTitle(r); return proxiedImageUrl(canonicalPosterMap[id] || canonicalPosterByTitle[title] || ''); }
+function posterUrl(r) { const raw = r.cover || r.item?.cover || ''; return proxiedImageUrl(raw); }
 function posterFallback(title, mediaType) { const safeTitle = esc(title || 'CineScope'); const safeType = esc(mediaType || '私人推荐'); const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="960" viewBox="0 0 640 960"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#1E293B"/><stop offset="0.52" stop-color="#312E81"/><stop offset="1" stop-color="#0F172A"/></linearGradient><radialGradient id="r" cx="30%" cy="10%" r="70%"><stop stop-color="#F5C451" stop-opacity=".55"/><stop offset="1" stop-color="#F5C451" stop-opacity="0"/></radialGradient></defs><rect width="640" height="960" fill="url(#g)"/><rect width="640" height="960" fill="url(#r)"/><text x="52" y="120" fill="#F5C451" font-size="28" font-family="Arial" font-weight="800" letter-spacing="5">${safeType}</text><foreignObject x="52" y="230" width="536" height="430"><div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Arial,Microsoft YaHei,sans-serif;color:#F8FAFC;font-size:74px;font-weight:950;line-height:1.06;letter-spacing:-3px;">${safeTitle}</div></foreignObject><text x="52" y="850" fill="#A7B0C0" font-size="24" font-family="Arial">CineScope Studio</text></svg>`; return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`; }
-function safePosterImg(r) { const title = recTitle(r); const type = recType(r); const fallback = posterFallback(title, type); const safeFallback = fallback.replace(/'/g, '%27'); const rawSrc = posterUrl(r) || safeFallback; const src = rawSrc === fallback ? safeFallback : rawSrc; return `<img src="${esc(src)}" alt="${esc(title)}" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${safeFallback}'">`; }
+function safePosterImg(r) { const title = recTitle(r); const type = recType(r); const fallback = posterFallback(title, type); const safeFallback = fallback.replace(/'/g, '%27'); const rawSrc = posterUrl(r) || canonicalPosterFor(r) || safeFallback; const src = rawSrc === fallback ? safeFallback : rawSrc; return `<img src="${esc(src)}" alt="${esc(title)}" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${safeFallback}'">`; }
 function posterHtml(r) { return safePosterImg(r); }
 function metadataLine(r) { const parts = []; if (r.year || r.item?.year) parts.push(r.year || r.item.year); if (recType(r)) parts.push(recType(r)); recArray(r,'genres').slice(0,3).forEach(x => parts.push(x)); recArray(r,'countries').slice(0,2).forEach(x => parts.push(x)); return parts.map(esc).join(' · ') || '类型信息待补全'; }
-function peoplePhotoMap(r) { return r?.people_photos || r?.item?.people_photos || r?.raw?.people_photos || r?.item?.raw?.people_photos || {}; }
+function canonicalPeoplePhotosFor(r) { const id = String(r?.douban_id || r?.item?.douban_id || '').trim(); return (id && canonicalPeoplePhotoMap[id]) ? canonicalPeoplePhotoMap[id] : {}; }
+function peoplePhotoMap(r) { return { ...canonicalPeoplePhotosFor(r), ...(r?.item?.raw?.people_photos || {}), ...(r?.raw?.people_photos || {}), ...(r?.item?.people_photos || {}), ...(r?.people_photos || {}) }; }
 function personPhotoSvg(name, role) { const initials = esc(String(name || '?').trim().slice(0,2).toUpperCase()); const safeName = esc(name || '人物肖像'); const safeRole = esc(role || '演职员'); const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="420" viewBox="0 0 360 420"><defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#F5C451"/><stop offset=".48" stop-color="#60A5FA"/><stop offset="1" stop-color="#312E81"/></linearGradient><radialGradient id="r" cx="30%" cy="15%" r="75%"><stop stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs><rect width="360" height="420" rx="34" fill="#0B1020"/><rect width="360" height="420" rx="34" fill="url(#g)" opacity=".82"/><rect width="360" height="420" rx="34" fill="url(#r)"/><circle cx="180" cy="150" r="64" fill="rgba(11,16,32,.72)"/><path d="M76 344c14-72 68-112 104-112s90 40 104 112" fill="rgba(11,16,32,.72)"/><text x="180" y="164" text-anchor="middle" fill="#F8FAFC" font-size="44" font-family="Arial,Microsoft YaHei,sans-serif" font-weight="900">${initials}</text><text x="28" y="56" fill="#0B1020" font-size="22" font-family="Arial,Microsoft YaHei,sans-serif" font-weight="900">${safeRole}</text><text x="28" y="386" fill="#F8FAFC" font-size="24" font-family="Arial,Microsoft YaHei,sans-serif" font-weight="800">${safeName}</text></svg>`; return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg).replace(/'/g, '%27')}`; }
-function personPhotoUrl(person) { const raw = person.photo || ''; return /^https?:\/\//.test(raw) ? `/api/image-proxy?url=${encodeURIComponent(raw)}` : raw; }
+function personPhotoUrl(person) { const raw = person.photo || ''; return proxiedImageUrl(raw); }
 function personPortrait(person) { const fallback = personPhotoSvg(person.name, person.role); const src = personPhotoUrl(person) || fallback; const safeFallback = fallback.replace(/'/g, '%27'); const cls = person.photo ? 'person-photo' : 'person-photo portrait-fallback'; return `<span class="${cls}" title="${esc(person.role)}人物肖像"><img src="${esc(src)}" alt="${esc(person.name)} 人物肖像" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='${safeFallback}'"></span>`; }
 function peopleForItem(r) { const photos = peoplePhotoMap(r); const photoFor = (name, role) => photos[name] || photos[`${role}:${name}`] || photos[`导演:${name}`] || photos[`主演:${name}`] || ''; const people = []; recArray(r,'directors').slice(0,4).forEach(name => people.push({name, role:'导演', photo:photoFor(name,'导演')})); recArray(r,'casts').slice(0,8).forEach(name => people.push({name, role:'主演', photo:photoFor(name,'主演')})); return people; }
 function peopleChips(names, role, r=null) { const list = (names || []).slice(0,8); if (!list.length) return `<p class="hint">${role}资料待补全</p>`; const photos = peoplePhotoMap(r || {}); return list.map(name => { const person = {name, role, photo:photos[name] || photos[`${role}:${name}`] || ''}; return `<span class="person-chip">${personPortrait(person)}<span><b>${esc(name)}</b><small class="hint"> · ${esc(role)}</small></span></span>`; }).join(''); }
@@ -312,7 +322,30 @@ async function clearCache() { await fetch('/api/cache', { method:'DELETE' }); $(
 async function recommend() { setStatus('正在生成推荐。'); const payload = { rated_items:state.items, ratings_csv: state.items.length ? '' : state.ratingsCsv, candidates_csv: state.candidatesCsv, like_terms:$('likeTerms').value, dislike_terms:$('dislikeTerms').value, include_movies:$('includeMovies').checked, include_series:$('includeSeries').checked, include_anime:$('includeAnime').checked, fetch_douban:$('fetchDouban').checked, enrich_details:$('enrichDetails') ? $('enrichDetails').checked : true, use_sample_candidates:!state.candidatesCsv, limit:Number($('limit').value || 160) }; const res = await fetch('/api/recommend', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) }); const data = await res.json(); if (!res.ok || data.error) { setStatus('推荐失败：' + (data.error || '请求失败')); return; } state.recommendations = data.results || []; state.sections = data.sections || []; state.profile = data.profile || null; state.lastCounts = data.counts || {}; state.heroBySection = {}; renderRecommendations(); }
 function crawlDouban() { return syncDouban(); }
 function goStep(step) { if (step === 1) renderCrawlerPanel(); if (step === 2) renderTastePanel(); if (step === 3) renderRecommendations(); }
+window.__CINESCOPE_DIAGNOSTICS__ = { state, renderRecommendations, openDetailObject, canonicalPosterFor, peoplePhotoMap };
 renderStepNav(); renderCrawlerPanel();
 </script>
 </body>
 </html>"""
+
+
+def _canonical_poster_by_title() -> dict[str, str]:
+    posters: dict[str, str] = {}
+    for item in curated_seed_candidates():
+        if item.title and item.cover:
+            posters[item.title] = item.cover
+    return posters
+
+
+INDEX_HTML = INDEX_HTML.replace(
+    "__CANONICAL_POSTER_MAP__",
+    json.dumps(POSTER_URLS_BY_DOUBAN_ID, ensure_ascii=False, sort_keys=True),
+)
+INDEX_HTML = INDEX_HTML.replace(
+    "__CANONICAL_POSTER_BY_TITLE__",
+    json.dumps(_canonical_poster_by_title(), ensure_ascii=False, sort_keys=True),
+)
+INDEX_HTML = INDEX_HTML.replace(
+    "__CANONICAL_PEOPLE_PHOTO_MAP__",
+    json.dumps(PEOPLE_PHOTOS_BY_DOUBAN_ID, ensure_ascii=False, sort_keys=True),
+)
