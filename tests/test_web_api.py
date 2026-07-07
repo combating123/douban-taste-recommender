@@ -114,6 +114,35 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(response["counts"]["stopped_reason"], "部分分页抓取失败")
         self.assertEqual(response["errors"], ["wish start=15: 超时"])
 
+    def test_crawl_api_returns_recovery_plan_when_douban_requires_cookie(self):
+        original = web_module.crawl_user_collections
+
+        def fake_crawl(user_id_or_url, cookie="", max_pages=8, include_wish=True):
+            from douban_recommender.crawler import PageDiagnostic
+
+            return CrawlResult(
+                items=[],
+                pages_ok=0,
+                pages_failed=2,
+                errors=["collect start=0: HTTP 403：豆瓣要求登录态或 Cookie", "wish start=0: HTTP 403：豆瓣要求登录态或 Cookie"],
+                stopped_reason="豆瓣要求登录态或 Cookie",
+                diagnostics=[
+                    PageDiagnostic(status="collect", start=0, url="https://movie.douban.com/people/x/collect", http_status=403, classification="login_required", message="HTTP 403：豆瓣要求登录态或 Cookie"),
+                    PageDiagnostic(status="wish", start=0, url="https://movie.douban.com/people/x/wish", http_status=403, classification="login_required", message="HTTP 403：豆瓣要求登录态或 Cookie"),
+                ],
+            )
+
+        web_module.crawl_user_collections = fake_crawl
+        try:
+            response = self.post_json("/api/crawl-douban", {"user_id_or_url": "moviefan123"})
+        finally:
+            web_module.crawl_user_collections = original
+
+        self.assertEqual(response["recovery"]["status"], "needs_cookie")
+        self.assertTrue(response["recovery"]["can_continue_without_sync"])
+        self.assertIn("Cookie", response["recovery"]["headline"])
+        self.assertIn("继续用高质量片库生成推荐", " ".join(response["recovery"]["actions"]))
+
     def test_crawl_api_top_level_exception_redacts_cookie(self):
         original = web_module.crawl_user_collections
 

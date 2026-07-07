@@ -149,6 +149,35 @@ class UiHtmlTests(unittest.TestCase):
         self.assertIn("stopped_reason", INDEX_HTML)
         self.assertIn("errors", INDEX_HTML)
 
+    def test_sync_screen_has_premium_recovery_workflow_for_douban_403(self):
+        for token in [
+            "syncCommandCenter",
+            "renderSyncRecovery",
+            "sync-health",
+            "blocked-brief",
+            "diagnosis-grid",
+            "Cookie 解锁",
+            "继续用高质量片库生成推荐",
+            "豆瓣要求登录态",
+            "recovery",
+            "continueWithoutSync",
+            "同步作战室",
+            "恢复路线",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_ui_has_no_question_mark_mojibake_in_sync_copy(self):
+        sync_slice = INDEX_HTML[INDEX_HTML.index("function renderCrawlerPanel"):INDEX_HTML.index("function tasteDNA")]
+        self.assertNotIn("????", sync_slice)
+        self.assertIn("第一步：连接豆瓣", sync_slice)
+        self.assertIn("同步诊断", sync_slice)
+
+    def test_sync_recovery_waits_for_real_recovery_status(self):
+        self.assertIn("!recovery.status", INDEX_HTML)
+
+    def test_sync_status_changes_after_cookie_block(self):
+        self.assertIn("豆瓣要求登录态：可粘贴 Cookie 重试", INDEX_HTML)
+
     def test_html_does_not_contain_legacy_test_marker_comment(self):
         for text in [
             "Legacy",

@@ -61,6 +61,51 @@ def diagnostic_to_dict(diag) -> dict:
     return {"message": str(diag)}
 
 
+def build_sync_recovery(result, collect_count: int, wish_count: int) -> dict[str, object]:
+    diagnostics = [diagnostic_to_dict(diag) for diag in getattr(result, "diagnostics", [])]
+    classifications = {str(diag.get("classification") or "") for diag in diagnostics}
+    http_statuses = {diag.get("http_status") for diag in diagnostics}
+    has_items = (collect_count + wish_count) > 0
+    if has_items:
+        return {
+            "status": "ok",
+            "headline": "同步已拿到可用数据",
+            "can_continue_without_sync": False,
+            "actions": ["继续确认口味", "生成推荐"],
+        }
+    if "login_required" in classifications or 401 in http_statuses or 403 in http_statuses:
+        return {
+            "status": "needs_cookie",
+            "headline": "豆瓣要求登录态或 Cookie，匿名抓取被拦截",
+            "can_continue_without_sync": True,
+            "actions": [
+                "Cookie 解锁：复制当前浏览器里 movie.douban.com 请求的 Cookie 后重试",
+                "继续用高质量片库生成推荐：先跳过同步，也能生成电影 / 电视剧 / 动漫推荐",
+                "CSV 兜底：从豆瓣导出或手动整理评分后粘贴",
+            ],
+        }
+    if "security_check" in classifications:
+        return {
+            "status": "security_check",
+            "headline": "豆瓣触发安全验证，建议稍后重试或降低抓取频率",
+            "can_continue_without_sync": True,
+            "actions": ["稍后重试", "减少页数后同步", "继续用高质量片库生成推荐"],
+        }
+    if getattr(result, "pages_failed", 0):
+        return {
+            "status": "partial_failure",
+            "headline": "部分分页抓取失败，可以继续使用已有数据",
+            "can_continue_without_sync": True,
+            "actions": ["重试失败页", "继续确认口味", "继续用高质量片库生成推荐"],
+        }
+    return {
+        "status": "idle",
+        "headline": "还没有同步数据",
+        "can_continue_without_sync": True,
+        "actions": ["同步豆瓣", "继续用高质量片库生成推荐"],
+    }
+
+
 def fetch_proxy_image(url: str) -> tuple[bytes, str]:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
@@ -176,6 +221,7 @@ class Handler(BaseHTTPRequestHandler):
             "completeness": getattr(result, "completeness", {}),
             "errors": result.errors,
             "stopped_reason": result.stopped_reason,
+            "recovery": build_sync_recovery(result, collect_count, wish_count),
         }
 
     handle_crawl_douban = handle_sync_douban

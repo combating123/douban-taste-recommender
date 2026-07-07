@@ -68,7 +68,7 @@ def classify_collection_page(page_html: str, parsed_count: int) -> tuple[str, st
     lower = text.lower()
     if parsed_count > 0:
         return "ok_with_items", f"解析到 {parsed_count} 条"
-    if any(marker in text for marker in ["登录后", "请登录", "登陆后", "加入豆瓣"]):
+    if any(marker in text for marker in ["登录后", "请登录", "登陆后", "加入豆瓣", "登录跳转"]):
         return "login_required", "页面提示需要登录或需要 Cookie 才能查看完整数据"
     if any(marker in lower for marker in ["captcha", "verify"]) or any(marker in text for marker in ["异常请求", "安全验证", "机器人"]):
         return "security_check", "豆瓣返回安全验证页，建议稍后重试或减少页数"
@@ -252,6 +252,25 @@ def fetch_user_collection_page(user_id: str, status: str, start: int, cookie: st
         return response.read().decode("utf-8", errors="ignore")
 
 
+def classify_http_error(exc: urllib.error.HTTPError, cookie: str) -> tuple[str, str, int | None]:
+    try:
+        body = exc.read().decode("utf-8", errors="ignore")
+    except Exception:
+        body = ""
+    classification, page_message = classify_collection_page(body, 0) if body else ("network_error", "")
+    status_code = getattr(exc, "code", None)
+    if status_code in {401, 403} and classification in {"login_required", "true_empty_page", "parse_failed_nonempty", "network_error"}:
+        return (
+            "login_required",
+            f"HTTP {status_code}：豆瓣要求登录态或 Cookie；请粘贴 Cookie 后重试，或先用本地高质量片库继续推荐。",
+            status_code,
+        )
+    message = page_message or redact_cookie_from_message(str(exc), cookie)
+    if status_code:
+        message = f"HTTP {status_code}：{message}"
+    return classification, message, status_code
+
+
 def redact_cookie_from_message(message: str, cookie: str) -> str:
     redacted_message = str(message)
     stripped_cookie = str(cookie or "").strip()
@@ -360,6 +379,21 @@ def crawl_user_collections(
                     if key and key not in seen:
                         result.items.append(item)
                         seen.add(key)
+            except urllib.error.HTTPError as exc:
+                result.pages_failed += 1
+                classification, message, http_status = classify_http_error(exc, cookie)
+                safe_message = redact_cookie_from_message(message, cookie)
+                result.errors.append(f"{status} start={start}: {safe_message}")
+                result.diagnostics.append(PageDiagnostic(
+                    status=status,
+                    start=start,
+                    url=url,
+                    http_status=http_status,
+                    item_count=0,
+                    classification=classification,
+                    message=safe_message,
+                ))
+                break
             except Exception as exc:
                 result.pages_failed += 1
                 message = redact_cookie_from_message(str(exc), cookie)
@@ -375,8 +409,14 @@ def crawl_user_collections(
                 break
             if sleep_seconds:
                 time.sleep(sleep_seconds)
+    login_blocked = any(
+        diag.classification == "login_required" and diag.http_status in {401, 403}
+        for diag in result.diagnostics
+    )
     if empty_page_seen:
         result.stopped_reason = "已到达空白分页"
+    elif login_blocked:
+        result.stopped_reason = "豆瓣要求登录态或 Cookie"
     elif result.pages_failed:
         result.stopped_reason = "部分分页抓取失败"
     else:
