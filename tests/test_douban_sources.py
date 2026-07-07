@@ -34,6 +34,34 @@ class SubjectDetailParseTests(unittest.TestCase):
         self.assertEqual(item.countries, ["中国大陆"])
         self.assertEqual(item.year, 2020)
 
+    def test_parse_subject_detail_html_extracts_public_people_photos_when_present(self):
+        from douban_recommender.douban_sources import parse_subject_detail_html
+
+        html = """
+        <html><body>
+          <span property="v:itemreviewed">测试片</span>
+          <a rel="v:directedBy">辛爽</a>
+          <a rel="v:starring">秦昊</a>
+          <li class="celebrity">
+            <a href="/celebrity/1/">
+              <img src="https://img.example/director.jpg" alt="辛爽">
+              <span class="name">辛爽</span><span class="role">导演</span>
+            </a>
+          </li>
+          <li class="celebrity">
+            <a href="/celebrity/2/">
+              <img src="https://img.example/cast.jpg" alt="秦昊">
+              <span class="name">秦昊</span><span class="role">演员</span>
+            </a>
+          </li>
+        </body></html>
+        """
+
+        item = parse_subject_detail_html(html, url="https://movie.douban.com/subject/1/")
+
+        self.assertEqual(item.raw["people_photos"]["辛爽"], "https://img.example/director.jpg")
+        self.assertEqual(item.raw["people_photos"]["秦昊"], "https://img.example/cast.jpg")
+
 
 class CandidateFetchPlanTests(unittest.TestCase):
     def test_fetch_candidates_from_plan_dedupes_and_keeps_partial_success(self):

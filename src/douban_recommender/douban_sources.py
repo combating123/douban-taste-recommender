@@ -253,6 +253,53 @@ def fetch_generic_movie_links(url: str) -> list[MediaItem]:
     return out
 
 
+def extract_people_photos(page_html: str, known_names: Iterable[str] = ()) -> dict[str, str]:
+    """Extract public celebrity portrait URLs from subject detail markup when present."""
+
+    text = page_html or ""
+    photos: dict[str, str] = {}
+    known = {str(name).strip() for name in known_names if str(name).strip()}
+
+    def attr(markup: str, name: str) -> str:
+        return html.unescape(
+            first_match(rf'\b{name}=["\']([^"\']+)["\']', markup)
+            or ""
+        ).replace("\\/", "/").strip()
+
+    def add(name: str, src: str) -> None:
+        clean_name = clean_html(name)
+        clean_src = html.unescape(src or "").replace("\\/", "/").strip()
+        if clean_name and clean_src and clean_src.startswith(("http://", "https://")):
+            photos.setdefault(clean_name, clean_src)
+
+    celebrity_blocks = re.findall(
+        r'<(?:li|div)[^>]+class=["\'][^"\']*(?:celebrity|celeb|cast|actor)[^"\']*["\'][^>]*>.*?</(?:li|div)>',
+        text,
+        flags=re.S | re.I,
+    )
+    for block in celebrity_blocks:
+        img = first_match(r'(<img\b[^>]*>)', block)
+        if not img:
+            continue
+        src = attr(img, "src") or attr(img, "data-src") or attr(img, "data-original")
+        name_match = re.search(r'<span[^>]+class=["\'][^"\']*name[^"\']*["\'][^>]*>(.*?)</span>', block, flags=re.S)
+        name = (
+            clean_html(name_match.group(1) if name_match else "")
+            or attr(img, "alt")
+            or attr(img, "title")
+        )
+        add(name, src)
+
+    for img in re.findall(r'<img\b[^>]*>', text, flags=re.S | re.I):
+        name = attr(img, "alt") or attr(img, "title")
+        if known and name not in known:
+            continue
+        src = attr(img, "src") or attr(img, "data-src") or attr(img, "data-original")
+        add(name, src)
+
+    return photos
+
+
 def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
     text = page_html or ""
     title = clean_html(
@@ -282,6 +329,7 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
         for value in re.findall(r'<a[^>]+rel=["\']v:starring["\'][^>]*>(.*?)</a>', text, flags=re.S)
         if clean_html(value)
     ]
+    people_photos = extract_people_photos(text, [*directors, *casts])
     genres = [
         clean_html(value)
         for value in re.findall(r'<span[^>]+property=["\']v:genre["\'][^>]*>(.*?)</span>', text, flags=re.S)
@@ -313,6 +361,7 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
         cover=cover,
         summary=summary,
         source="douban_subject_detail",
+        raw={"people_photos": people_photos} if people_photos else {},
     )
 
 
@@ -331,6 +380,14 @@ def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
             if value and value not in current:
                 current.append(value)
         setattr(item, field, current)
+    detail_people_photos = detail.raw.get("people_photos") if isinstance(detail.raw, dict) else None
+    if isinstance(detail_people_photos, dict) and detail_people_photos:
+        item_people_photos = item.raw.get("people_photos") if isinstance(item.raw, dict) else None
+        merged_people_photos = dict(item_people_photos) if isinstance(item_people_photos, dict) else {}
+        for name, photo in detail_people_photos.items():
+            if name and photo and name not in merged_people_photos:
+                merged_people_photos[str(name)] = str(photo)
+        item.raw["people_photos"] = merged_people_photos
     if detail.douban_id and not item.douban_id:
         item.douban_id = detail.douban_id
     if detail.url and not item.url:

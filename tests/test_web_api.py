@@ -254,7 +254,8 @@ class WebApiTests(unittest.TestCase):
 
         self.assertIn("动漫", media_types)
         self.assertIn("动漫", section_names)
-        self.assertGreaterEqual(len(anime_titles), 5)
+        self.assertGreaterEqual(len(anime_titles), 12)
+        self.assertFalse({"千与千寻", "机器人总动员", "疯狂动物城", "寻梦环游记", "头脑特工队"} & set(anime_titles))
         self.assertGreater(response["counts"]["curated_candidates"], 0)
 
     def test_image_proxy_streams_remote_image_without_cookie(self):

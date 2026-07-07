@@ -72,6 +72,11 @@ class UiHtmlTests(unittest.TestCase):
         ]:
             self.assertIn(token, INDEX_HTML)
 
+    def test_poster_fallback_is_safe_inside_inline_onerror_handler(self):
+        self.assertIn("safeFallback", INDEX_HTML)
+        self.assertIn("replace(/'/g, '%27')", INDEX_HTML)
+        self.assertNotIn("Arial,'Microsoft YaHei'", INDEX_HTML)
+
     def test_world_class_ui_contains_category_spotlights_and_image_resilience_guide(self):
         for token in [
             "homepage-studio",
@@ -90,6 +95,16 @@ class UiHtmlTests(unittest.TestCase):
         ]:
             self.assertIn(token, INDEX_HTML)
 
+    def test_image_resilience_guide_wraps_long_proxy_text(self):
+        for token in [
+            ".image-resilience",
+            "max-width:100%",
+            "overflow-wrap:anywhere",
+            "word-break:break-word",
+            "white-space:pre-wrap",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
     def test_premium_media_ui_exposes_rich_metadata_and_people(self):
         for token in [
             "metadataLine",
@@ -104,6 +119,17 @@ class UiHtmlTests(unittest.TestCase):
             "电影",
             "电视剧",
             "动漫",
+        ]:
+            self.assertIn(token, INDEX_HTML)
+
+    def test_people_ui_uses_real_portrait_or_designed_svg_fallback(self):
+        for token in [
+            "personPortrait",
+            "personPhotoSvg",
+            "person-photo",
+            "portrait-fallback",
+            "person.photo",
+            "人物肖像",
         ]:
             self.assertIn(token, INDEX_HTML)
 

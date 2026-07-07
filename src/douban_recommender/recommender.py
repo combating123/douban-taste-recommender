@@ -41,6 +41,7 @@ class Recommendation:
             "cover": item.cover,
             "summary": item.summary,
             "source": item.source,
+            "people_photos": item.raw.get("people_photos", {}) if isinstance(item.raw, dict) else {},
             "reasons": self.reasons,
             "warnings": self.warnings,
             "matched_positive": self.matched_positive,

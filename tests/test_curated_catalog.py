@@ -16,6 +16,35 @@ class CuratedCatalogTests(unittest.TestCase):
         self.assertTrue(all(item.douban_id for item in items))
         self.assertTrue(all(item.summary for item in items))
 
+    def test_curated_anime_pool_is_series_not_animated_movies(self):
+        items = [item for item in curated_seed_candidates() if item.media_type == "动漫"]
+        titles = {item.title for item in items}
+        forbidden_animated_movies = {
+            "千与千寻",
+            "机器人总动员",
+            "疯狂动物城",
+            "寻梦环游记",
+            "头脑特工队",
+            "你的名字。",
+            "红辣椒",
+            "攻壳机动队",
+            "天空之城",
+            "龙猫",
+        }
+
+        self.assertGreaterEqual(len(items), 12)
+        self.assertTrue(all("动漫剧集" in item.tags for item in items))
+        self.assertFalse(titles & forbidden_animated_movies)
+        for expected in [
+            "钢之炼金术师 FULLMETAL ALCHEMIST",
+            "进击的巨人",
+            "星际牛仔",
+            "虫师",
+            "命运石之门",
+            "灵能百分百",
+        ]:
+            self.assertIn(expected, titles)
+
     def test_backfill_missing_media_types_only_adds_requested_missing_categories(self):
         existing = [
             MediaItem(title="已有电影", douban_id="m1", media_type="电影"),

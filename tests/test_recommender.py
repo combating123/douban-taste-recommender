@@ -87,6 +87,28 @@ class CineScopeRecommendationTests(unittest.TestCase):
         self.assertTrue(recs[0].is_wishlist)
         self.assertIn("想看", recs[0].badges)
 
+    def test_recommendation_dict_exposes_public_people_photo_map(self):
+        rated = []
+        candidates = [
+            MediaItem(
+                title="人物图测试",
+                douban_id="people1",
+                media_type="电影",
+                douban_rating=8.8,
+                directors=["辛爽"],
+                casts=["秦昊"],
+                raw={"people_photos": {"辛爽": "https://img.example/director.jpg", "秦昊": "https://img.example/cast.jpg"}},
+            )
+        ]
+        profile = build_taste_profile(rated, like_terms="高分", dislike_terms="")
+
+        recs = recommend(rated, candidates, profile, limit=1)
+
+        self.assertEqual(
+            recs[0].to_dict()["people_photos"],
+            {"辛爽": "https://img.example/director.jpg", "秦昊": "https://img.example/cast.jpg"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
