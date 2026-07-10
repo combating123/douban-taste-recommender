@@ -4,6 +4,8 @@ import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState } from "./core/store.js";
 import { configureCommandLens, openCommandLens, syncCommandLensState } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
+import { configureDetail, renderTitleDetail } from "./features/detail.js";
+import { configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
 
 const APP_ROUTES = [
   { pattern: "/tonight", name: "tonight" },
@@ -35,6 +37,10 @@ const ROUTE_CHANNELS = Object.freeze({
   series: "电视剧",
   "anime-series": "动漫",
 });
+
+function textValue(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
 
 function channelSlug(route) {
   if (route.name === "tonight-anime") return "anime-series";
@@ -249,6 +255,96 @@ function bindNavigation(router) {
   });
 }
 
+function explorationRecovery(route, retry) {
+  if (typeof document.createElement !== "function") return { className: "route-recovery", route: route.path };
+  const panel = document.createElement("section");
+  panel.className = "route-recovery route-recovery--exploration";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = route.name === "person" ? "PERSON / RECOVERY" : "TITLE / RECOVERY";
+  const title = document.createElement("h1");
+  title.className = "route-recovery__title";
+  title.textContent = route.name === "person" ? "人物资料暂时无法打开" : "作品详情暂时无法打开";
+  const copy = document.createElement("p");
+  copy.className = "route-recovery__copy";
+  copy.textContent = "本地记录可能不存在或服务暂时不可用。你可以重试，或返回上一条稳定路径。";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "route-recovery__action";
+  button.textContent = "重试";
+  button.addEventListener("click", retry);
+  panel.append(eyebrow, title, copy, button);
+  return panel;
+}
+
+function replacePreparedView(root, view) {
+  let updated = false;
+  const update = () => { updated = true; root.replaceChildren(view); };
+  if (typeof document.startViewTransition === "function") {
+    try {
+      document.startViewTransition(update);
+      return;
+    } catch {
+      if (updated) return;
+    }
+  }
+  update();
+}
+
+export function createExplorationRouteGate({
+  root,
+  getActivePath = () => "",
+  renderTitle = renderTitleDetail,
+  renderPerson = renderPersonPage,
+  setStatus = () => {},
+} = {}) {
+  let generation = 0;
+  let controller = null;
+
+  const invalidate = () => {
+    generation += 1;
+    controller?.abort();
+    controller = null;
+    return generation;
+  };
+
+  const render = async (route, fallbackHeading = "CineScope") => {
+    const requestGeneration = invalidate();
+    const expectedPath = route.path;
+    const requestController = new AbortController();
+    controller = requestController;
+    const isCurrent = () => (
+      !requestController.signal.aborted
+      && generation === requestGeneration
+      && getActivePath() === expectedPath
+    );
+    const commit = (view, meta = {}) => {
+      if (!isCurrent() || !root || !view) return false;
+      replacePreparedView(root, view);
+      setStatus(`CineScope 正在浏览：${textValue(meta.heading, fallbackHeading)}`);
+      return true;
+    };
+    const renderer = route.name === "person" ? renderPerson : renderTitle;
+
+    try {
+      return await renderer(route.params?.id, {
+        signal: requestController.signal,
+        isCurrent,
+        commit,
+      });
+    } catch {
+      if (!isCurrent()) return null;
+      const recovery = explorationRecovery(route, () => { void render(route, fallbackHeading); });
+      commit(recovery, { heading: fallbackHeading });
+      return recovery;
+    } finally {
+      if (controller === requestController) controller = null;
+    }
+  };
+
+  return { invalidate, render };
+}
+
 export function bootstrapCineScopeShell() {
   const appView = document.getElementById("app-view");
   const status = document.getElementById("shell-status");
@@ -275,6 +371,13 @@ export function bootstrapCineScopeShell() {
   });
   configureCommandLens({ root: document.getElementById("command-lens-root"), store, api: { postV2 } });
   configureTonight({ store, api: { postV2 }, root: appView, openCommandLens });
+  configurePeople({ root: appView, overlayRoot: document.getElementById("overlay-root") });
+  configureDetail({ root: appView, api: { postV2 }, openPersonSheet });
+  const explorationGate = createExplorationRouteGate({
+    root: appView,
+    getActivePath: () => store.getState().activePath,
+    setStatus: (message) => setText(status, message),
+  });
   document.getElementById("command-lens-trigger")?.addEventListener("click", () => openCommandLens());
   const setRailMode = (mode) => {
     store.dispatch({ type: "rail/changed", mode });
@@ -296,10 +399,15 @@ export function bootstrapCineScopeShell() {
       setCurrentNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
       const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
       if (route.path.startsWith("/tonight")) {
+        explorationGate.invalidate();
         renderTonight(store.getState());
         await restoreGate.restore(route, heading);
+      } else if (route.name === "title" || route.name === "person") {
+        restoreGate.invalidate();
+        await explorationGate.render(route, heading);
       } else {
         restoreGate.invalidate();
+        explorationGate.invalidate();
         renderRoutePlaceholder(appView, { heading, description });
         setText(status, `CineScope 正在浏览：${heading}`);
       }

@@ -1,6 +1,8 @@
 import { adaptRecommendationMedia, normalizeMediaAsset } from "../core/media.js";
 import { renderMediaFrame } from "./media-frame.js";
 
+const SAFE_ROUTE_SEGMENT = /^[A-Za-z0-9:._~-]+$/;
+
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
@@ -35,6 +37,19 @@ function actionList(actions) {
   return [];
 }
 
+export function stableTitleKey(item = {}) {
+  const record = item && typeof item === "object" ? item : {};
+  const itemKey = textValue(record.item_key) || textValue(record.itemKey);
+  if (itemKey) return itemKey;
+  const doubanId = textValue(record.douban_id) || textValue(record.doubanId);
+  return doubanId ? `douban:${doubanId}` : "";
+}
+
+export function titleRouteForItem(item = {}) {
+  const key = stableTitleKey(item);
+  return key && SAFE_ROUTE_SEGMENT.test(key) ? `/title/${key}` : "";
+}
+
 /**
  * Compact title card for horizontal shelves. All copy is assigned through
  * textContent so recommendation or model text stays inert.
@@ -43,7 +58,16 @@ export function renderTitleCard(item = {}, actions = []) {
   const record = item && typeof item === "object" ? item : {};
   const card = document.createElement("article");
   card.className = "title-card";
-  card.append(renderMediaFrame(mediaForItem(record)));
+
+  const route = titleRouteForItem(record);
+  const content = document.createElement(route ? "a" : "div");
+  content.className = "title-card__link";
+  if (route) {
+    content.setAttribute("href", route);
+    content.setAttribute("data-route", "");
+    content.setAttribute("aria-label", `打开《${textValue(record.title) || textValue(record.name, "未命名作品")}》详情`);
+  }
+  content.append(renderMediaFrame(mediaForItem(record)));
 
   const body = document.createElement("div");
   body.className = "title-card__body";
@@ -54,7 +78,8 @@ export function renderTitleCard(item = {}, actions = []) {
 
   const reason = textValue(record.reason) || textValue(record.description);
   if (reason) appendText(body, "p", "title-card__reason", reason);
-  card.append(body);
+  content.append(body);
+  card.append(content);
 
   const controls = actionList(actions).filter((action) => typeof action?.onClick === "function");
   if (controls.length) {

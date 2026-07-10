@@ -2,6 +2,7 @@ import { backendChannel, postV2 } from "../core/api.js";
 import { adaptRecommendationMedia } from "../core/media.js";
 import { renderMediaFrame } from "../components/media-frame.js";
 import { renderShelf } from "../components/shelf.js";
+import { titleRouteForItem } from "../components/title-card.js";
 
 export const MAX_INITIAL_CARDS = 9;
 
@@ -131,6 +132,13 @@ function renderHero(recommendation, channel) {
   if (metadata.length) copy.append(element("p", "tonight-hero__metadata", metadata.join(" · ")));
 
   const actions = element("div", "tonight-hero__actions");
+  const detailRoute = titleRouteForItem(item || {});
+  if (detailRoute) {
+    const detail = element("a", "tonight-button tonight-button--detail", "打开作品详情");
+    detail.setAttribute("href", detailRoute);
+    detail.setAttribute("data-route", "");
+    actions.append(detail);
+  }
   const command = element("button", "tonight-button tonight-button--primary", item ? "重新描述今晚" : "描述今晚");
   command.type = "button";
   command.addEventListener("click", () => dependencies.openCommandLens?.(""));

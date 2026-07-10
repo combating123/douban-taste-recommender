@@ -1329,6 +1329,337 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn(".command-lens--enter { animation-duration: 1ms; }", reduced_css)
         self.assertIn(".command-lens { transform: translateX(-50%); }", reduced_css)
 
+    def test_title_navigation_uses_stable_item_identity_and_never_title_text(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map();
+                this.className = ""; this.textContent = ""; this.dataset = {{}};
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ renderTitleCard }} = await import("{module_url('js/components/title-card.js')}");
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+
+            const stable = renderTitleCard({{ title: "同名作品", item_key: "item:stable-1", douban_id: "999" }});
+            const stableLink = collect(stable).find((node) => node.tagName === "A");
+            if (stableLink?.attributes.get("href") !== "/title/item:stable-1") throw new Error("item_key did not win navigation identity");
+
+            const douban = renderTitleCard({{ title: "同名作品", douban_id: "1295644" }});
+            const doubanLink = collect(douban).find((node) => node.tagName === "A");
+            if (doubanLink?.attributes.get("href") !== "/title/douban:1295644") throw new Error("douban id fallback was not stable");
+
+            const titleOnly = renderTitleCard({{ title: "同名作品" }});
+            if (collect(titleOnly).some((node) => node.tagName === "A")) throw new Error("title text was guessed as navigation identity");
+            console.log(JSON.stringify({{ stable: stableLink.attributes.get("href"), douban: doubanLink.attributes.get("href") }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("/title/item:stable-1", result["stable"])
+        self.assertEqual("/title/douban:1295644", result["douban"])
+
+    def test_title_detail_renders_cinematic_sections_people_and_local_relationships(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{
+              constructor(owner) {{ this.owner = owner; }}
+              add(name) {{ const values = new Set(this.owner.className.split(/\\s+/).filter(Boolean)); values.add(name); this.owner.className = [...values].join(" "); }}
+              remove(name) {{ this.owner.className = this.owner.className.split(/\\s+/).filter((value) => value && value !== name).join(" "); }}
+              toggle(name, force) {{ if (force) this.add(name); else this.remove(name); }}
+            }}
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.id = ""; this.hidden = false; this.disabled = false;
+                this.classList = new FakeClassList(this); this.style = {{ setProperty() {{}} }};
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              getBoundingClientRect() {{ return {{ left: 20, top: 30, width: 120, height: 180 }}; }}
+              focus() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const root = new FakeElement("main");
+            let transitions = 0;
+            globalThis.document = {{
+              createElement: (tag) => new FakeElement(tag),
+              createDocumentFragment: () => new FakeElement("fragment"),
+              startViewTransition(update) {{ transitions += 1; update(); return {{ finished: Promise.resolve() }}; }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const opened = [];
+            const mediaJobs = [];
+            const fetchPaths = [];
+            const title = {{
+              id: "media-42", item_key: "douban:42", title: "银幕测试", media_type: "电影", year: 2024, state: "watched",
+              poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }},
+              item: {{
+                title: "银幕测试", year: 2024, media_type: "电影", directors: ["导演甲"], casts: ["演员乙"],
+                countries: ["中国"], genres: ["剧情"], douban_rating: 8.6, my_rating: 9, duration: 123,
+                summary: "一段只来自本地片库的简介。",
+              }},
+              people: [
+                {{ id: "person-director", role: "director", name: "导演甲", portrait: {{ url: "", media_status: "missing" }}, media_status: "missing" }},
+                {{ id: "person-cast", role: "cast", name: "演员乙", portrait: {{ url: "", media_status: "pending" }}, media_status: "pending" }},
+              ],
+            }};
+            const universe = {{
+              focus_id: "douban:42",
+              nodes: [
+                {{ id: "douban:42", title: "银幕测试", year: 2024, media_type: "电影", poster: {{ url: "", media_status: "missing" }} }},
+                {{ id: "item:related", title: "本地关联作品", year: 2020, media_type: "电影", poster: {{ url: "", media_status: "missing" }} }},
+              ],
+              edges: [{{ source: "douban:42", target: "item:related", score: 2.4, reason: "shared director: 导演甲", reasons: ["shared director: 导演甲"] }}],
+            }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              async fetchJson(path) {{ fetchPaths.push(path); return path.startsWith("/api/v2/titles/") ? title : universe; }},
+              async postV2(path, payload) {{ mediaJobs.push({{ path, payload }}); return {{ job_id: `job-${{mediaJobs.length}}`, state: "queued" }}; }},
+              openPersonSheet(id, rect) {{ opened.push({{ id, rect }}); }},
+            }});
+            await renderTitleDetail("douban:42");
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const nodes = collect(root);
+            const classes = nodes.map((node) => node.className);
+            for (const required of ["detail-page", "detail-backdrop", "detail-poster", "detail-tabs", "detail-score-grid", "detail-facts", "detail-people-rail", "detail-relations"]) {{
+              if (!classes.some((value) => value.split(/\\s+/).includes(required))) throw new Error(`missing detail section: ${{required}}`);
+            }}
+            const personButton = nodes.find((node) => node.className.includes("person-card"));
+            personButton.onclick();
+            if (opened[0]?.id !== "person-director" || opened[0].rect.width !== 120) throw new Error("person sheet did not receive stable identity and origin rect");
+            const relationLink = nodes.find((node) => node.tagName === "A" && node.attributes.get("href") === "/title/item:related");
+            if (!relationLink) throw new Error("local relationship did not keep stable item key navigation");
+            const text = nodes.map((node) => node.textContent).join("|");
+            if (!text.includes("本地关联") || !text.includes("共同导演：导演甲") || text.includes("相似作品")) throw new Error("universe semantics were overstated or left raw backend labels");
+            if (!fetchPaths.includes("/api/v2/titles/douban:42")) throw new Error(`catalog path encoded the safe title identity: ${{fetchPaths}}`);
+            if (transitions !== 1) throw new Error("prepared detail did not use view transition");
+            console.log(JSON.stringify({{ transitions, opened: opened[0].id, mediaJobs: mediaJobs.length, relation: relationLink.attributes.get("href") }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["transitions"])
+        self.assertEqual("person-director", result["opened"])
+        self.assertEqual("/title/item:related", result["relation"])
+
+    def test_people_prefetch_is_bounded_exact_deduplicated_and_uses_post_v2(self):
+        output = run_node_module(
+            f'''
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const deferred = () => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }};
+            const calls = [];
+            const {{ configureDetail, prefetchVisiblePeople }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              api: {{
+                postV2(path, payload) {{ const pending = deferred(); calls.push({{ path, payload, pending }}); return pending.promise; }},
+              }},
+            }});
+            const missing = {{ url: "", media_status: "missing" }};
+            const title = {{
+              title: "预取边界测试",
+              item: {{ directors: ["导演甲", "共享身份"], casts: ["演员1", "演员2", "演员3", "演员4", "演员5", "演员6", "演员7", "演员8", "演员9"] }},
+              people: [
+                {{ id: "p-director", name: "导演甲", role: "director", portrait: missing }},
+                {{ id: "p-shared", name: "共享身份", role: "director", portrait: missing }},
+                {{ id: "p-actor-1", name: "演员1", role: "cast", portrait: missing }},
+                {{ id: "p-shared", name: "演员2", role: "cast", portrait: missing }},
+                {{ id: "p-ready", name: "演员3", role: "cast", portrait: {{ url: "/media/ready.png", media_status: "ready" }} }},
+                {{ id: "p-actor-4", name: "演员4", role: "cast", portrait: missing }},
+                {{ id: "p-actor-5", name: "演员5", role: "cast", portrait: missing }},
+                {{ id: "p-actor-6", name: "演员6", role: "cast", portrait: missing }},
+                {{ id: "p-actor-7", name: "演员7", role: "cast", portrait: missing }},
+                {{ id: "p-actor-8", name: "演员8", role: "cast", portrait: missing }},
+                {{ id: "p-actor-9", name: "演员9", role: "cast", portrait: missing }},
+              ],
+            }};
+            const first = prefetchVisiblePeople(title);
+            const duplicate = prefetchVisiblePeople(title);
+            if (calls.length !== 8) throw new Error(`expected 8 bounded unique jobs, received ${{calls.length}}`);
+            const ids = calls.map((call) => call.payload.identity_key);
+            if (new Set(ids).size !== ids.length) throw new Error("duplicate person id was enqueued");
+            if (calls.some((call) => call.path !== "/api/v2/media/jobs")) throw new Error("portrait job bypassed the V2 media endpoint");
+            if (calls.some((call) => call.payload.person_name === "演员9" || call.payload.identity_key === "p-ready")) throw new Error("prefetch exceeded first eight cast or included ready portrait");
+            if (calls.some((call) => call.payload.work_context[0] !== "预取边界测试" || call.payload.priority !== 0)) throw new Error("portrait context payload was incomplete");
+            calls.forEach((call, index) => call.pending.resolve({{ job_id: `job-${{index}}`, state: "queued" }}));
+            await Promise.all([first, duplicate]);
+            await prefetchVisiblePeople(title);
+            if (calls.length !== 8) throw new Error("completed prefetch was enqueued again");
+            console.log(JSON.stringify({{ count: calls.length, ids, names: calls.map((call) => call.payload.person_name) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(8, result["count"])
+        self.assertNotIn("p-ready", result["ids"])
+        self.assertNotIn("演员9", result["names"])
+
+    def test_person_sheet_is_contextual_closable_and_restores_trigger_focus(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{
+              constructor(owner) {{ this.owner = owner; }}
+              add(name) {{ const values = new Set(this.owner.className.split(/\\s+/).filter(Boolean)); values.add(name); this.owner.className = [...values].join(" "); }}
+              remove(name) {{ this.owner.className = this.owner.className.split(/\\s+/).filter((value) => value && value !== name).join(" "); }}
+            }}
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.classList = new FakeClassList(this);
+                this.style = {{ setProperty() {{}} }}; this.focusCount = 0;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              remove() {{ if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); }}
+              focus() {{ this.focusCount += 1; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const overlayRoot = new FakeElement("div");
+            const pageRoot = new FakeElement("main");
+            const trigger = new FakeElement("button");
+            const listeners = new Map();
+            globalThis.document = {{
+              activeElement: trigger,
+              createElement: (tag) => new FakeElement(tag),
+              getElementById(id) {{ return id === "overlay-root" ? overlayRoot : null; }},
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const person = {{
+              id: "person:1", name: "演员乙", aliases: ["Actor B"], bio: "", media_status: "pending",
+              portrait: {{ url: "https://external.invalid/wrong.jpg", media_status: "pending" }},
+              known_for: [{{ id: "douban:77", title: "证据作品", year: 2021, media_type: "电影", poster: {{ url: "", media_status: "missing" }} }}],
+              evidence: [{{ title_id: "douban:77", title: "证据作品", roles: ["cast"] }}],
+            }};
+            const {{ configurePeople, openPersonSheet, renderPersonPage, setPersonContext }} = await import("{module_url('js/features/people.js')}");
+            const fetchPaths = [];
+            configurePeople({{ overlayRoot, root: pageRoot, async fetchJson(path) {{ fetchPaths.push(path); return person; }} }});
+            setPersonContext({{ item_key: "douban:42", title: "银幕测试", people: [{{ id: "person:1", name: "演员乙", role: "cast" }}] }});
+            await openPersonSheet("person:1", {{ left: 12, top: 16, width: 90, height: 120 }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            let nodes = collect(overlayRoot);
+            if (!nodes.some((node) => node.className.includes("person-sheet"))) throw new Error("person sheet was not mounted in overlay root");
+            if (!nodes.map((node) => node.textContent).join("|").includes("银幕测试")) throw new Error("origin title context was lost");
+            if (nodes.some((node) => node.tagName === "IMG")) throw new Error("unready or external portrait entered visible DOM");
+            const fullPageLink = nodes.find((node) => node.tagName === "A");
+            if (fullPageLink?.attributes.get("href") !== "/person/person:1") throw new Error("full person route was not exposed");
+            if (fetchPaths[0] !== "/api/v2/people/person:1") throw new Error(`person API path encoded the safe identity: ${{fetchPaths[0]}}`);
+            for (const listener of listeners.get("keydown") ?? []) listener({{ key: "Escape" }});
+            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 1) throw new Error("Escape did not close and restore trigger focus");
+
+            await openPersonSheet("person:1", {{ left: 0, top: 0, width: 1, height: 1 }});
+            const backdrop = overlayRoot.firstElementChild;
+            backdrop.onclick({{ target: backdrop }});
+            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 2) throw new Error("backdrop did not close the sheet");
+
+            await openPersonSheet("person:1", {{ left: 0, top: 0, width: 1, height: 1 }});
+            nodes = collect(overlayRoot);
+            nodes.find((node) => node.className === "person-sheet__full-link").onclick();
+            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 3) throw new Error("full-page navigation left the sheet covering the destination");
+
+            await renderPersonPage("person:1");
+            nodes = collect(pageRoot);
+            if (!nodes.some((node) => node.tagName === "A" && node.attributes.get("href") === "/title/douban:77")) {{
+              throw new Error("known_for credit did not use its stable backend title id");
+            }}
+            const limitedPerson = {{ ...person, known_for: [], evidence: [] }};
+            configurePeople({{ overlayRoot, root: pageRoot, async fetchJson() {{ return limitedPerson; }} }});
+            await renderPersonPage("person:1");
+            nodes = collect(pageRoot);
+            const pageText = nodes.map((node) => node.textContent).join("|");
+            if (!nodes.some((node) => node.className.includes("person-page")) || !pageText.includes("资料有限") || !pageText.includes("银幕测试")) {{
+              throw new Error("person page did not retain limited-data title context");
+            }}
+            console.log(JSON.stringify({{ focusCount: trigger.focusCount, href: fullPageLink.attributes.get("href"), pageText }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, result["focusCount"])
+        self.assertEqual("/person/person:1", result["href"])
+        self.assertIn("资料有限", result["pageText"])
+
+    def test_exploration_route_gate_keeps_old_dom_until_current_view_is_ready(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{
+              readyState: "loading", addEventListener() {{}},
+              startViewTransition() {{ throw new Error("transition unavailable during navigation"); }},
+            }};
+            const {{ createExplorationRouteGate }} = await import("{module_url('js/app.js')}");
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            const stable = {{ id: "stable" }};
+            const root = {{ children: [stable], replaceChildren(...nodes) {{ this.children = nodes; }} }};
+            let activePath = "/title/old";
+            const requests = [];
+            const renderer = (id, options) => {{
+              const pending = deferred(); requests.push({{ id, options, pending }});
+              return pending.promise.then((view) => options.commit(view, {{ heading: id }}));
+            }};
+            const gate = createExplorationRouteGate({{
+              root,
+              getActivePath: () => activePath,
+              renderTitle: renderer,
+              renderPerson: renderer,
+              setStatus() {{}},
+            }});
+            const oldRender = gate.render({{ path: "/title/old", name: "title", params: {{ id: "old" }} }});
+            activePath = "/title/new";
+            const newRender = gate.render({{ path: "/title/new", name: "title", params: {{ id: "new" }} }});
+            if (!requests[0].options.signal.aborted) throw new Error("new route did not abort stale exploration request");
+            if (root.children[0] !== stable) throw new Error("stable DOM was cleared before a replacement was ready");
+            requests[0].pending.resolve({{ id: "old-view" }});
+            await oldRender;
+            if (root.children[0] !== stable) throw new Error("stale route committed after resolving");
+            requests[1].pending.resolve({{ id: "new-view" }});
+            await newRender;
+            if (root.children[0]?.id !== "new-view") throw new Error("current prepared route did not commit");
+
+            activePath = "/person/missing";
+            const failed = gate.render({{ path: activePath, name: "person", params: {{ id: "missing" }} }});
+            requests[2].pending.reject(new Error("Request failed: 404"));
+            await failed;
+            if (!String(root.children[0]?.className).includes("route-recovery")) throw new Error("current 404 did not render a recovery panel");
+            console.log(JSON.stringify({{ requestCount: requests.length, current: root.children[0].className }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, result["requestCount"])
+        self.assertIn("route-recovery", result["current"])
+
+    def test_detail_stylesheet_is_static_cinematic_and_motion_safe(self):
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "detail.css").read_text(encoding="utf-8")
+
+        self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/detail.css" />', html)
+        self.assertRegex(css, r"\.detail-backdrop\s*\{[^}]*aspect-ratio:\s*16\s*/\s*7", re.DOTALL)
+        self.assertRegex(css, r"\.detail-poster[^}]*\.media-frame__image\s*\{[^}]*object-fit:\s*contain", re.DOTALL)
+        self.assertIn("prefers-reduced-motion", css)
+        declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
+        for declaration in declarations:
+            for transition in declaration.split(","):
+                property_name = transition.strip().split(maxsplit=1)[0]
+                with self.subTest(transition=transition):
+                    self.assertIn(property_name, {"transform", "opacity"})
+
+        source = "".join(
+            (UI_ROOT / path).read_text(encoding="utf-8")
+            for path in ("js/features/detail.js", "js/features/people.js", "js/app.js")
+        )
+        self.assertNotIn("innerHTML", source)
+        self.assertNotIn('createElement("link")', source)
+
     def test_tonight_stylesheet_is_static_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
         css = (UI_ROOT / "styles" / "tonight.css").read_text(encoding="utf-8")
