@@ -224,6 +224,7 @@ git commit -m "feat: add restorable cinescope navigation"
 - Create: `src/douban_recommender/ui/js/components/media-frame.js`
 - Create: `src/douban_recommender/ui/js/components/title-card.js`
 - Create: `src/douban_recommender/ui/js/components/shelf.js`
+- Modify: `src/douban_recommender/ui/index.html`
 - Modify: `tests/test_ui_v3_contract.py`
 
 **Interfaces:**
@@ -285,6 +286,8 @@ export function renderMediaFrame(asset) {
 
 Use `--motion-fast: 180ms`, `--motion-standard: 280ms`, and `--motion-immersive: 440ms`. Add a `prefers-reduced-motion` block that sets all durations to `1ms` and disables parallax.
 
+Load `styles/components.css` and then `styles/motion.css` from `index.html` after `styles/shell.css`; do not inject stylesheets at runtime.
+
 - [ ] **Step 5: Run tests and syntax checks**
 
 Run: `python -m unittest tests.test_ui_v3_contract -v; Get-ChildItem src/douban_recommender/ui/js -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }`
@@ -294,7 +297,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add src/douban_recommender/ui/styles src/douban_recommender/ui/js/core/media.js src/douban_recommender/ui/js/components tests/test_ui_v3_contract.py
+git add src/douban_recommender/ui/index.html src/douban_recommender/ui/styles src/douban_recommender/ui/js/core/media.js src/douban_recommender/ui/js/components tests/test_ui_v3_contract.py
 git commit -m "feat: add cinescope visual component system"
 ```
 
