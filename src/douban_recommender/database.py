@@ -192,7 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_library_state_time
 
 
 class AppDatabase:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -216,6 +216,10 @@ class AppDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as connection:
             connection.executescript(SCHEMA_V1)
+            connection.execute("BEGIN IMMEDIATE")
+            from .migrations import migrate_recommendation_item_keys
+
+            migrate_recommendation_item_keys(connection)
             connection.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
                 (str(self.SCHEMA_VERSION),),

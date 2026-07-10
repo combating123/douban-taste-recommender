@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+
+_SAFE_EXTERNAL_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 
 def _clean_list(values: list[str] | None) -> list[str]:
@@ -123,6 +127,8 @@ def recommendation_item_key(item: MediaItem | dict[str, Any]) -> str:
     if identifier:
         if identifier.isdigit():
             return f"douban:{identifier}"
+        if identifier not in {".", ".."} and _SAFE_EXTERNAL_IDENTIFIER_RE.fullmatch(identifier):
+            return f"external:{identifier}"
         opaque_identifier = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:24]
         return f"external:{opaque_identifier}"
     basis = "|".join(

@@ -52,6 +52,11 @@ class MediaModelCanonicalizationTests(unittest.TestCase):
             "douban:35280649",
         )
 
+    def test_url_safe_external_identifier_preserves_legacy_key(self):
+        item = MediaItem(title="Legacy safe external", douban_id="movie-1")
+
+        self.assertEqual(recommendation_item_key(item), "external:movie-1")
+
 
 if __name__ == "__main__":
     unittest.main()

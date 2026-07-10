@@ -1,4 +1,5 @@
 import json
+import copy
 import sqlite3
 import tempfile
 import threading
@@ -267,6 +268,65 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         self.assertIn(key, self.service.restore_session(later_session.id).channels[channel]["excluded_keys"])
         self.assertNotEqual(reapplied["event_id"], first["event_id"])
         self.assertNotEqual(reapplied["event_id"], later["event_id"])
+
+    def test_undo_recomputes_effective_state_from_remaining_active_feedback_chain(self):
+        session = self.create()
+        channel = list(pools())[2]
+        key = self.service.next_batch(session.id, channel).item_keys[0]
+        watched = self.service.apply_feedback(session.id, "watched", key)
+        wanted = self.service.apply_feedback(session.id, "want", key)
+
+        self.service.undo_feedback(watched["event_id"])
+        after_watched_undo = self._library_row(key)
+        self.service.undo_feedback(wanted["event_id"])
+        after_all_undo = self._library_row(key)
+
+        self.assertEqual(after_watched_undo["state"], "wanted")
+        self.assertEqual(after_all_undo["state"], "candidate")
+
+    def test_undo_preserves_newer_candidate_payload_and_metadata(self):
+        original_pools = pools()
+        session = self.service.create_session(
+            "profile-1",
+            RecommendationIntent(),
+            original_pools,
+            {channel: 3 for channel in original_pools},
+        )
+        channel = next(iter(original_pools))
+        key = recommendation_item_key(original_pools[channel]["items"][0])
+        watched = self.service.apply_feedback(session.id, "watched", key)
+
+        refreshed_pools = copy.deepcopy(original_pools)
+        refreshed_pools[channel]["items"][0]["summary"] = "newer candidate summary"
+        time.sleep(0.002)
+        self.service.create_session(
+            "profile-1",
+            RecommendationIntent(),
+            refreshed_pools,
+            {name: 3 for name in refreshed_pools},
+        )
+        refreshed = self._library_row(key)
+
+        self.service.undo_feedback(watched["event_id"])
+        restored = self._library_row(key)
+
+        self.assertEqual(restored["state"], "candidate")
+        self.assertEqual(json.loads(restored["payload_json"])["summary"], "newer candidate summary")
+        self.assertEqual(restored["source"], refreshed["source"])
+        self.assertEqual(restored["updated_at"], refreshed["updated_at"])
+
+    def test_undo_recomputes_exclusion_from_all_remaining_active_events(self):
+        session = self.create()
+        channel = next(iter(pools()))
+        key = recommendation_item_key(pools()[channel]["items"][0])
+        watched = self.service.apply_feedback(session.id, "watched", key)
+        not_tonight = self.service.apply_feedback(session.id, "not-tonight", key)
+
+        self.service.undo_feedback(watched["event_id"])
+        self.assertIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
+        self.service.undo_feedback(not_tonight["event_id"])
+
+        self.assertNotIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
 
     def test_watched_feedback_upserts_library_item_and_is_idempotent(self):
         session = self.create()
