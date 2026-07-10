@@ -157,6 +157,8 @@ def _feedback_metadata(row) -> dict[str, object]:
 
 
 def _is_materialized_feedback_row(row) -> bool:
+    if not str(row["session_id"] or "").strip():
+        return False
     metadata = _feedback_metadata(row)
     marker = metadata.get(_STATE_EFFECT_KEY)
     if isinstance(marker, dict):
@@ -168,7 +170,7 @@ def _is_materialized_feedback_row(row) -> bool:
             str(marker.get("source") or "") == _STATE_EFFECT_SOURCE
             and version == _STATE_EFFECT_VERSION
         )
-    if not _LEGACY_EFFECT_KEYS.issubset(metadata):
+    if set(metadata) != _LEGACY_EFFECT_KEYS:
         return False
     return (
         isinstance(metadata.get("prior_excluded_channels"), list)
@@ -511,7 +513,7 @@ class RecommendationSessionService:
                 undone_ids = _undone_event_ids(connection, clean_item_key)
                 existing_rows = connection.execute(
                     """
-                    SELECT id, payload_json, undone_by FROM feedback_events
+                    SELECT id, session_id, payload_json, undone_by FROM feedback_events
                     WHERE session_id = ? AND item_key = ? AND event_type = ?
                     ORDER BY created_at DESC, id DESC
                     """,

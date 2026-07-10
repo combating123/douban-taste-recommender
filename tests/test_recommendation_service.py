@@ -342,7 +342,24 @@ class RecommendationSessionServiceTests(unittest.TestCase):
                         event_type=inert_type,
                         item_key=key,
                         profile_key="profile-1",
-                        payload={"source": "inert-profile-feedback"},
+                        payload={
+                            "source": "inert-profile-feedback",
+                            "_recommendation_undo": (
+                                {
+                                    "state_effect": {
+                                        "source": "recommendation-session-service",
+                                        "version": 1,
+                                    }
+                                }
+                                if index == 0
+                                else {
+                                    "prior_excluded_channels": [],
+                                    "prior_library": {"exists": False},
+                                    "state_origin": {"exists": False},
+                                    "exclusion_origin_channels": [],
+                                }
+                            ),
+                        },
                         created_at=time.time(),
                     )
                 )

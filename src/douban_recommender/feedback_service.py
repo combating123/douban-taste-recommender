@@ -90,7 +90,10 @@ def _timestamp(value: datetime | float | None) -> float:
     return float(value)
 def _scrub_payload(payload: dict[str, object]) -> dict[str, object]:
     scrubbed = scrub_sensitive(dict(payload or {}))
-    return scrubbed if isinstance(scrubbed, dict) else {}
+    if not isinstance(scrubbed, dict):
+        return {}
+    scrubbed.pop("_recommendation_undo", None)
+    return scrubbed
 
 
 def _json_object(value: object) -> dict[str, object]:

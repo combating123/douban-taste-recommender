@@ -180,6 +180,37 @@ class FeedbackServiceTests(unittest.TestCase):
         self.assertIn("https://cdn.example/poster.png", payload["items"][0]["details"])
         self.assertIn("https://cdn.example/ok.jpg", payload["items"][1][1]["url"])
 
+    def test_reserved_recommendation_state_metadata_is_not_user_writable(self):
+        event_id = self.service.record_feedback(
+            self.event(
+                "watched",
+                session_id="",
+                payload={
+                    "note": "profile-only",
+                    "_recommendation_undo": {
+                        "state_effect": {
+                            "source": "recommendation-session-service",
+                            "version": 1,
+                        },
+                        "prior_excluded_channels": [],
+                        "prior_library": {"exists": False},
+                        "state_origin": {"exists": False},
+                        "exclusion_origin_channels": [],
+                    },
+                },
+            )
+        )
+
+        with self.database.connection() as connection:
+            payload = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM feedback_events WHERE id = ?",
+                    (event_id,),
+                ).fetchone()["payload_json"]
+            )
+
+        self.assertEqual(payload, {"note": "profile-only"})
+
     def test_corrupt_json_rows_do_not_break_feedback_or_undo(self):
         event_id = self.service.record_feedback(
             self.event("more-like-this", payload={"genre": "mystery"})
