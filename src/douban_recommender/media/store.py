@@ -10,6 +10,7 @@ from typing import Any
 
 from ..database import AppDatabase
 from .models import StoredAsset, ValidatedImage
+from .validator import validate_image_bytes
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -107,6 +108,7 @@ class MediaStore:
         row_asset_id = str(row["asset_id"] or "").strip()
         row_sha256 = str(row["sha256"] or "").strip()
         extension = str(row["extension"] or "").strip().lower()
+        mime_type = str(row["mime_type"] or "").strip().lower()
         relative_text = str(row["relative_path"] or "").strip()
 
         if (
@@ -127,7 +129,22 @@ class MediaStore:
         path = (self.root / Path(*relative_path.parts)).resolve()
         if not self._is_within_root(path) or not path.is_file():
             return None
-        if self._sha256_file(path) != key:
+        try:
+            payload = path.read_bytes()
+            validated = validate_image_bytes(payload, mime_type, min_width=1, min_height=1)
+            width = int(row["width"])
+            height = int(row["height"])
+            byte_size = int(row["byte_size"])
+        except Exception:
+            return None
+        if (
+            validated.sha256 != key
+            or validated.extension != extension
+            or validated.mime_type != mime_type
+            or validated.width != width
+            or validated.height != height
+            or len(payload) != byte_size
+        ):
             return None
 
         return StoredAsset(
@@ -135,11 +152,11 @@ class MediaStore:
             sha256=key,
             path=path,
             local_url=f"/media/{key}{extension}",
-            mime_type=str(row["mime_type"]),
+            mime_type=mime_type,
             extension=extension,
-            width=int(row["width"]),
-            height=int(row["height"]),
-            byte_size=int(row["byte_size"]),
+            width=width,
+            height=height,
+            byte_size=byte_size,
             source_url=str(row["source_url"]),
             kind=str(row["kind"]),
             status=str(row["status"]),

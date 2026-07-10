@@ -127,6 +127,66 @@ class MediaStoreTests(unittest.TestCase):
 
         self.assertIsNone(self.store.lookup(stored.asset_id))
 
+    def test_lookup_rejects_self_consistent_manifest_when_bytes_are_not_decodable_image(self):
+        payload = b"not an image"
+        asset_id = hashlib.sha256(payload).hexdigest()
+        relative = Path(asset_id[:2]) / f"{asset_id}.png"
+        path = self.store.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO asset_files(
+                    asset_id, sha256, relative_path, mime_type, extension,
+                    width, height, byte_size, source_url, kind, status,
+                    created_at, last_verified_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 0, 0)
+                """,
+                (
+                    asset_id,
+                    asset_id,
+                    relative.as_posix(),
+                    "image/png",
+                    ".png",
+                    1,
+                    1,
+                    len(payload),
+                    "https://img.example/forged.png",
+                    "poster",
+                ),
+            )
+
+        self.assertIsNone(self.store.lookup(asset_id))
+
+    def test_lookup_rejects_manifest_metadata_that_does_not_match_decoded_image(self):
+        validated = validate_image_bytes(image_bytes(size=(160, 240), color="navy"))
+        stored = self.store.put(validated, "https://img.example/a.png", "poster")
+        cases = (
+            ("mime_type", "image/jpeg"),
+            ("extension", ".jpg"),
+            ("width", validated.width + 1),
+            ("height", validated.height + 1),
+            ("byte_size", len(validated.data) + 1),
+        )
+
+        for column, wrong_value in cases:
+            with self.subTest(column=column):
+                with self.database.connection() as connection:
+                    connection.execute(
+                        f"UPDATE asset_files SET {column} = ? WHERE asset_id = ?",
+                        (wrong_value, stored.asset_id),
+                    )
+
+                self.assertIsNone(self.store.lookup(stored.asset_id))
+
+                with self.database.connection() as connection:
+                    connection.execute(
+                        f"UPDATE asset_files SET {column} = ? WHERE asset_id = ?",
+                        (getattr(validated, column, len(validated.data)), stored.asset_id),
+                    )
+
     def test_lookup_rejects_disallowed_manifest_extension(self):
         validated = validate_image_bytes(image_bytes(color="navy"))
         stored = self.store.put(validated, "https://img.example/a.png", "poster")

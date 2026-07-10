@@ -1,6 +1,7 @@
 ﻿import base64
 import hashlib
 import inspect
+import io
 import json
 import tempfile
 import threading
@@ -11,6 +12,8 @@ import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+
+from PIL import Image
 
 from douban_recommender.database import AppDatabase
 from douban_recommender.feedback_service import FeedbackEvent, FeedbackService
@@ -70,7 +73,9 @@ class CatalogApiV2Tests(unittest.TestCase):
             )
 
     def _insert_asset(self, asset_id, kind="poster", present=True, status="ready", relative=None):
-        data = f"catalog fixture asset:{asset_id}:{kind}:{status}".encode("utf-8")
+        output = io.BytesIO()
+        Image.new("RGB", (1, 1), f"#{asset_id[:6]}").save(output, format="PNG")
+        data = output.getvalue()
         actual_asset_id = hashlib.sha256(data).hexdigest()
         relative = relative or (Path(actual_asset_id[:2]) / f"{actual_asset_id}.png")
         relative = Path(relative)
