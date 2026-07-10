@@ -1,7 +1,22 @@
 const MEDIA_PREFIX = "/media/";
 const MEDIA_TIMEOUT_MS = 6000;
 const MEDIA_KINDS = new Set(["poster", "backdrop", "portrait"]);
-const MEDIA_STATUSES = new Set(["ready", "pending", "processing", "unavailable", "unverified", "missing"]);
+const MEDIA_STATUS_PRESENTATION = Object.freeze({
+  ready: "ready",
+  pending: "pending",
+  processing: "pending",
+  queued: "pending",
+  resolving: "pending",
+  downloading: "pending",
+  validating: "pending",
+  "designed-fallback": "missing",
+  missing: "missing",
+  degraded: "unverified",
+  ambiguous: "unverified",
+  unverified: "unverified",
+  failed: "unavailable",
+  unavailable: "unavailable",
+});
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -39,22 +54,46 @@ function candidateUrl(candidate) {
   return textValue(record.localUrl) || textValue(record.url) || textValue(record.path) || textValue(record.src);
 }
 
-function candidateStatus(candidate, fallback) {
-  const status = textValue(objectValue(candidate).status) || textValue(fallback);
-  return MEDIA_STATUSES.has(status) ? status : "";
+function statusText(value, kind) {
+  if (typeof value === "string") return value.trim().toLowerCase() || null;
+
+  const record = objectValue(value);
+  return textValue(record[kind]).toLowerCase() || textValue(record.status).toLowerCase() || null;
+}
+
+function statusFor(candidate, payload, kind) {
+  const media = objectValue(candidate);
+  const record = objectValue(payload);
+  const candidates = [
+    media.media_status,
+    media.mediaStatus,
+    media.status,
+    record[kind + "_status"],
+    record[kind + "Status"],
+    objectValue(record.media_status)[kind],
+    objectValue(record.mediaStatus)[kind],
+    record.status,
+  ];
+
+  for (const value of candidates) {
+    const rawStatus = statusText(value, kind);
+    if (rawStatus !== null) return MEDIA_STATUS_PRESENTATION[rawStatus] || "unverified";
+  }
+  return null;
 }
 
 function createAsset({ localUrl, kind, title, status, source }) {
   const safeKind = MEDIA_KINDS.has(kind) ? kind : "poster";
   const safeLocalUrl = localMediaPath(localUrl);
   const fallbackTitle = safeKind === "portrait" ? "未具名人物" : "未命名作品";
-  const safeStatus = candidateStatus({ status }, safeLocalUrl ? "ready" : "unavailable");
+  const safeStatus = statusFor({ status }, {}, safeKind);
+  const resolvedStatus = safeStatus || (safeLocalUrl ? "unverified" : "missing");
 
   return Object.freeze({
     localUrl: safeLocalUrl,
     kind: safeKind,
     title: textValue(title, fallbackTitle),
-    status: safeLocalUrl && safeStatus === "ready" ? "ready" : safeLocalUrl ? safeStatus || "pending" : "unavailable",
+    status: safeLocalUrl ? resolvedStatus : resolvedStatus === "ready" ? "missing" : resolvedStatus,
     source: textValue(source, "local"),
   });
 }
@@ -79,13 +118,13 @@ export function isLocalMediaUrl(value = "") {
  * never requests a resource.
  */
 export function adaptRecommendationMedia(item = {}) {
-  const candidate = mediaCandidate(item, ["poster", "posterMedia", "image"]);
+  const candidate = mediaCandidate(item, ["poster", "posterMedia", "image", "cover"]);
   const record = objectValue(item);
   return createAsset({
     localUrl: candidateUrl(candidate),
     kind: "poster",
     title: textValue(record.title) || textValue(record.name),
-    status: candidateStatus(candidate, record.posterStatus || record.mediaStatus || record.status),
+    status: statusFor(candidate, record, "poster"),
     source: record.source,
   });
 }
@@ -103,7 +142,7 @@ export function adaptCatalogMedia(record = {}, kind = "poster") {
     localUrl: candidateUrl(candidate),
     kind: safeKind,
     title: textValue(payload.title) || textValue(payload.name),
-    status: candidateStatus(candidate, payload[safeKind + "Status"] || payload.mediaStatus || payload.status),
+    status: statusFor(candidate, payload, safeKind),
     source: payload.source,
   });
 }
@@ -120,7 +159,7 @@ export function adaptPersonMedia(person = {}) {
     localUrl: candidateUrl(candidate),
     kind: "portrait",
     title: textValue(payload.name) || textValue(payload.title),
-    status: candidateStatus(candidate, payload.portraitStatus || payload.mediaStatus || payload.status),
+    status: statusFor(candidate, payload, "portrait"),
     source: payload.source,
   });
 }

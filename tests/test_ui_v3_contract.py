@@ -305,7 +305,7 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(2, result["images"])
         self.assertEqual(0, result["domImageCreates"])
 
-    def test_media_adapters_normalize_recommendation_catalog_and_person_payloads(self):
+    def test_media_adapters_normalize_v2_backend_payloads_and_legacy_poster_objects(self):
         output = run_node_module(
             f'''
             import {{
@@ -319,32 +319,34 @@ class UiV3ContractTests(unittest.TestCase):
             const recommendation = adaptRecommendationMedia({{
               title: "Cipher Line",
               source: "recommendation-cache",
-              poster: {{ localUrl: "/media/recommendation.webp", status: "ready" }},
+              cover: "/media/recommendation.webp",
+              media_status: {{ poster: "ready" }},
             }});
             const catalogPoster = adaptCatalogMedia({{
               title: "Archive 81",
               source: "catalog-cache",
-              media: {{
-                poster: {{ localUrl: "/media/catalog-poster.webp", status: "ready" }},
-                backdrop: {{ localUrl: "/media/catalog-backdrop.webp", status: "ready" }},
-              }},
+              poster: {{ url: "/media/catalog-poster.webp", media_status: "ready" }},
+              backdrop: {{ url: "/media/catalog-backdrop.webp", media_status: "ready" }},
             }}, "poster");
             const catalogBackdrop = adaptCatalogMedia({{
               title: "Archive 81",
               source: "catalog-cache",
-              media: {{
-                poster: {{ localUrl: "/media/catalog-poster.webp", status: "ready" }},
-                backdrop: {{ localUrl: "/media/catalog-backdrop.webp", status: "ready" }},
-              }},
+              poster: {{ url: "/media/catalog-poster.webp", media_status: "ready" }},
+              backdrop: {{ url: "/media/catalog-backdrop.webp", media_status: "ready" }},
             }}, "backdrop");
             const person = adaptPersonMedia({{
               name: "Jane Doe",
               source: "people-cache",
-              portrait: {{ localUrl: "/media/person.webp", status: "ready" }},
+              portrait: {{ url: "/media/person.webp", media_status: "ready" }},
             }});
-            const blocked = adaptRecommendationMedia({{
-              title: "Untrusted",
-              poster: {{ localUrl: "https://remote.test/media/poster.webp", status: "ready" }},
+            const topLevelStatus = adaptCatalogMedia({{
+              title: "Mapped Status",
+              poster: {{ url: "/media/mapped-poster.webp" }},
+              media_status: {{ poster: "ready" }},
+            }}, "poster");
+            const legacyPoster = adaptRecommendationMedia({{
+              title: "Legacy",
+              poster: {{ localUrl: "/media/legacy-poster.webp", status: "ready" }},
             }});
 
             for (const [asset, expectedKind, expectedTitle, expectedUrl, expectedSource] of [
@@ -352,6 +354,8 @@ class UiV3ContractTests(unittest.TestCase):
               [catalogPoster, "poster", "Archive 81", "/media/catalog-poster.webp", "catalog-cache"],
               [catalogBackdrop, "backdrop", "Archive 81", "/media/catalog-backdrop.webp", "catalog-cache"],
               [person, "portrait", "Jane Doe", "/media/person.webp", "people-cache"],
+              [topLevelStatus, "poster", "Mapped Status", "/media/mapped-poster.webp", "local"],
+              [legacyPoster, "poster", "Legacy", "/media/legacy-poster.webp", "local"],
             ]) {{
               if (asset.kind !== expectedKind || asset.title !== expectedTitle || asset.localUrl !== expectedUrl) {{
                 throw new Error("media adapter did not preserve its normalized shape");
@@ -360,15 +364,96 @@ class UiV3ContractTests(unittest.TestCase):
                 throw new Error("media adapter lost status or source");
               }}
             }}
-            if (blocked.localUrl !== null || blocked.status !== "unavailable") {{
-              throw new Error("adapter passed through an external image URL");
-            }}
-            console.log(JSON.stringify({{ recommendation, catalogPoster, catalogBackdrop, person }}));
+            console.log(JSON.stringify({{ recommendation, catalogPoster, catalogBackdrop, person, topLevelStatus, legacyPoster }}));
             '''
         )
         normalized = json.loads(output)
         self.assertEqual("portrait", normalized["person"]["kind"])
         self.assertEqual("/media/catalog-backdrop.webp", normalized["catalogBackdrop"]["localUrl"])
+
+    def test_media_frame_fails_closed_for_v2_nonready_and_external_assets(self):
+        output = run_node_module(
+            f'''
+            import {{ normalizeMediaAsset }} from "{module_url('js/core/media.js')}";
+            import {{ renderMediaFrame }} from "{module_url('js/components/media-frame.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.className = "";
+                this.textContent = "";
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+
+            globalThis.document = {{ createElement: (tagName) => new FakeElement(tagName) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const createdImages = [];
+            globalThis.Image = class FakeImage {{
+              constructor() {{ this.naturalWidth = 640; createdImages.push(this); }}
+              set src(value) {{ this._src = value; queueMicrotask(() => this.onload?.()); }}
+              decode() {{ return Promise.resolve(); }}
+            }};
+            const settle = async () => {{
+              await Promise.resolve();
+              await Promise.resolve();
+              await Promise.resolve();
+            }};
+
+            const expectedStates = new Map([
+              ["designed-fallback", "missing"],
+              ["missing", "missing"],
+              ["degraded", "unverified"],
+              ["ambiguous", "unverified"],
+              ["queued", "pending"],
+              ["resolving", "pending"],
+              ["downloading", "pending"],
+              ["validating", "pending"],
+              ["failed", "unavailable"],
+              ["unknown-state", "unverified"],
+              [undefined, "unverified"],
+            ]);
+            for (const [inputStatus, expectedStatus] of expectedStates) {{
+              const asset = normalizeMediaAsset({{
+                localUrl: "/media/" + (inputStatus || "absent") + ".webp",
+                kind: "poster",
+                title: "Fallback",
+                status: inputStatus,
+              }});
+              if (asset.status !== expectedStatus) {{
+                throw new Error("normalized status mismatch: " + inputStatus + ":" + asset.status);
+              }}
+              const frame = renderMediaFrame(asset);
+              await settle();
+              if (!frame.firstElementChild?.className.includes("media-fallback")) {{
+                throw new Error("non-ready asset replaced its fallback: " + inputStatus);
+              }}
+              if (!frame.firstElementChild.children[2]?.textContent) {{
+                throw new Error("fallback has no static status label: " + inputStatus);
+              }}
+            }}
+            if (createdImages.length !== 0) throw new Error("non-ready local assets created Image instances");
+
+            const external = renderMediaFrame({{
+              localUrl: "https://remote.test/media/external.webp",
+              kind: "poster",
+              title: "External",
+              status: "ready",
+            }});
+            await settle();
+            if (!external.firstElementChild?.className.includes("media-fallback") || createdImages.length !== 0) {{
+              throw new Error("external asset created an image");
+            }}
+            console.log(JSON.stringify({{ imageCreates: createdImages.length }}));
+            '''
+        )
+        self.assertEqual(0, json.loads(output)["imageCreates"])
 
     def test_title_cards_and_shelves_use_text_content_for_untrusted_copy(self):
         sources = (
