@@ -114,7 +114,9 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("候选池", text)
         self.assertIn("条件命中", text)
         self.assertIn("当前批次", text)
-        self.assertIn("160 不等于当前展示 30", text)
+        self.assertIn("`limit=160` 仅在未提供自定义候选时作为候选回填目标", text)
+        self.assertIn("不是推荐会话上限、频道库存上限或当前批次数量", text)
+        self.assertIn("自定义 candidates 可使 `pool_size` 超过或不同于 `limit`", text)
         self.assertIn("每频道独立换一批/上一批/耗尽恢复", text)
 
     def test_readme_documents_feedback_scope_and_append_only_undo(self):
