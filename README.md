@@ -30,6 +30,38 @@ python -m douban_recommender.web
 - 范围：电影、电视剧、动漫默认全开。
 - 数量：默认生成 120 条推荐，首页优先展示精选海报墙。
 
+## Task 9：推荐会话与文档集成
+
+### Command Lens 是什么
+
+推荐页的 **Command Lens** 用自然语言和可编辑条件驱动推荐会话：你可以直接写“想看高分悬疑电影”“今天先不要古装剧”，也可以手动改条件。**本地确定性排序为事实源，语言模型只做可选结构化/解释**；也就是排序、计数、换批次都由本地规则决定，模型只负责把自然语言整理成结构化 intent，或给出可选说明文案。
+
+- Command Lens 支持 **自然语言** 输入。
+- Command Lens 支持 **可编辑条件**，改完即可重新生成。
+- 没有显式配置模型 endpoint 时，整套推荐完全走本地规则。
+
+### 三个独立频道与频道边界
+
+系统始终拆成 **三个独立频道**：**电影 / 电视剧 / 动画剧集**。
+
+- 电影频道：独立排序、独立换批次。
+- 电视剧频道：独立排序、独立换批次，**电视剧默认古装降权**。
+- 动画频道：语义上是“动画剧集”而不是泛指动画内容，**动漫仅动画剧集、排除动画电影**。
+
+这三个频道互不挤占批次；一个频道换一批，不会推进另外两个频道。
+
+### 三种数量一定要分开看
+
+推荐页同时展示三种数量，必须严格区分：
+
+| 名词 | 含义 | 你该怎么理解 |
+| --- | --- | --- |
+| 候选池 | 进入本地排序前/排序时可用的频道全集 | 来源可能很多，数量通常最大 |
+| 条件命中 | 通过当前意图、过滤和降权后仍然可参与展示的条目数 | 这是“满足当前条件的可用库存” |
+| 当前批次 | 当前屏幕这一批实际拿出来的条目 | 这是你此刻看到或准备切到的一屏 |
+
+请不要把 `limit`、展示数、库存数混成一个概念。**160 不等于当前展示 30**：160 更接近整次会话目标或频道库存上限，30 只是当前页或当前屏幕的展示量。**每频道独立换一批/上一批/耗尽恢复**：电影、电视剧、动画剧集都有各自的前进、回退与耗尽后恢复逻辑。
+
 ## 同步建议
 
 如果你的豆瓣页面显示约 242 部看过、34 部想看，可以在同步面板填写：
@@ -75,6 +107,99 @@ python -m douban_recommender.cli `
   --output output\recommendations.html
 ```
 
+## 推荐反馈作用域
+
+反馈是 append-only 事件流，可以 **可撤销**，但不会偷偷重写旧记录。撤销会追加 undo 事件，而不是就地改历史。
+
+| 反馈动作 | 推荐作用域 | 是否进入稳定口味 | 说明 |
+| --- | --- | --- | --- |
+| `want` / `watched` / `permanent` | permanent | 是 | 长期强化“想看/已看”偏好 |
+| `not-tonight` / `tonight-candidate` / `session-only` | session-only | 否 | 只影响当前推荐会话，**session-only 不写入稳定口味** |
+| `less` / `more` / `permanent-avoid` | permanent | 是 | 长期弱化/强化或永久避雷 |
+
+为了方便核对，可以直接按这三组短语理解：want / watched / permanent；not-tonight / tonight-candidate / session-only；less / more / permanent-avoid。
+
+接口事件名以 API 为准：`more` 对应 `more-like-this`，`less` 对应 `less-like-this`。`not-tonight`、`tonight-candidate` 只在当前 session 生效；页面刷新或新建会话后不会被当成稳定口味继承。
+
+## V2 推荐 / 反馈 / Catalog API
+
+下面这些接口都使用 **schema_version: 2**；POST body 必须显式带 `schema_version: 2`。参数不合法通常返回 **400**，资源不存在通常返回 **404**。
+
+### 推荐会话 API
+
+- `POST /api/v2/recommend/sessions`：创建推荐会话。
+- `GET /api/v2/recommend/sessions/<session-id>`：恢复整个会话与三个频道状态。
+- `POST /api/v2/recommend/sessions/<session-id>/batch`：某一频道换一批。
+- `POST /api/v2/recommend/sessions/<session-id>/previous`：某一频道上一批。
+
+最小 body 示例：
+
+```json
+{
+  "schema_version": 2,
+  "profile_key": "default",
+  "rated_items": [],
+  "candidates_csv": "title,media_type\n示例片,电影",
+  "include_movies": true,
+  "include_series": true,
+  "include_anime": true,
+  "fetch_douban": false,
+  "use_sample_candidates": false,
+  "like_terms": "评分高，剧情好，叙事强",
+  "dislike_terms": "电视剧古装，注水剧",
+  "batch_size": 30,
+  "limit": 160
+}
+```
+
+响应里可重点看每个频道的：`pool_size`、`matched_size`、`visible_size`、`batch`。这正对应上面的 **候选池 / 条件命中 / 当前批次**。
+
+### 反馈 API
+
+- `POST /api/v2/feedback`：记录反馈事件。
+- `POST /api/v2/feedback/<event-id>/undo`：撤销某个反馈事件。
+
+最小 body 示例：
+
+```json
+{
+  "schema_version": 2,
+  "profile_key": "default",
+  "session_id": "session-1",
+  "event_type": "not-tonight",
+  "scope": "session",
+  "item_key": "douban:1292052"
+}
+```
+
+### Catalog API
+
+- `GET /api/v2/library?state=watched&limit=20`
+- `GET /api/v2/taste`
+- `GET /api/v2/titles/<title-id>`
+- `GET /api/v2/people/<person-id>`
+- `GET /api/v2/universe?focus=<item-key>&limit=9`
+
+Catalog API 也统一返回 `schema_version: 2`。
+
+## 可选 OpenAI-compatible / Ollama 模型
+
+语言模型是可选增强层，不是事实源。**仅显式 endpoint 才联网**；如果你没有配置 endpoint，或者配置后请求失败，系统会 **失败回退本地规则**。
+
+- 默认本地候选 endpoint 探测值：`http://127.0.0.1:11434/v1/chat/completions`
+- 兼容合法的 `http://127.0.0.1:11434/v1/responses`
+- 也兼容标准 OpenAI-compatible chat/completions 协议
+- **API key 不回显**，不会出现在响应体、错误文案或推荐结果里
+
+PowerShell 示例：
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+python -c "from douban_recommender.language_adapter import detect_local_endpoint; print(detect_local_endpoint())"
+```
+
+如果你自己接服务端，请确保 endpoint 是干净的 HTTP/HTTPS 地址；不要带 query、fragment、用户名密码，也不要把密钥拼进 URL。
+
 ## CSV 字段支持
 
 评分 CSV 不要求固定表头，程序会自动识别常见字段：
@@ -103,6 +228,14 @@ python -m douban_recommender.cli `
 5. 如果抓不到完整评分，再粘贴 Cookie 后重试。
 
 Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，不会写入报告，也不会上传到外部服务。
+
+### Cookie 边界与主页链接
+
+- **Cookie 只由用户输入**；程序不会主动抓浏览器登录态。
+- Cookie **仅 sessionStorage/请求内存** 使用；同步后输入框会清空或保留在当前标签会话里。
+- Cookie **不落盘不读取浏览器 Profile**，不会扫描密码、历史记录或浏览器用户资料目录。
+- **主页 URL 不是 Cookie**；主页链接只用于解析用户 ID。
+- **本地 HTTP 代理端口允许，不接收订阅地址**；支持 `http://127.0.0.1:<port>` 这种本机代理，不接受机场订阅 URL。
 
 ### 主页链接不是 Cookie
 
@@ -144,7 +277,12 @@ python -m douban_recommender.web
 
 未设置 `CINESCOPE_DATA_DIR` 时，Windows 默认使用 `%LOCALAPPDATA%\CineScope`。其中只保存非敏感片库、推荐会话、同步任务、身份映射和已经验证的媒体文件。
 
-外部海报、背景和人物照片会先经过标题/年份/类型/人物身份校验，再校验 MIME、图片魔数、像素解码和尺寸。通过后按 SHA-256 保存，浏览器最终只读取 `/media/<hash>` 形式的本地资源。无法确认的图片不会冒险使用，而是显示明确标记的设计兜底图。
+外部海报、背景和人物照片会先经过标题/年份/类型/人物身份校验，再校验 MIME、图片魔数、像素解码和尺寸。通过后按 SHA-256 保存，浏览器最终只读取 `/media/<hash>` 形式的本地资源。**本地媒体 `/media/*`、外链不交付、设计兜底、演员/导演图片状态与修复任务** 是新版媒体链路的核心原则：
+
+- 前端最终消费的是本地 `/media/*` 资源，不直接把外部图片链接交付给浏览器。
+- 校验失败、文件缺失或身份不确定时，返回 `designed-fallback` / `missing` 之类状态并显示**设计兜底**。
+- 演员/导演人物图会暴露 `media_status`，你可以据此判断当前是 ready、missing 还是 designed-fallback。
+- 媒体与人物图修复走后台任务，不会把外链直接塞回最终交付层。
 
 媒体任务与健康状态：
 
@@ -206,6 +344,18 @@ python -m douban_recommender.web
 新版 SQLite 与可信媒体目录由 `CINESCOPE_DATA_DIR` 控制。代理只允许 `http://127.0.0.1:<port>` 形式的本地端口；不要粘贴代理订阅地址。
 
 ## 测试
+
+README 针对本次推荐会话文档集成，至少应保证以下命令可直接运行：
+
+```powershell
+cd C:\Users\11616\douban-taste-recommender
+$env:PYTHONPATH="$PWD\src"
+$env:PYTHONDONTWRITEBYTECODE="1"
+python -m unittest tests.test_readme tests.test_recommendation_api_v2 tests.test_catalog_api_v2 tests.test_language_adapter -v
+python -m unittest discover -s tests -v
+git diff --check
+rg -n "Cookie.*(print|log)|api_key.*response" src tests
+```
 
 标准测试入口：
 

@@ -99,6 +99,61 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("自动抓取到末页", text)
         self.assertIn("250 页", text)
 
+    def test_readme_documents_command_lens_channels_and_batch_terms(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Command Lens", text)
+        self.assertIn("自然语言", text)
+        self.assertIn("可编辑条件", text)
+        self.assertIn("本地确定性排序为事实源", text)
+        self.assertIn("语言模型只做可选结构化/解释", text)
+        self.assertIn("三个独立频道", text)
+        self.assertIn("电影 / 电视剧 / 动画剧集", text)
+        self.assertIn("动漫仅动画剧集、排除动画电影", text)
+        self.assertIn("电视剧默认古装降权", text)
+        self.assertIn("候选池", text)
+        self.assertIn("条件命中", text)
+        self.assertIn("当前批次", text)
+        self.assertIn("160 不等于当前展示 30", text)
+        self.assertIn("每频道独立换一批/上一批/耗尽恢复", text)
+
+    def test_readme_documents_feedback_scope_and_append_only_undo(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("want / watched / permanent", text)
+        self.assertIn("not-tonight / tonight-candidate", text)
+        self.assertIn("session-only", text)
+        self.assertIn("less / more / permanent-avoid", text)
+        self.assertIn("可撤销", text)
+        self.assertIn("append-only", text)
+        self.assertIn("session-only 不写入稳定口味", text)
+
+    def test_readme_documents_v2_api_local_model_and_cookie_boundaries(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("/api/v2/recommend/sessions", text)
+        self.assertIn("/api/v2/feedback", text)
+        self.assertIn("/api/v2/library", text)
+        self.assertIn("schema_version: 2", text)
+        self.assertIn("400", text)
+        self.assertIn("404", text)
+        self.assertIn("仅显式 endpoint 才联网", text)
+        self.assertIn("127.0.0.1:11434", text)
+        self.assertIn("/v1/chat/completions", text)
+        self.assertIn("/v1/responses", text)
+        self.assertIn("API key 不回显", text)
+        self.assertIn("失败回退本地规则", text)
+        self.assertIn("Cookie 只由用户输入", text)
+        self.assertIn("仅 sessionStorage/请求内存", text)
+        self.assertIn("不落盘不读取浏览器 Profile", text)
+        self.assertIn("主页 URL 不是 Cookie", text)
+        self.assertIn("本地 HTTP 代理端口允许", text)
+        self.assertIn("不接收订阅地址", text)
+        self.assertIn("/media/*", text)
+        self.assertIn("外链不交付", text)
+        self.assertIn("设计兜底", text)
+        self.assertIn("演员/导演图片状态与修复任务", text)
+
 
 if __name__ == "__main__":
     unittest.main()
