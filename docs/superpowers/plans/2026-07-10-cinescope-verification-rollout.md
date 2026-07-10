@@ -1,6 +1,6 @@
 # CineScope Verification and Default Rollout Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Migrate existing local state, prove the new experience in real browsers and live local data, fix every discovered defect, then make CineScope V3 the default without removing the rollback path.
 
@@ -8,11 +8,14 @@
 
 **Tech Stack:** Python `unittest`, native browser APIs, Codex computer-use/browser inspection, PowerShell, existing local HTTP service.
 
+**Execution Convention:** In PowerShell, run `$env:PYTHONPATH = "$PWD\src"` once before every Python test or server command. Browser acceptance uses an isolated data directory and a deterministic local seed hook before screenshots.
+
 ## Global Constraints
 
 - Evidence before completion claims.
 - Test at 1440×900, 1280×800, 1024×768, and 390×844.
 - Visible image failures must be exactly zero.
+- Visible `<img>` sources must be same-origin `/media/*`; designed HTML/CSS fallbacks are not image elements.
 - Canary identity mismatches must be exactly zero.
 - Refresh must restore channel, batch, route, and scroll.
 - Do not retrieve Cookie from browser profiles or disk.
@@ -125,11 +128,13 @@ git commit -m "feat: add redacted runtime diagnostics"
 
 **Files:**
 - Create: `src/douban_recommender/ui/js/core/audit.js`
+- Create: `src/douban_recommender/ui/js/core/acceptance.js`
 - Create: `tests/test_ui_v3_audit.py`
 - Modify: `src/douban_recommender/ui/js/app.js`
 
 **Interfaces:**
 - Produces: `window.__CINESCOPE_AUDIT__()` in development/local mode.
+- Produces: `window.__CINESCOPE_SEED_ACCEPTANCE__()` in development/local mode.
 - Returns: `{route, viewport, brokenImages, externalImages, overflowNodes, emptyMain, focusFailures, reducedMotion}`
 
 - [ ] **Step 1: Write audit contract test**
@@ -138,6 +143,11 @@ git commit -m "feat: add redacted runtime diagnostics"
 def test_browser_audit_checks_images_overflow_and_empty_main():
     js = ui_text("js/core/audit.js")
     for token in ("naturalWidth", "scrollWidth", "clientWidth", "externalImages", "emptyMain"):
+        self.assertIn(token, js)
+
+def test_acceptance_seed_creates_schema_v2_sample_session():
+    js = ui_text("js/core/acceptance.js")
+    for token in ("schema_version", "use_sample_ratings", "use_sample_candidates"):
         self.assertIn(token, js)
 ```
 
@@ -161,16 +171,18 @@ export function runAudit() {
 }
 ```
 
+`acceptance.js` must create a deterministic schema-v2 session with `use_sample_ratings: true` and `use_sample_candidates: true`, persist only its non-sensitive session/channel state through the V3 store, and return `{sessionId, titleId, personId}` after resolving one available title and person. The hook is installed only for loopback/local development and is not rendered as a user-facing production control.
+
 - [ ] **Step 4: Run syntax and contract tests**
 
-Run: `python -m unittest tests.test_ui_v3_audit -v; node --check src/douban_recommender/ui/js/core/audit.js`
+Run: `python -m unittest tests.test_ui_v3_audit -v; node --check src/douban_recommender/ui/js/core/audit.js; node --check src/douban_recommender/ui/js/core/acceptance.js`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add src/douban_recommender/ui/js/core/audit.js src/douban_recommender/ui/js/app.js tests/test_ui_v3_audit.py
+git add src/douban_recommender/ui/js/core/audit.js src/douban_recommender/ui/js/core/acceptance.js src/douban_recommender/ui/js/app.js tests/test_ui_v3_audit.py
 git commit -m "test: add in-browser cinescope audit hook"
 ```
 
@@ -178,7 +190,6 @@ git commit -m "test: add in-browser cinescope audit hook"
 
 **Files:**
 - Create: `docs/acceptance/2026-07-10-cinescope-v3.md`
-- Create: `output/acceptance/.gitkeep`
 - Modify only UI files implicated by observed defects.
 
 **Interfaces:**
@@ -192,10 +203,13 @@ Run:
 ```powershell
 $env:CINESCOPE_UI_VERSION='v3'
 $env:CINESCOPE_DATA_DIR="$PWD\output\acceptance-data"
+$env:PYTHONPATH="$PWD\src"
 python -m douban_recommender.web --host 127.0.0.1 --port 7862 --no-browser
 ```
 
 Expected: service prints `http://127.0.0.1:7862` and remains running.
+
+Open the local app, run `await window.__CINESCOPE_SEED_ACCEPTANCE__()` once, record the returned session/title/person IDs in the acceptance document, and use those exact IDs for every viewport. The seed must finish before any screenshot or `emptyMain` assertion.
 
 - [ ] **Step 2: Inspect all principal routes at 1440×900**
 
@@ -218,7 +232,7 @@ For each issue, add a focused assertion to `tests/test_ui_v3_contract.py` or a r
 - [ ] **Step 6: Commit acceptance fixes and evidence**
 
 ```powershell
-git add src/douban_recommender/ui tests/test_ui_v3_contract.py docs/acceptance/2026-07-10-cinescope-v3.md output/acceptance/.gitkeep
+git add src/douban_recommender/ui tests/test_ui_v3_contract.py docs/acceptance/2026-07-10-cinescope-v3.md
 git commit -m "fix: pass cinescope visual acceptance"
 ```
 

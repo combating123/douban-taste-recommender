@@ -1,6 +1,6 @@
 # CineScope Five-Space Experience UI Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the approved five-space, 70%A/30%C interface as maintainable native modules, including Command Lens, cinematic recommendations, detail/person routes, universe exploration, library, taste, health, and sync.
 
@@ -8,12 +8,16 @@
 
 **Tech Stack:** Semantic HTML, CSS custom properties, native ES Modules, Canvas 2D, Python static asset server, Node `--check`, Python `unittest` contract tests.
 
+**Execution Convention:** In PowerShell, run `$env:PYTHONPATH = "$PWD\src"` once before every Python test or server command in this plan. Node is used only for development-time syntax checks and is not a product runtime dependency.
+
 ## Global Constraints
 
 - Do not add a Node runtime dependency or CDN dependency.
 - No visible external image URL; use `/media/*` or a designed DOM fallback.
+- Every visible `<img>` must use a same-origin `/media/*` URL and may enter the DOM only after successful decode; designed fallbacks use HTML/CSS, never `data:` or remote `<img>` sources.
 - Left navigation defaults to 72px and can be completely hidden.
 - Movie, series, and animated-series channels keep independent batches.
+- Every `/api/v2` JSON POST must use `schema_version: 2`; route slugs map explicitly as `movie -> 电影`, `series -> 电视剧`, and `anime-series -> 动漫`.
 - Refresh and deep links must restore state instead of returning to sync step one.
 - Motion uses transform/opacity and honors `prefers-reduced-motion`.
 - Text must not overflow at 1440×900, 1280×800, 1024×768, or 390×844.
@@ -34,6 +38,8 @@
 **Interfaces:**
 - Produces: `load_index_html() -> str`
 - Produces: `asset_response(relative_path: str) -> tuple[bytes, str]`
+- Produces: `selected_ui_version(env: Mapping[str, str] | None = None) -> str`
+- Produces: `is_v3_frontend_route(path: str) -> bool`
 - Produces: `CINESCOPE_UI_VERSION=v3|legacy` environment switch
 - Produces: `/assets/v3/*`
 
@@ -49,6 +55,12 @@ def test_v3_shell_uses_native_modules_and_five_spaces():
 def test_asset_loader_rejects_parent_traversal():
     with self.assertRaises(FileNotFoundError):
         asset_response("../web.py")
+
+def test_v3_route_classifier_supports_deep_links_without_shadowing_services():
+    for path in ("/tonight", "/tonight/anime-series", "/title/douban:1295644", "/person/person-1"):
+        self.assertTrue(is_v3_frontend_route(path))
+    for path in ("/api/v2/taste", "/media/hash.png", "/assets/v3/js/app.js"):
+        self.assertFalse(is_v3_frontend_route(path))
 ```
 
 - [ ] **Step 2: Run and verify missing module**
@@ -70,6 +82,8 @@ def asset_response(relative_path):
 ```
 
 `index.html` must contain skip navigation, a 72px rail, top bar, `#command-lens-root`, `#app-view`, `#overlay-root`, and a `<noscript>` explanation.
+
+When V3 is selected, `web.py` must return the V3 shell for the five spaces and valid `/title/<id>` or `/person/<id>` deep links before its final 404 branch. `/api/*`, `/media/*`, and `/assets/v3/*` keep their dedicated handlers and must never be swallowed by the frontend fallback. Add an HTTP-level regression in `tests/test_ui_v3_assets.py` that refreshes one deep link and receives status 200 plus `#app-view`.
 
 - [ ] **Step 4: Add package data and feature flag**
 
@@ -109,6 +123,8 @@ git commit -m "feat: add modular cinescope v3 shell"
 - Produces: `navigate(path, state={})`
 - Produces: `createStore(initialState, reducer)`
 - Produces: `persistUiState(state)` and `restoreUiState()` with `schemaVersion: 3`
+- Produces: `postV2(path, payload) -> Promise<object>` with forced `schema_version: 2`
+- Produces: `backendChannel(routeSlug) -> "电影" | "电视剧" | "动漫"`
 
 - [ ] **Step 1: Write contract tests for routes and persistence**
 
@@ -128,6 +144,13 @@ def test_store_never_persists_cookie():
     self.assertIn("schemaVersion: 3", js)
     self.assertNotIn("doubanCookie", js)
     self.assertNotIn("COOKIE_SESSION_KEY", js)
+
+def test_v2_client_forces_schema_and_maps_route_channels():
+    js = ui_text("js/core/api.js")
+    self.assertIn("schema_version", js)
+    self.assertIn('"anime-series": "动漫"', js)
+    self.assertIn('"series": "电视剧"', js)
+    self.assertIn('"movie": "电影"', js)
 ```
 
 - [ ] **Step 2: Run and verify failure**
@@ -152,6 +175,25 @@ export function saveScroll(routeKey, y = window.scrollY) {
 ```
 
 The router must save outgoing scroll, render incoming route, then restore scroll after the next animation frame.
+
+`store.js` persists only non-sensitive state: active path and params, recommendation session ID, active channel slug, per-channel batch indexes/IDs, `scrollByRoute`, candidate tray context, Command Lens draft/chips, and rail state. It must not persist Cookie, API keys, request headers, or raw external image URLs.
+
+`core/api.js` is the only JSON POST boundary for V2 routes. Implement it so caller payload cannot override the protocol version:
+
+```javascript
+export const V2_SCHEMA_VERSION = 2;
+export const CHANNEL_KEYS = Object.freeze({ movie: "电影", series: "电视剧", "anime-series": "动漫" });
+
+export function postV2(path, payload = {}) {
+  return request(path, { method: "POST", body: { ...payload, schema_version: V2_SCHEMA_VERSION } });
+}
+
+export function backendChannel(routeSlug) {
+  const channel = CHANNEL_KEYS[routeSlug];
+  if (!channel) throw new TypeError(`Unsupported channel: ${routeSlug}`);
+  return channel;
+}
+```
 
 - [ ] **Step 4: Implement rail behavior**
 
@@ -182,10 +224,10 @@ git commit -m "feat: add restorable cinescope navigation"
 - Modify: `tests/test_ui_v3_contract.py`
 
 **Interfaces:**
-- Produces: `renderMediaFrame({localUrl, kind, title, status, source})`
+- Produces: `renderMediaFrame({localUrl, kind, title, status, source}) -> HTMLElement`
 - Produces: `renderTitleCard(item, actions)`
 - Produces: `renderShelf({title, items, batchState})`
-- Produces: `preloadLocalMedia(url) -> Promise<boolean>`
+- Produces: `preloadLocalMedia(url) -> Promise<HTMLImageElement | null>`
 
 - [ ] **Step 1: Add failing zero-broken-media and density tests**
 
@@ -212,18 +254,29 @@ Expected: missing component assets.
 
 ```javascript
 export function isLocalMediaUrl(value = "") {
-  return value.startsWith("/media/") || value.startsWith("data:image/svg+xml");
+  try {
+    const url = new URL(value, location.origin);
+    return url.origin === location.origin && url.pathname.startsWith("/media/");
+  } catch {
+    return false;
+  }
 }
 
 export function renderMediaFrame(asset) {
-  if (!isLocalMediaUrl(asset.localUrl) || asset.status !== "ready") {
-    return designedFallback(asset.kind, asset.title, asset.status);
+  const frame = designedFallback(asset.kind, asset.title, asset.status);
+  if (isLocalMediaUrl(asset.localUrl) && asset.status === "ready") {
+    preloadLocalMedia(asset.localUrl).then((image) => {
+      if (image) {
+        image.alt = asset.title ? `${asset.title} 海报` : "";
+        frame.replaceChildren(image);
+      }
+    });
   }
-  return `<div class="media-frame ${escapeAttr(asset.kind)}"><img src="${escapeAttr(asset.localUrl)}" alt="" decoding="async"><span class="media-source">${escapeHtml(asset.source)}</span></div>`;
+  return frame;
 }
 ```
 
-Insert the `<img>` only after `preloadLocalMedia(url)` resolves with `image.decode()` and a positive natural width.
+`preloadLocalMedia(url)` must reject every non-`/media/*` URL, call `image.decode()`, and return that same decoded `HTMLImageElement` only when `naturalWidth > 0`; otherwise it returns `null`. `designedFallback()` is a named HTML/CSS identity surface with a status label; it is never an `<img>`. Insert the returned real `<img>` only after the preload promise resolves with the decoded element.
 
 - [ ] **Step 4: Implement design tokens and motion budget**
 
@@ -249,7 +302,9 @@ git commit -m "feat: add cinescope visual component system"
 - Create: `src/douban_recommender/ui/js/features/command-lens.js`
 - Create: `src/douban_recommender/ui/styles/tonight.css`
 - Modify: `src/douban_recommender/ui/js/app.js`
+- Modify: `src/douban_recommender/recommendation_api.py`
 - Modify: `tests/test_ui_v3_contract.py`
+- Modify: `tests/test_recommendation_api_v2.py`
 
 **Interfaces:**
 - Produces: `renderTonight(state)`
@@ -270,6 +325,11 @@ def test_command_lens_has_editable_intent_chips_and_ctrl_k():
     js = ui_text("js/features/command-lens.js")
     self.assertIn('event.key.toLowerCase() === "k"', js)
     self.assertIn("intent-chip", js)
+
+def test_session_response_returns_grounded_intent_chips():
+    response = self.create_session(intent_text="90分钟内的悬疑电影")
+    self.assertTrue(response["chips"])
+    self.assertEqual({"key", "label", "value", "removable"}, set(response["chips"][0]))
 ```
 
 - [ ] **Step 2: Run and verify failure**
@@ -287,14 +347,17 @@ export const MAX_INITIAL_CARDS = 9;
 
 export async function requestNextBatch(channel, reason = "") {
   const sessionId = store.getState().recommendation.sessionId;
-  const batch = await api.post(`/api/v2/recommend/sessions/${sessionId}/batch`, { channel, reason });
+  const batch = await api.postV2(`/api/v2/recommend/sessions/${sessionId}/batch`, {
+    channel: backendChannel(channel),
+    reason,
+  });
   store.dispatch({ type: "recommendation/batchReceived", channel, batch });
 }
 ```
 
 - [ ] **Step 4: Implement Command Lens grounding**
 
-Submit text to session creation or intent update, render only server-returned chips, and show a local fallback message if the optional language adapter is unavailable. Do not place model output directly into `innerHTML`.
+Submit text by creating a grounded recommendation session with `postV2()`. Add `chips` to the serialized session response by converting `intent_to_chips(restored.intent)` to plain dictionaries. Editing/removing a chip creates a replacement session from the server-returned structured intent; the UI must never derive chips from free-form model prose. Show a local fallback message if the optional language adapter is unavailable. Do not place model output directly into `innerHTML`.
 
 - [ ] **Step 5: Run tests**
 
@@ -305,7 +368,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add src/douban_recommender/ui/js/features/tonight.js src/douban_recommender/ui/js/features/command-lens.js src/douban_recommender/ui/styles/tonight.css src/douban_recommender/ui/js/app.js tests/test_ui_v3_contract.py
+git add src/douban_recommender/ui/js/features/tonight.js src/douban_recommender/ui/js/features/command-lens.js src/douban_recommender/ui/styles/tonight.css src/douban_recommender/ui/js/app.js src/douban_recommender/recommendation_api.py tests/test_ui_v3_contract.py tests/test_recommendation_api_v2.py
 git commit -m "feat: build ai tonight curation experience"
 ```
 
@@ -451,7 +514,7 @@ Expected: missing modules.
 
 - [ ] **Step 3: Implement the four spaces**
 
-Library uses segmented filters and a virtualized grid. Taste DNA renders stable, conflicting, recent, and unexplored signals with evidence links. Health shows sync jobs, media jobs, provider latency/backoff, cache size, and privacy state. Sync accepts profile URL or ID, defaults to automatic pagination, and keeps Cookie only in session storage.
+Library uses segmented filters and a virtualized grid. Taste DNA renders stable, conflicting, recent, and unexplored signals with evidence links. Health is the fifth top-level space and owns the Sync panel; do not add a sixth top-level `/sync` route. It initially consumes `/api/v2/media/health` and sync job APIs, then merges `/api/v2/diagnostics` when rollout Task 2 adds it. Health shows sync jobs, media jobs, provider latency/backoff, cache size, and privacy state. Sync accepts profile URL or ID, defaults to automatic pagination, and keeps Cookie only in session storage.
 
 - [ ] **Step 4: Run tests and syntax checks**
 
