@@ -125,6 +125,17 @@
 }
 .tonight-count--visible { color: var(--text); border-color: rgba(200, 168, 107, 0.46); }
 .tonight-batch-controls { display: flex; justify-content: flex-end; gap: 0.55rem; min-width: 0; }
+.tonight-batch-status {
+  grid-column: 1 / -1;
+  min-height: 1.2em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.tonight-batch-status[data-tone="success"] { color: var(--signal); }
+.tonight-batch-status[data-tone="error"] { color: #f0b6a8; }
 .tonight-reason,
 .tonight-button {
   min-width: 0;
@@ -225,6 +236,7 @@
 }
 .intent-chip__label { min-width: 0; overflow: hidden; font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
 .intent-chip button { padding: 0.25rem 0.42rem; font-size: 0.68rem; }
+.intent-chip button:disabled { cursor: not-allowed; opacity: 0.42; }
 .intent-chip__editor {
   min-width: 7rem;
   max-width: 15rem;

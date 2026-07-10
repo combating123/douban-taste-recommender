@@ -432,6 +432,17 @@ class RecommendationApiV2Tests(unittest.TestCase):
         restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
         self.assertEqual(restored["chips"], created["chips"])
 
+    def test_structured_intent_accepts_omitted_numeric_chip_fields(self):
+        payload = self.session_payload(intent={"genres": ["悬疑"]})
+        for field in ("runtime_max", "episode_runtime_max", "year_min", "year_max", "quality_floor"):
+            self.assertNotIn(field, payload["intent"])
+
+        created = self.post_json("/api/v2/recommend/sessions", payload)
+
+        self.assertEqual(created["intent"]["genres"], ["悬疑"])
+        self.assertIsNone(created["intent"]["runtime_max"])
+        self.assertIsNone(created["intent"]["quality_floor"])
+
     def test_feedback_api_does_not_accept_unknown_permanent_scope(self):
         status, payload = self.post_json_status("/api/v2/feedback", {
             "schema_version": 2,

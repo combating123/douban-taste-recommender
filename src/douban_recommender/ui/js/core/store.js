@@ -7,7 +7,7 @@ const SENSITIVE_KEY = /(?:cookie|api[_-]?key|authorization|headers?|token|secret
 const EXTERNAL_URL = /^(?:https?:)?\/\//i;
 
 function emptyChannelState() {
-  return { batchIndex: 0, batchIds: [] };
+  return { sessionId: null, batchIndex: 0, batchIds: [] };
 }
 
 export function createEmptyUiState() {
@@ -97,7 +97,11 @@ function sanitizeChannels(channels) {
     const batchIndex = Number.isInteger(channel.batchIndex) && channel.batchIndex >= 0
       ? channel.batchIndex
       : 0;
-    return [slug, { batchIndex, batchIds: sanitizeBatchIds(channel.batchIds) }];
+    return [slug, {
+      sessionId: safeText(channel.sessionId, "", 256) || null,
+      batchIndex,
+      batchIds: sanitizeBatchIds(channel.batchIds),
+    }];
   }));
 }
 

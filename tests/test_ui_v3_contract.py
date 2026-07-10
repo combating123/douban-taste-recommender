@@ -65,10 +65,12 @@ class UiV3ContractTests(unittest.TestCase):
               recommendation: {{
                 sessionId: "session-42",
                 activeChannel: "series",
+                intent: {{ free_text: "do-not-persist-structured-intent" }},
+                intentSessionId: "do-not-persist-intent-session",
                 channels: {{
-                  movie: {{ batchIndex: 1, batchIds: ["movie-1"] }},
-                  series: {{ batchIndex: 2, batchIds: ["series-1", "https://images.example/poster.jpg"] }},
-                  "anime-series": {{ batchIndex: 3, batchIds: ["anime-1"] }},
+                  movie: {{ sessionId: "session-movie", batchIndex: 1, batchIds: ["movie-1"] }},
+                  series: {{ sessionId: "session-series", batchIndex: 2, batchIds: ["series-1", "https://images.example/poster.jpg"] }},
+                  "anime-series": {{ sessionId: "session-anime", batchIndex: 3, batchIds: ["anime-1"] }},
                 }},
               }},
               scrollByRoute: {{ "/title/douban%3A1295644": 480 }},
@@ -92,9 +94,12 @@ class UiV3ContractTests(unittest.TestCase):
             if (persisted.schemaVersion !== 3 || restored.schemaVersion !== 3) throw new Error("schema version was not persisted");
             if (restored.activePath !== "/title/douban%3A1295644") throw new Error("active route was not restored");
             if (restored.recommendation.channels.series.batchIndex !== 2) throw new Error("channel batch state was not restored");
+            if (restored.recommendation.channels.movie.sessionId !== "session-movie") throw new Error("movie session pointer was not restored");
+            if (restored.recommendation.channels.series.sessionId !== "session-series") throw new Error("series session pointer was not restored");
+            if (restored.recommendation.channels["anime-series"].sessionId !== "session-anime") throw new Error("anime session pointer was not restored");
             if (restored.scrollByRoute["/title/douban%3A1295644"] !== 480) throw new Error("scroll state was not restored");
             if (restored.commandLens.chips.length !== 1 || restored.rail.mode !== "hidden") throw new Error("allowed UI state was not restored");
-            for (const forbidden of ["must-not-persist", "https://images.example/poster.jpg", "arbitraryRootValue"]) {{
+            for (const forbidden of ["must-not-persist", "https://images.example/poster.jpg", "arbitraryRootValue", "do-not-persist-structured-intent", "do-not-persist-intent-session"]) {{
               if (raw.includes(forbidden)) throw new Error(`sensitive value persisted: ${{forbidden}}`);
             }}
 
@@ -114,6 +119,7 @@ class UiV3ContractTests(unittest.TestCase):
         )
         restored = json.loads(output)
         self.assertEqual("session-42", restored["recommendation"]["sessionId"])
+        self.assertEqual("session-series", restored["recommendation"]["channels"]["series"]["sessionId"])
         self.assertEqual(["title-1"], restored["candidateTray"]["itemIds"])
 
     def test_post_v2_forces_schema_and_maps_channels(self):
@@ -812,6 +818,486 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertTrue(result["prevented"])
         self.assertEqual("今晚想看悬疑片", result["calls"][0]["payload"]["intent_text"])
         self.assertEqual([], result["calls"][1]["payload"]["intent"]["genres"])
+
+    def test_command_lens_numeric_chip_removal_omits_field_in_replacement_intent(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.attributes = new Map();
+                this.className = "";
+                this.textContent = "";
+                this.value = "";
+                this.hidden = false;
+                this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              focus() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            Object.defineProperty(FakeElement.prototype, "innerHTML", {{
+              set() {{ throw new Error("innerHTML must not be used"); }},
+            }});
+            globalThis.document = {{
+              createElement: (tagName) => new FakeElement(tagName),
+              addEventListener() {{}},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            const {{ configureCommandLens, openCommandLens }} = await import("{module_url('js/features/command-lens.js')}");
+            const root = new FakeElement("div");
+            const calls = [];
+            const state = {{
+              recommendation: {{
+                sessionId: "session-1",
+                activeChannel: "movie",
+                intentSessionId: "session-1",
+                intent: {{}},
+                channels: {{ movie: {{ sessionId: "session-1" }} }},
+              }},
+              commandLens: {{
+                draft: "",
+                chips: [],
+              }},
+            }};
+            configureCommandLens({{
+              root,
+              store: {{ getState: () => state, dispatch() {{}} }},
+              api: {{
+                async postV2(path, payload) {{
+                  calls.push({{ path, payload }});
+                  return {{ id: `session-${{calls.length + 1}}`, intent: {{ genres: ["悬疑"], pace: "fast" }}, chips: [], channels: {{}} }};
+                }},
+              }},
+            }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const numericFields = [
+              ["runtime_max", 90],
+              ["episode_runtime_max", 30],
+              ["year_min", 2015],
+              ["year_max", 2025],
+              ["quality_floor", 8.5],
+            ];
+            for (const [field, value] of numericFields) {{
+              state.recommendation.intent = {{ genres: ["悬疑"], pace: "fast", [field]: value, free_text: "server-owned" }};
+              state.commandLens.chips = [{{ key: field, label: `${{field}}=${{value}}`, value, removable: true }}];
+              openCommandLens();
+              const remove = collect(root).find((node) => node.className === "intent-chip__remove");
+              if (!remove || remove.disabled) throw new Error(`${{field}} removal was not available for matching grounded intent`);
+              await remove.onclick();
+              const intent = calls.at(-1).payload.intent;
+              if (Object.hasOwn(intent, field)) throw new Error(`${{field}} must be omitted, got ${{intent[field]}}`);
+              if (intent.pace !== "fast" || intent.genres[0] !== "悬疑") throw new Error("unrelated structured fields were not preserved");
+            }}
+            console.log(JSON.stringify(calls));
+            '''
+        )
+        calls = json.loads(output)
+        fields = ("runtime_max", "episode_runtime_max", "year_min", "year_max", "quality_floor")
+        self.assertEqual(len(fields), len(calls))
+        for field, call in zip(fields, calls):
+            with self.subTest(field=field):
+                self.assertNotIn(field, call["payload"]["intent"])
+                self.assertEqual("fast", call["payload"]["intent"]["pace"])
+
+    def test_app_replacement_session_resets_history_while_same_session_restore_merges(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+
+            const channel = (sessionId, batchId, index, pool) => ({{
+              sessionId,
+              batchIndex: index,
+              batchIds: [batchId],
+              active_batch: index,
+              pool_size: pool,
+              matched_size: pool - 1,
+              visible_size: 2,
+              batch: {{ id: batchId, index, items: [], pool_size: pool, matched_size: pool - 1, visible_size: 2 }},
+            }});
+            const state = {{
+              activePath: "/tonight/movie",
+              activeParams: {{ channel: "movie" }},
+              recommendation: {{
+                sessionId: "old-session",
+                activeChannel: "movie",
+                intent: {{ genres: ["旧类型"] }},
+                intentSessionId: "old-session",
+                channels: {{
+                  movie: channel("old-session", "old-movie-batch", 7, 70),
+                  series: channel("old-session", "old-series-batch", 6, 60),
+                  "anime-series": channel("old-session", "old-anime-batch", 5, 50),
+                }},
+              }},
+              commandLens: {{ draft: "旧意图", chips: [{{ key: "genre", label: "旧类型", value: "旧类型", removable: true }}] }},
+              rail: {{ mode: "expanded" }}, scrollByRoute: {{}}, candidateTray: {{ itemIds: [], context: {{}} }},
+            }};
+            const session = {{
+              id: "new-session",
+              intent: {{ genres: ["新类型"] }},
+              chips: [{{ key: "genre", label: "新类型", value: "新类型", removable: true }}],
+              channels: {{
+                "电影": {{ pool_size: 11, matched_size: 8, visible_size: 2, active_batch: 1, batch: {{ id: "new-movie-batch", index: 1, items: [], pool_size: 11, matched_size: 8, visible_size: 2 }} }},
+                "电视剧": {{ pool_size: 12, matched_size: 9, visible_size: 2, active_batch: 1, batch: {{ id: "new-series-batch", index: 1, items: [], pool_size: 12, matched_size: 9, visible_size: 2 }} }},
+                "动漫": {{ pool_size: 13, matched_size: 10, visible_size: 2, active_batch: 1, batch: {{ id: "new-anime-batch", index: 1, items: [], pool_size: 13, matched_size: 10, visible_size: 2 }} }},
+              }},
+            }};
+            const replaced = reduceUiState(state, {{ type: "recommendation/sessionReceived", session }});
+            for (const [slug, expectedBatch, expectedPool] of [["movie", "new-movie-batch", 11], ["series", "new-series-batch", 12], ["anime-series", "new-anime-batch", 13]]) {{
+              const current = replaced.recommendation.channels[slug];
+              if (current.sessionId !== "new-session") throw new Error(`${{slug}} did not receive the new session pointer`);
+              if (current.batchIds.join(",") !== expectedBatch || current.batchIndex !== 1) throw new Error(`${{slug}} leaked old history: ${{JSON.stringify(current)}}`);
+              if (current.pool_size !== expectedPool || current.batch.id !== expectedBatch) throw new Error(`${{slug}} leaked old counts or active batch`);
+            }}
+            if (replaced.recommendation.intentSessionId !== "new-session") throw new Error("structured intent session was not recorded in memory");
+
+            const sameSession = structuredClone(session);
+            sameSession.channels["电影"].batch = {{ id: "new-movie-restored", index: 2, items: [], pool_size: 11, matched_size: 8, visible_size: 2 }};
+            sameSession.channels["电影"].active_batch = 2;
+            const restored = reduceUiState(replaced, {{ type: "recommendation/sessionReceived", session: sameSession, source: "restore", expectedSessionId: "new-session", channel: "movie", route: "/tonight/movie" }});
+            const movieIds = restored.recommendation.channels.movie.batchIds;
+            if (movieIds.join(",") !== "new-movie-batch,new-movie-restored") throw new Error(`same-session restore did not merge history: ${{movieIds}}`);
+            console.log(JSON.stringify({{ replaced: replaced.recommendation, restored: restored.recommendation }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["new-movie-batch"], result["replaced"]["channels"]["movie"]["batchIds"])
+        self.assertEqual(["new-movie-batch", "new-movie-restored"], result["restored"]["channels"]["movie"]["batchIds"])
+
+    def test_same_session_restore_preserves_other_channel_session_pointer_and_history(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const state = {{
+              activePath: "/tonight/movie", activeParams: {{ channel: "movie" }},
+              recommendation: {{
+                sessionId: "movie-session", activeChannel: "movie",
+                channels: {{
+                  movie: {{ sessionId: "movie-session", batchIndex: 1, batchIds: ["movie-old"] }},
+                  series: {{ sessionId: "series-session", batchIndex: 4, batchIds: ["series-own-history"] }},
+                  "anime-series": {{ sessionId: "movie-session", batchIndex: 2, batchIds: ["anime-old"] }},
+                }},
+              }},
+              commandLens: {{ draft: "", chips: [] }}, rail: {{ mode: "expanded" }},
+              scrollByRoute: {{}}, candidateTray: {{ itemIds: [], context: {{}} }},
+            }};
+            const restored = reduceUiState(state, {{
+              type: "recommendation/sessionReceived", source: "restore", expectedSessionId: "movie-session",
+              channel: "movie", route: "/tonight/movie",
+              session: {{
+                id: "movie-session", intent: {{}}, chips: [],
+                channels: {{
+                  "电影": {{ batch: {{ id: "movie-restored", index: 2, items: [] }} }},
+                  "电视剧": {{ batch: {{ id: "series-from-movie-session", index: 2, items: [] }} }},
+                  "动漫": {{ batch: {{ id: "anime-restored", index: 3, items: [] }} }},
+                }},
+              }},
+            }});
+            const series = restored.recommendation.channels.series;
+            if (series.sessionId !== "series-session" || series.batchIndex !== 4 || series.batchIds.join(",") !== "series-own-history") {{
+              throw new Error(`other channel pointer/history was overwritten: ${{JSON.stringify(series)}}`);
+            }}
+            console.log(JSON.stringify(series));
+            '''
+        )
+        series = json.loads(output)
+        self.assertEqual("series-session", series["sessionId"])
+        self.assertEqual(["series-own-history"], series["batchIds"])
+
+    def test_persisted_chips_are_not_editable_until_matching_structured_intent_restores(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.dataset = {{}};
+                this.attributes = new Map(); this.className = ""; this.textContent = "";
+                this.value = ""; this.hidden = false; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              focus() {{}}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag), addEventListener() {{}} }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ configureCommandLens, openCommandLens, syncCommandLensState }} = await import("{module_url('js/features/command-lens.js')}");
+            const root = new FakeElement("div");
+            const state = {{
+              recommendation: {{ sessionId: "session-1", activeChannel: "movie", channels: {{ movie: {{ sessionId: "session-1" }} }} }},
+              commandLens: {{ draft: "", chips: [{{ key: "genre", label: "悬疑", value: "悬疑", removable: true }}] }},
+            }};
+            const store = {{ getState: () => state, dispatch() {{}} }};
+            configureCommandLens({{ root, store, api: {{ postV2() {{ throw new Error("must not submit"); }} }} }});
+            openCommandLens();
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            let buttons = collect(root).filter((node) => node.className === "intent-chip__edit" || node.className === "intent-chip__remove");
+            if (!buttons.length || buttons.some((button) => !button.disabled)) throw new Error("persisted chips were editable without structured intent");
+
+            state.recommendation.intent = {{ genres: ["悬疑"], free_text: "server-owned" }};
+            state.recommendation.intentSessionId = "session-1";
+            syncCommandLensState(state);
+            buttons = collect(root).filter((node) => node.className === "intent-chip__edit" || node.className === "intent-chip__remove");
+            if (buttons.some((button) => button.disabled)) throw new Error("matching restored structured intent did not unlock chips");
+            console.log(JSON.stringify({{ buttonCount: buttons.length, enabled: buttons.every((button) => !button.disabled) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["enabled"])
+
+    def test_stale_session_restore_cannot_overwrite_new_session_or_new_route(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ createTonightRestoreGate, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const deferred = () => {{
+              let resolve, reject;
+              const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }});
+              return {{ promise, resolve, reject }};
+            }};
+            const channelState = (sessionId, batchId) => ({{ sessionId, batchIndex: 1, batchIds: [batchId] }});
+            let state = {{
+              activePath: "/tonight/movie", activeParams: {{ channel: "movie" }},
+              recommendation: {{
+                sessionId: "old-session", activeChannel: "movie",
+                channels: {{
+                  movie: channelState("old-session", "old-batch"),
+                  series: channelState("old-session", "old-series"),
+                  "anime-series": channelState("old-session", "old-anime"),
+                }},
+              }},
+              commandLens: {{ draft: "", chips: [] }}, rail: {{ mode: "expanded" }},
+              scrollByRoute: {{}}, candidateTray: {{ itemIds: [], context: {{}} }},
+            }};
+            const actions = [];
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{ actions.push(action); state = reduceUiState(state, action); return action; }},
+            }};
+            const requests = [];
+            const statuses = [];
+            const gate = createTonightRestoreGate({{
+              store,
+              restoreSession(sessionId, options) {{
+                const pending = deferred();
+                requests.push({{ sessionId, signal: options.signal, pending }});
+                return pending.promise;
+              }},
+              setStatus(message) {{ statuses.push(message); }},
+            }});
+            const route = {{ path: "/tonight/movie", name: "tonight-channel", params: {{ channel: "movie" }} }};
+            const oldRestore = gate.restore(route, "今晚");
+            store.dispatch({{
+              type: "recommendation/sessionReceived",
+              session: {{
+                id: "new-session", intent: {{ genres: ["新"] }}, chips: [],
+                channels: {{
+                  "电影": {{ batch: {{ id: "new-batch", index: 1, items: [] }} }},
+                  "电视剧": {{ batch: {{ id: "new-series", index: 1, items: [] }} }},
+                  "动漫": {{ batch: {{ id: "new-anime", index: 1, items: [] }} }},
+                }},
+              }},
+            }});
+            gate.invalidate();
+            if (!requests[0].signal.aborted) throw new Error("new session invalidation did not abort the stale GET");
+            requests[0].pending.resolve({{ id: "old-session", intent: {{ genres: ["旧"] }}, chips: [], channels: {{}} }});
+            await oldRestore;
+            if (state.recommendation.sessionId !== "new-session") throw new Error("stale GET replaced the new session");
+            if (actions.some((action) => action.source === "restore" && action.session?.id === "old-session")) throw new Error("stale GET dispatched");
+
+            const routeRestore = gate.restore(route, "今晚");
+            store.dispatch({{ type: "route/changed", route: {{ path: "/universe", name: "universe", params: {{}} }} }});
+            gate.invalidate();
+            if (!requests[1].signal.aborted) throw new Error("route invalidation did not abort the GET");
+            requests[1].pending.resolve({{ id: "new-session", intent: {{ genres: ["新"] }}, chips: [], channels: {{}} }});
+            await routeRestore;
+            if (state.activePath !== "/universe") throw new Error("stale restore changed the current route");
+            if (actions.filter((action) => action.source === "restore").length !== 0) throw new Error("route-stale GET dispatched");
+            if (statuses.some((message) => message.includes("已恢复"))) throw new Error(`stale restore updated status: ${{statuses}}`);
+
+            store.dispatch({{ type: "route/changed", route }});
+            const failedRestore = gate.restore(route, "今晚");
+            requests[2].pending.reject(new Error("restore unavailable"));
+            await failedRestore;
+            if (!statuses.some((message) => message.includes("无法恢复"))) throw new Error("current restore error was not visible");
+            console.log(JSON.stringify({{ sessionId: state.recommendation.sessionId, activePath: state.activePath, statuses, requestCount: requests.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("new-session", result["sessionId"])
+        self.assertEqual("/tonight/movie", result["activePath"])
+        self.assertEqual(3, result["requestCount"])
+
+    def test_command_lens_intent_mutations_are_latest_wins_and_errors_are_visible(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.dataset = {{}};
+                this.attributes = new Map(); this.className = ""; this.textContent = "";
+                this.value = ""; this.hidden = false; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              focus() {{}}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag), addEventListener() {{}} }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ configureCommandLens, openCommandLens, submitIntent }} = await import("{module_url('js/features/command-lens.js')}");
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            const pending = [];
+            const actions = [];
+            const state = {{ recommendation: {{ activeChannel: "movie", channels: {{ movie: {{ sessionId: null }} }} }}, commandLens: {{ draft: "", chips: [] }} }};
+            const root = new FakeElement("div");
+            configureCommandLens({{
+              root,
+              store: {{ getState: () => state, dispatch(action) {{ actions.push(action); }} }},
+              api: {{ postV2(path, payload) {{ const request = deferred(); pending.push({{ path, payload, request }}); return request.promise; }} }},
+            }});
+            openCommandLens();
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const first = submitIntent("旧意图");
+            const second = submitIntent("新意图");
+            let submit = collect(root).find((node) => node.className === "command-lens__submit");
+            if (!submit.disabled) throw new Error("submit button was not disabled while latest request was pending");
+            pending[1].request.resolve({{ id: "new-session", intent: {{ genres: ["新"] }}, chips: [{{ key: "genre", label: "新", value: "新", removable: true }}], channels: {{}} }});
+            await second;
+            pending[0].request.resolve({{ id: "old-session", intent: {{ genres: ["旧"] }}, chips: [{{ key: "genre", label: "旧", value: "旧", removable: true }}], channels: {{}} }});
+            await first;
+            const receivedAfterSubmit = actions.filter((action) => action.type === "recommendation/sessionReceived").map((action) => action.session.id);
+            if (receivedAfterSubmit.join(",") !== "new-session") throw new Error(`stale submit dispatched: ${{receivedAfterSubmit}}`);
+            if (!collect(root).some((node) => node.textContent === "新") || collect(root).some((node) => node.textContent === "旧")) throw new Error("stale submit replaced visible chips");
+
+            const remove = collect(root).find((node) => node.className === "intent-chip__remove");
+            const removal = remove.onclick();
+            const newer = submitIntent("更新意图");
+            pending[3].request.resolve({{ id: "updated-session", intent: {{ genres: ["更新"] }}, chips: [{{ key: "genre", label: "更新", value: "更新", removable: true }}], channels: {{}} }});
+            await newer;
+            pending[2].request.resolve({{ id: "stale-removal", intent: {{ genres: [] }}, chips: [], channels: {{}} }});
+            await removal;
+            if (actions.some((action) => action.session?.id === "stale-removal")) throw new Error("stale chip removal dispatched");
+
+            const edit = collect(root).find((node) => node.className === "intent-chip__edit");
+            edit.onclick();
+            const editor = collect(root).find((node) => node.className === "intent-chip__editor");
+            const save = collect(root).find((node) => node.className === "intent-chip__save");
+            editor.value = "编辑后";
+            save.onclick();
+            const newest = submitIntent("最终意图");
+            pending[5].request.resolve({{ id: "final-session", intent: {{ genres: ["最终"] }}, chips: [{{ key: "genre", label: "最终", value: "最终", removable: true }}], channels: {{}} }});
+            await newest;
+            pending[4].request.resolve({{ id: "stale-edit", intent: {{ genres: ["编辑后"] }}, chips: [], channels: {{}} }});
+            await Promise.resolve(); await Promise.resolve();
+            if (actions.some((action) => action.session?.id === "stale-edit")) throw new Error("stale chip edit dispatched");
+
+            const failed = submitIntent("失败意图");
+            pending[6].request.reject(new Error("adapter unavailable"));
+            try {{ await failed; }} catch {{}}
+            const status = collect(root).find((node) => node.className === "command-lens__status");
+            submit = collect(root).find((node) => node.className === "command-lens__submit");
+            if (status.attributes.get("aria-live") !== "polite" || !status.textContent.includes("本地结构化筛选")) throw new Error("command error was not visible in aria-live status");
+            if (submit.disabled) throw new Error("submit button remained disabled after failure");
+            console.log(JSON.stringify({{ received: actions.filter((action) => action.type === "recommendation/sessionReceived").map((action) => action.session.id), status: status.textContent, calls: pending.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["new-session", "updated-session", "final-session"], result["received"])
+        self.assertEqual(7, result["calls"])
+
+    def test_batch_operations_are_per_channel_latest_wins_pending_and_error_visible(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.dataset = {{}};
+                this.attributes = new Map(); this.className = ""; this.textContent = "";
+                this.value = ""; this.hidden = false; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              focus() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ configureTonight, renderTonight, requestNextBatch, restorePreviousBatch, syncTonightSessionState }} = await import("{module_url('js/features/tonight.js')}");
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            const pending = [];
+            const actions = [];
+            const state = {{ recommendation: {{
+              sessionId: "legacy-session", activeChannel: "movie",
+              channels: {{
+                movie: {{ sessionId: "movie-session", active_batch: 2, batchIndex: 2, batchIds: ["movie-old"], batch: {{ index: 2, items: [] }} }},
+                series: {{ sessionId: "series-session", active_batch: 2, batchIndex: 2, batchIds: ["series-old"], batch: {{ index: 2, items: [] }} }},
+                "anime-series": {{ sessionId: "anime-session", active_batch: 2, batchIndex: 2, batchIds: ["anime-old"], batch: {{ index: 2, items: [] }} }},
+              }},
+            }} }};
+            const root = new FakeElement("main");
+            configureTonight({{
+              root,
+              store: {{ getState: () => state, dispatch(action) {{ actions.push(action); }} }},
+              api: {{ postV2(path, payload) {{ const request = deferred(); pending.push({{ path, payload, request }}); return request.promise; }} }},
+            }});
+            renderTonight(state);
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const next = requestNextBatch("movie", "更冷门");
+            const previous = restorePreviousBatch("movie");
+            let controls = collect(root).filter((node) => node.className.includes("tonight-button") || node.className === "tonight-reason");
+            if (!controls.filter((node) => node.className !== "tonight-button tonight-button--primary").every((node) => node.disabled)) throw new Error("batch controls were not disabled while pending");
+            if (!pending[0].path.includes("movie-session") || !pending[1].path.includes("movie-session")) throw new Error("movie channel session pointer was not used");
+            pending[1].request.resolve({{ session_id: "movie-session", channel: "电影", batch: {{ id: "movie-previous-new", index: 1, items: [], pool_size: 10, matched_size: 8, visible_size: 2 }} }});
+            await previous;
+            pending[0].request.resolve({{ session_id: "movie-session", channel: "电影", batch: {{ id: "movie-next-stale", index: 3, items: [], pool_size: 10, matched_size: 8, visible_size: 2 }} }});
+            await next;
+            if (actions.map((action) => action.batch.batch.id).join(",") !== "movie-previous-new") throw new Error("stale movie batch dispatched");
+
+            const movie = requestNextBatch("movie", "再换");
+            const series = requestNextBatch("series", "剧集换批");
+            pending[2].request.resolve({{ session_id: "movie-session", channel: "电影", batch: {{ id: "movie-independent", index: 2, items: [] }} }});
+            pending[3].request.resolve({{ session_id: "series-session", channel: "电视剧", batch: {{ id: "series-independent", index: 3, items: [] }} }});
+            await Promise.all([movie, series]);
+            if (!actions.some((action) => action.channel === "movie" && action.batch.batch.id === "movie-independent")) throw new Error("movie channel operation was lost");
+            if (!actions.some((action) => action.channel === "series" && action.batch.batch.id === "series-independent")) throw new Error("series channel operation was lost");
+
+            const failed = requestNextBatch("movie", "失败原因");
+            pending[4].request.reject(new Error("batch unavailable"));
+            try {{ await failed; }} catch {{}}
+            const status = collect(root).find((node) => node.className === "tonight-batch-status");
+            controls = collect(root).filter((node) => node.className === "tonight-reason" || node.className === "tonight-button" || node.className === "tonight-button tonight-button--signal");
+            if (!status || status.attributes.get("aria-live") !== "polite" || !status.textContent.includes("失败")) throw new Error("batch failure was not visible");
+            if (controls.some((node) => node.disabled && !node.textContent.includes("撤回"))) throw new Error("batch controls remained disabled after failure");
+
+            const obsolete = requestNextBatch("movie", "旧会话请求");
+            state.recommendation.channels.movie.sessionId = "movie-session-new";
+            syncTonightSessionState(state);
+            controls = collect(root).filter((node) => node.className === "tonight-reason" || node.className === "tonight-button" || node.className === "tonight-button tonight-button--signal");
+            if (controls.some((node) => node.disabled && !node.textContent.includes("撤回"))) throw new Error("new session did not clear old pending batch UI");
+            pending[5].request.resolve({{ session_id: "movie-session", channel: "电影", batch: {{ id: "old-session-batch", index: 9, items: [] }} }});
+            await obsolete;
+            if (actions.some((action) => action.batch?.batch?.id === "old-session-batch")) throw new Error("old-session batch dispatched after session replacement");
+            console.log(JSON.stringify({{ actions: actions.map((action) => [action.channel, action.batch.batch.id]), status: status.textContent, calls: pending.map((item) => item.path) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["movie", "movie", "series"], [entry[0] for entry in result["actions"]])
+        self.assertIn("movie-session", result["calls"][0])
+        self.assertIn("series-session", result["calls"][3])
 
     def test_tonight_stylesheet_is_static_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")

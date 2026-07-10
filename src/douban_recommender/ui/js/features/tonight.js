@@ -17,6 +17,14 @@ let dependencies = {
   root: null,
   openCommandLens: null,
 };
+const batchOperations = new Map(CHANNELS.map((channel) => [channel.slug, {
+  generation: 0,
+  pending: false,
+  sessionId: null,
+  message: "",
+  tone: "neutral",
+  controls: null,
+}]));
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -154,18 +162,24 @@ function renderBatchToolbar(recommendation, channel) {
 
   const previous = element("button", "tonight-button", "撤回上一批");
   previous.type = "button";
-  previous.disabled = numberValue(state.active_batch || state.batch?.index) <= 1;
+  const previousBaseDisabled = numberValue(state.active_batch || state.batch?.index) <= 1;
+  previous.disabled = previousBaseDisabled;
   previous.addEventListener("click", () => {
-    restorePreviousBatch(channel.slug).catch(() => {});
+    void restorePreviousBatch(channel.slug);
   });
 
   const next = element("button", "tonight-button tonight-button--signal", "按原因换一批");
   next.type = "button";
   next.addEventListener("click", () => {
-    requestNextBatch(channel.slug, reason.value).catch(() => {});
+    void requestNextBatch(channel.slug, reason.value);
   });
   controls.append(reason, previous, next);
-  toolbar.append(counts, controls);
+  const status = element("p", "tonight-batch-status");
+  status.setAttribute("aria-live", "polite");
+  toolbar.append(counts, controls, status);
+  const operation = batchOperation(channel.slug);
+  operation.controls = { reason, previous, previousBaseDisabled, next, status };
+  applyBatchOperationUi(channel.slug);
   return toolbar;
 }
 
@@ -228,39 +242,114 @@ function sessionIdFor(channel) {
   return textValue(perChannel.sessionId) || textValue(recommendation.sessionId);
 }
 
-export async function requestNextBatch(channel, reason = "") {
+export function syncTonightSessionState(state = dependencies.store?.getState?.() || {}) {
+  const recommendation = recommendationState(state);
+  for (const channel of CHANNELS) {
+    const operation = batchOperation(channel.slug);
+    const currentSessionId = textValue(channelState(recommendation, channel).sessionId)
+      || textValue(recommendation.sessionId)
+      || null;
+    if (operation.sessionId && operation.sessionId !== currentSessionId) {
+      operation.generation += 1;
+      operation.pending = false;
+      operation.sessionId = null;
+      operation.message = "";
+      operation.tone = "neutral";
+      applyBatchOperationUi(channel.slug);
+    }
+  }
+}
+
+async function runBatchOperation(channel, endpoint, payload, workingMessage, successMessage) {
   const store = configuredStore();
+  const operation = batchOperation(channel);
+  const generation = operation.generation + 1;
+  operation.generation = generation;
+  operation.pending = true;
+  operation.message = workingMessage;
+  operation.tone = "working";
+  applyBatchOperationUi(channel);
+
   const sessionId = sessionIdFor(channel);
-  if (!sessionId) throw new Error("请先创建今晚推荐会话");
-  const batch = await dependencies.api.postV2(
-    `/api/v2/recommend/sessions/${encodeURIComponent(sessionId)}/batch`,
+  if (!sessionId) {
+    operation.pending = false;
+    operation.message = "请先创建今晚推荐会话。";
+    operation.tone = "error";
+    applyBatchOperationUi(channel);
+    return null;
+  }
+  operation.sessionId = sessionId;
+
+  try {
+    const batch = await dependencies.api.postV2(
+      `/api/v2/recommend/sessions/${encodeURIComponent(sessionId)}/${endpoint}`,
+      payload,
+    );
+    if (
+      operation.generation !== generation
+      || sessionIdFor(channel) !== sessionId
+      || (textValue(batch?.session_id) && batch.session_id !== sessionId)
+    ) return null;
+    store.dispatch({ type: "recommendation/batchReceived", channel, batch, expectedSessionId: sessionId });
+    operation.message = successMessage;
+    operation.tone = "success";
+    return batch;
+  } catch {
+    if (operation.generation !== generation) return null;
+    operation.message = endpoint === "previous" ? "撤回上一批失败，请稍后重试。" : "换批失败，请稍后重试。";
+    operation.tone = "error";
+    return null;
+  } finally {
+    if (operation.generation === generation) {
+      operation.pending = false;
+      applyBatchOperationUi(channel);
+    }
+  }
+}
+
+export async function requestNextBatch(channel, reason = "") {
+  return runBatchOperation(
+    channel,
+    "batch",
     { channel: backendChannel(channel), reason: textValue(reason) },
+    "正在按原因生成下一批…",
+    "下一批已就绪。",
   );
-  store.dispatch({ type: "recommendation/batchReceived", channel, batch });
-  return batch;
 }
 
 export async function restorePreviousBatch(channel) {
-  const store = configuredStore();
-  const sessionId = sessionIdFor(channel);
-  if (!sessionId) throw new Error("请先创建今晚推荐会话");
-  const batch = await dependencies.api.postV2(
-    `/api/v2/recommend/sessions/${encodeURIComponent(sessionId)}/previous`,
+  return runBatchOperation(
+    channel,
+    "previous",
     { channel: backendChannel(channel) },
+    "正在撤回到上一批…",
+    "已恢复上一批。",
   );
-  store.dispatch({ type: "recommendation/batchReceived", channel, batch });
-  return batch;
 }
 
-export async function restoreTonightSession(sessionId) {
+export async function restoreTonightSession(sessionId, { signal } = {}) {
   const cleanId = textValue(sessionId);
   if (!cleanId) return null;
   const response = await fetch(`/api/v2/recommend/sessions/${encodeURIComponent(cleanId)}`, {
     method: "GET",
     headers: { Accept: "application/json" },
+    signal,
   });
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-  const session = await response.json();
-  configuredStore().dispatch({ type: "recommendation/sessionReceived", session });
-  return session;
+  return response.json();
+}
+
+function batchOperation(channel) {
+  return batchOperations.get(channel) || batchOperations.get("movie");
+}
+
+function applyBatchOperationUi(channel) {
+  const operation = batchOperation(channel);
+  const controls = operation.controls;
+  if (!controls) return;
+  controls.reason.disabled = operation.pending;
+  controls.previous.disabled = operation.pending || controls.previousBaseDisabled;
+  controls.next.disabled = operation.pending;
+  controls.status.dataset.tone = operation.tone;
+  controls.status.textContent = operation.message;
 }

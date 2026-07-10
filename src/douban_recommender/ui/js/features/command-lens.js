@@ -15,9 +15,14 @@ let lens = null;
 let intentInput = null;
 let chipList = null;
 let statusLine = null;
+let submitButton = null;
 let currentIntent = {};
 let currentChips = [];
+let currentIntentSessionId = null;
+let currentSessionId = null;
 let keyboardDocument = null;
+let intentGeneration = 0;
+let intentPending = false;
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -49,6 +54,18 @@ function cloneIntent(intent) {
   ]));
 }
 
+function activeSessionId(state) {
+  const recommendation = state?.recommendation;
+  const channel = recommendation?.activeChannel || "movie";
+  return textValue(recommendation?.channels?.[channel]?.sessionId)
+    || textValue(recommendation?.sessionId)
+    || null;
+}
+
+function chipsAreEditable() {
+  return Boolean(!intentPending && currentIntentSessionId && currentIntentSessionId === currentSessionId);
+}
+
 function updateStatus(message, tone = "neutral") {
   if (!statusLine) return;
   statusLine.dataset.tone = tone;
@@ -65,7 +82,7 @@ function replacementIntent(chip, replacement) {
     if (replacement !== undefined) values.push(replacement);
     next[field] = values;
   } else if (replacement === undefined) {
-    next[field] = NUMBER_FIELDS.has(field) ? null : "";
+    delete next[field];
   } else {
     next[field] = replacement;
   }
@@ -73,19 +90,30 @@ function replacementIntent(chip, replacement) {
   return next;
 }
 
-async function replaceSession(intent) {
-  updateStatus("正在用结构化条件重建今晚片单…", "working");
+async function runIntentRequest(payload, workingMessage, successMessage) {
+  const generation = ++intentGeneration;
+  setIntentPending(true);
+  updateStatus(workingMessage, "working");
   try {
-    const session = await dependencies.api.postV2("/api/v2/recommend/sessions", {
-      intent,
-      batch_size: 9,
-    });
-    acceptGroundedSession(session, "条件已更新，新的批次历史已建立。");
+    const session = await dependencies.api.postV2("/api/v2/recommend/sessions", payload);
+    if (generation !== intentGeneration) return null;
+    acceptGroundedSession(session, successMessage);
     return session;
-  } catch (error) {
+  } catch {
+    if (generation !== intentGeneration) return null;
     updateStatus("语言理解服务暂不可用；本地结构化筛选仍可继续使用。", "fallback");
-    throw error;
+    return null;
+  } finally {
+    if (generation === intentGeneration) setIntentPending(false);
   }
+}
+
+function replaceSession(intent) {
+  return runIntentRequest(
+    { intent, batch_size: 9 },
+    "正在用结构化条件重建今晚片单…",
+    "条件已更新，新的批次历史已建立。",
+  );
 }
 
 function editChip(chip, row) {
@@ -101,7 +129,7 @@ function editChip(chip, row) {
     if (!raw) return;
     const value = NUMBER_FIELDS.has(chip.key) ? Number(raw) : raw;
     if (NUMBER_FIELDS.has(chip.key) && !Number.isFinite(value)) return;
-    replaceSession(replacementIntent(chip, value)).catch(() => {});
+    void replaceSession(replacementIntent(chip, value));
   });
   row.replaceChildren(editor, save);
   editor.focus();
@@ -119,13 +147,15 @@ function renderChips() {
     const label = element("span", "intent-chip__label", chip.label);
     const edit = element("button", "intent-chip__edit", "编辑");
     edit.type = "button";
+    edit.disabled = !chipsAreEditable();
     edit.addEventListener("click", () => editChip(chip, row));
     row.append(label, edit);
     if (chip.removable) {
       const remove = element("button", "intent-chip__remove", "移除");
       remove.type = "button";
+      remove.disabled = !chipsAreEditable();
       remove.setAttribute("aria-label", `移除${chip.label}`);
-      remove.addEventListener("click", () => replaceSession(replacementIntent(chip)).catch(() => {}));
+      remove.addEventListener("click", () => replaceSession(replacementIntent(chip)));
       row.append(remove);
     }
     chipList.append(row);
@@ -134,6 +164,8 @@ function renderChips() {
 
 function acceptGroundedSession(session, message) {
   currentIntent = cloneIntent(session?.intent);
+  currentIntentSessionId = textValue(session?.id) || null;
+  currentSessionId = currentIntentSessionId;
   currentChips = structuredChips(session?.chips);
   renderChips();
   dependencies.store?.dispatch?.({ type: "commandLens/grounded", draft: intentInput?.value || "", chips: currentChips });
@@ -143,11 +175,14 @@ function acceptGroundedSession(session, message) {
 }
 
 function closeCommandLens() {
+  intentGeneration += 1;
+  intentPending = false;
   dependencies.root?.replaceChildren();
   lens = null;
   intentInput = null;
   chipList = null;
   statusLine = null;
+  submitButton = null;
 }
 
 function bindKeyboardShortcut() {
@@ -168,6 +203,22 @@ export function configureCommandLens(options = {}) {
     api: options.api || dependencies.api,
   };
   bindKeyboardShortcut();
+}
+
+function setIntentPending(pending) {
+  intentPending = pending;
+  if (submitButton) submitButton.disabled = pending;
+  if (intentInput) intentInput.disabled = pending;
+  renderChips();
+}
+
+export function syncCommandLensState(state = dependencies.store?.getState?.() || {}) {
+  const recommendation = state?.recommendation || {};
+  currentSessionId = activeSessionId(state);
+  currentIntent = cloneIntent(recommendation.intent);
+  currentIntentSessionId = textValue(recommendation.intentSessionId) || null;
+  currentChips = structuredChips(state?.commandLens?.chips);
+  if (chipList) renderChips();
 }
 
 export function openCommandLens(initialText = "") {
@@ -199,19 +250,20 @@ export function openCommandLens(initialText = "") {
   intentInput.maxLength = 2000;
   intentInput.placeholder = "例如：90 分钟内，悬疑但不要太压抑，最好是近十年的电影";
   intentInput.value = textValue(initialText) || textValue(dependencies.store?.getState?.()?.commandLens?.draft);
+  intentInput.disabled = intentPending;
   intentInput.setAttribute("aria-label", "今晚观影意图");
-  const submit = element("button", "command-lens__submit", "生成今晚片单");
-  submit.type = "submit";
-  form.append(intentInput, submit);
+  submitButton = element("button", "command-lens__submit", "生成今晚片单");
+  submitButton.type = "submit";
+  submitButton.disabled = intentPending;
+  form.append(intentInput, submitButton);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    submitIntent(intentInput.value).catch(() => {});
+    void submitIntent(intentInput.value);
   });
 
   chipList = element("div", "command-lens__chips");
   chipList.setAttribute("aria-label", "服务端结构化意图条件");
-  currentIntent = cloneIntent(dependencies.store?.getState?.()?.recommendation?.intent);
-  currentChips = structuredChips(dependencies.store?.getState?.()?.commandLens?.chips);
+  syncCommandLensState(dependencies.store?.getState?.() || {});
   renderChips();
   statusLine = element("p", "command-lens__status", "条件标签只采用服务端结构化结果，不读取模型自由文本。");
   statusLine.setAttribute("aria-live", "polite");
@@ -227,16 +279,12 @@ export async function submitIntent(text) {
     updateStatus("先写下一句今晚的观影线索。", "fallback");
     return null;
   }
-  updateStatus("正在把自然语言落成结构化条件…", "working");
-  try {
-    const session = await dependencies.api.postV2("/api/v2/recommend/sessions", {
+  return runIntentRequest(
+    {
       intent_text: cleanText,
       batch_size: 9,
-    });
-    acceptGroundedSession(session, "结构化意图已落地，今晚片单已刷新。");
-    return session;
-  } catch (error) {
-    updateStatus("语言理解服务暂不可用；本地结构化筛选仍可继续使用。", "fallback");
-    throw error;
-  }
+    },
+    "正在把自然语言落成结构化条件…",
+    "结构化意图已落地，今晚片单已刷新。",
+  );
 }
