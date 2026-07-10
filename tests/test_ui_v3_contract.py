@@ -172,6 +172,297 @@ class UiV3ContractTests(unittest.TestCase):
                 with self.subTest(transition=transition):
                     self.assertIn(property_name, {"transform", "opacity"})
 
+    def test_media_component_refuses_external_src(self):
+        source = (UI_ROOT / "js" / "core" / "media.js").read_text(encoding="utf-8")
+        source += (UI_ROOT / "js" / "components" / "media-frame.js").read_text(encoding="utf-8")
+
+        self.assertIn("isLocalMediaUrl", source)
+        self.assertIn("media-fallback", source)
+        self.assertNotIn("onerror=", source)
+
+    def test_card_css_enforces_stable_aspect_and_line_clamp(self):
+        css = (UI_ROOT / "styles" / "components.css").read_text(encoding="utf-8")
+
+        self.assertIn("aspect-ratio: 2 / 3", css)
+        self.assertIn("-webkit-line-clamp: 2", css)
+
+    def test_media_preload_refuses_unsafe_urls_and_only_inserts_a_decoded_image(self):
+        output = run_node_module(
+            f'''
+            import {{ preloadLocalMedia }} from "{module_url('js/core/media.js')}";
+            import {{ renderMediaFrame }} from "{module_url('js/components/media-frame.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.attributes = new Map();
+                this.className = "";
+                this.textContent = "";
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+
+            let domImageCreates = 0;
+            globalThis.document = {{
+              createElement(tagName) {{
+                if (tagName.toLowerCase() === "img") domImageCreates += 1;
+                return new FakeElement(tagName);
+              }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            let imageMode = "success";
+            const createdImages = [];
+            globalThis.Image = class FakeImage {{
+              constructor() {{
+                this.tagName = "IMG";
+                this.naturalWidth = 640;
+                createdImages.push(this);
+              }}
+              set src(value) {{
+                this._src = value;
+                queueMicrotask(() => {{
+                  if (imageMode === "load-failure") this.onerror?.(new Error("load failed"));
+                  else this.onload?.();
+                }});
+              }}
+              get src() {{ return this._src; }}
+              decode() {{
+                return imageMode === "decode-failure"
+                  ? Promise.reject(new Error("decode failed"))
+                  : Promise.resolve();
+              }}
+            }};
+
+            const settle = async () => {{
+              await Promise.resolve();
+              await Promise.resolve();
+              await Promise.resolve();
+              await Promise.resolve();
+            }};
+
+            for (const unsafeUrl of [
+              "https://remote.test/media/poster.webp",
+              "//remote.test/media/poster.webp",
+              "data:image/png;base64,AA==",
+              "blob:https://cinescope.test/media/poster.webp",
+              "/media.evil/poster.webp",
+            ]) {{
+              if (await preloadLocalMedia(unsafeUrl) !== null) throw new Error("unsafe media was accepted");
+              const frame = renderMediaFrame({{
+                localUrl: unsafeUrl,
+                kind: "poster",
+                title: "External",
+                status: "ready",
+              }});
+              await settle();
+              if (!frame.firstElementChild?.className.includes("media-fallback")) {{
+                throw new Error("external media replaced the fallback");
+              }}
+            }}
+            if (createdImages.length !== 0 || domImageCreates !== 0) {{
+              throw new Error("unsafe URL created an image element");
+            }}
+
+            imageMode = "decode-failure";
+            const failedFrame = renderMediaFrame({{
+              localUrl: "/media/failing-poster.webp",
+              kind: "poster",
+              title: "Decode Failure",
+              status: "ready",
+            }});
+            await settle();
+            if (!failedFrame.firstElementChild?.className.includes("media-fallback")) {{
+              throw new Error("decode failure removed the fallback");
+            }}
+
+            imageMode = "success";
+            const imageIndex = createdImages.length;
+            const readyFrame = renderMediaFrame({{
+              localUrl: "/media/ready-poster.webp",
+              kind: "poster",
+              title: "Ready Poster",
+              status: "ready",
+            }});
+            await settle();
+            const decodedImage = createdImages[imageIndex];
+            if (readyFrame.firstElementChild !== decodedImage) {{
+              throw new Error("rendered image was not the decoded preload element");
+            }}
+            if (decodedImage.alt !== "Ready Poster 海报") {{
+              throw new Error("decoded image alt text was not assigned");
+            }}
+            console.log(JSON.stringify({{ images: createdImages.length, domImageCreates }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["images"])
+        self.assertEqual(0, result["domImageCreates"])
+
+    def test_media_adapters_normalize_recommendation_catalog_and_person_payloads(self):
+        output = run_node_module(
+            f'''
+            import {{
+              adaptCatalogMedia,
+              adaptPersonMedia,
+              adaptRecommendationMedia,
+            }} from "{module_url('js/core/media.js')}";
+
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            const recommendation = adaptRecommendationMedia({{
+              title: "Cipher Line",
+              source: "recommendation-cache",
+              poster: {{ localUrl: "/media/recommendation.webp", status: "ready" }},
+            }});
+            const catalogPoster = adaptCatalogMedia({{
+              title: "Archive 81",
+              source: "catalog-cache",
+              media: {{
+                poster: {{ localUrl: "/media/catalog-poster.webp", status: "ready" }},
+                backdrop: {{ localUrl: "/media/catalog-backdrop.webp", status: "ready" }},
+              }},
+            }}, "poster");
+            const catalogBackdrop = adaptCatalogMedia({{
+              title: "Archive 81",
+              source: "catalog-cache",
+              media: {{
+                poster: {{ localUrl: "/media/catalog-poster.webp", status: "ready" }},
+                backdrop: {{ localUrl: "/media/catalog-backdrop.webp", status: "ready" }},
+              }},
+            }}, "backdrop");
+            const person = adaptPersonMedia({{
+              name: "Jane Doe",
+              source: "people-cache",
+              portrait: {{ localUrl: "/media/person.webp", status: "ready" }},
+            }});
+            const blocked = adaptRecommendationMedia({{
+              title: "Untrusted",
+              poster: {{ localUrl: "https://remote.test/media/poster.webp", status: "ready" }},
+            }});
+
+            for (const [asset, expectedKind, expectedTitle, expectedUrl, expectedSource] of [
+              [recommendation, "poster", "Cipher Line", "/media/recommendation.webp", "recommendation-cache"],
+              [catalogPoster, "poster", "Archive 81", "/media/catalog-poster.webp", "catalog-cache"],
+              [catalogBackdrop, "backdrop", "Archive 81", "/media/catalog-backdrop.webp", "catalog-cache"],
+              [person, "portrait", "Jane Doe", "/media/person.webp", "people-cache"],
+            ]) {{
+              if (asset.kind !== expectedKind || asset.title !== expectedTitle || asset.localUrl !== expectedUrl) {{
+                throw new Error("media adapter did not preserve its normalized shape");
+              }}
+              if (asset.status !== "ready" || asset.source !== expectedSource) {{
+                throw new Error("media adapter lost status or source");
+              }}
+            }}
+            if (blocked.localUrl !== null || blocked.status !== "unavailable") {{
+              throw new Error("adapter passed through an external image URL");
+            }}
+            console.log(JSON.stringify({{ recommendation, catalogPoster, catalogBackdrop, person }}));
+            '''
+        )
+        normalized = json.loads(output)
+        self.assertEqual("portrait", normalized["person"]["kind"])
+        self.assertEqual("/media/catalog-backdrop.webp", normalized["catalogBackdrop"]["localUrl"])
+
+    def test_title_cards_and_shelves_use_text_content_for_untrusted_copy(self):
+        sources = (
+            (UI_ROOT / "js" / "components" / "title-card.js").read_text(encoding="utf-8")
+            + (UI_ROOT / "js" / "components" / "shelf.js").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("innerHTML", sources)
+
+        output = run_node_module(
+            f'''
+            import {{ renderTitleCard }} from "{module_url('js/components/title-card.js')}";
+            import {{ renderShelf }} from "{module_url('js/components/shelf.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.className = "";
+                this.textContent = "";
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute() {{}}
+              addEventListener() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            Object.defineProperty(FakeElement.prototype, "innerHTML", {{
+              set() {{ throw new Error("innerHTML must not be used"); }},
+            }});
+            let imageCreates = 0;
+            globalThis.document = {{
+              createElement(tagName) {{
+                if (tagName.toLowerCase() === "img") imageCreates += 1;
+                return new FakeElement(tagName);
+              }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            const unsafe = "<img src=x onerror=alert(1)>";
+            const card = renderTitleCard({{
+              title: unsafe,
+              reason: unsafe,
+              metadata: [unsafe],
+              poster: {{ localUrl: "https://remote.test/poster.webp", status: "ready" }},
+            }});
+            const shelf = renderShelf({{
+              title: unsafe,
+              items: [{{ title: unsafe, reason: unsafe }}],
+              batchState: {{ label: unsafe }},
+            }});
+            const collectText = (element) => [
+              element.textContent,
+              ...element.children.flatMap((child) => collectText(child)),
+            ];
+            if (!collectText(card).includes(unsafe) || !collectText(shelf).includes(unsafe)) {{
+              throw new Error("untrusted copy was not retained as text");
+            }}
+            if (imageCreates !== 0) throw new Error("text rendering created an image element");
+            console.log(JSON.stringify({{
+              cardHasUnsafeText: collectText(card).includes(unsafe),
+              shelfHasUnsafeText: collectText(shelf).includes(unsafe),
+            }}));
+            '''
+        )
+        rendered = json.loads(output)
+        self.assertTrue(rendered["cardHasUnsafeText"])
+        self.assertTrue(rendered["shelfHasUnsafeText"])
+
+    def test_component_styles_and_motion_load_after_shell_with_reduced_motion_budget(self):
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        components_css = (UI_ROOT / "styles" / "components.css").read_text(encoding="utf-8")
+        motion_css = (UI_ROOT / "styles" / "motion.css").read_text(encoding="utf-8")
+
+        shell_index = html.index("/assets/v3/styles/shell.css")
+        components_index = html.index("/assets/v3/styles/components.css")
+        motion_index = html.index("/assets/v3/styles/motion.css")
+        self.assertLess(shell_index, components_index)
+        self.assertLess(components_index, motion_index)
+        self.assertIn("--motion-fast: 180ms", motion_css)
+        self.assertIn("--motion-standard: 280ms", motion_css)
+        self.assertIn("--motion-immersive: 440ms", motion_css)
+        self.assertIn("prefers-reduced-motion", motion_css)
+        self.assertIn("--motion-fast: 1ms", motion_css)
+        self.assertIn("transform: none", motion_css)
+
+        declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", components_css + motion_css)
+        for declaration in declarations:
+            for transition in declaration.split(","):
+                property_name = transition.strip().split(maxsplit=1)[0]
+                with self.subTest(transition=transition):
+                    self.assertIn(property_name, {"transform", "opacity"})
+
     def test_router_matches_params_and_restores_scroll_after_render(self):
         output = run_node_module(
             f'''

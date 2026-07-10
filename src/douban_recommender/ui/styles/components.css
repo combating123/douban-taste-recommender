@@ -1,0 +1,185 @@
+.media-frame {
+  position: relative;
+  display: grid;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.95rem;
+  background: var(--surface-strong);
+  isolation: isolate;
+}
+
+.media-frame--poster { aspect-ratio: 2 / 3; }
+.media-frame--backdrop { aspect-ratio: 16 / 9; }
+.media-frame--portrait { aspect-ratio: 3 / 4; }
+
+.media-frame__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: end;
+  gap: 0.35rem;
+  padding: 0.8rem;
+  overflow: hidden;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, transparent 32%, rgba(7, 9, 15, 0.88) 100%),
+    linear-gradient(135deg, rgba(185, 215, 255, 0.2), rgba(200, 168, 107, 0.1)),
+    var(--surface-strong);
+}
+
+.media-fallback::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  opacity: 0.5;
+  background: repeating-linear-gradient(140deg, transparent 0 1.2rem, rgba(255, 255, 255, 0.06) 1.25rem 1.3rem);
+}
+
+.media-fallback--backdrop { padding: clamp(0.7rem, 2vw, 1.4rem); }
+.media-fallback--portrait { background: linear-gradient(160deg, rgba(200, 168, 107, 0.38), rgba(45, 61, 94, 0.85)); }
+
+.media-fallback__glyph,
+.media-fallback__title,
+.media-fallback__status {
+  position: relative;
+  min-width: 0;
+}
+
+.media-fallback__glyph {
+  display: grid;
+  width: 2.1rem;
+  height: 2.1rem;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  color: var(--signal);
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.media-fallback__title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 0.92rem;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.media-fallback__status {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-shelf {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.title-shelf__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.title-shelf__title,
+.title-shelf__state { margin: 0; }
+.title-shelf__title { min-width: 0; font-size: clamp(1.05rem, 2vw, 1.35rem); }
+.title-shelf__state { overflow: hidden; color: var(--muted); font-size: 0.78rem; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+
+.title-shelf__rail {
+  display: flex;
+  gap: 0.8rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.1rem 0.1rem 0.75rem;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: inline mandatory;
+  scrollbar-color: var(--line) transparent;
+}
+
+.title-shelf__item {
+  flex: 0 0 clamp(9.4rem, 13vw, 11.8rem);
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.title-card {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  color: var(--text);
+}
+
+.title-card__body { display: grid; gap: 0.32rem; min-width: 0; }
+
+.title-card__title {
+  display: -webkit-box;
+  min-height: 2.5em;
+  margin: 0;
+  overflow: hidden;
+  font-size: 0.92rem;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.title-card__metadata,
+.title-card__reason {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.title-card__reason { color: color-mix(in srgb, var(--signal), var(--text) 22%); }
+
+.title-card__actions { display: flex; gap: 0.45rem; }
+.title-card__action {
+  min-width: 0;
+  padding: 0.38rem 0.55rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.55rem;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform var(--motion-fast) ease, opacity var(--motion-fast) ease;
+}
+
+.title-card:hover .media-frame,
+.title-card:focus-within .media-frame { transform: translateY(-2px); }
+.title-card__action:hover,
+.title-card__action:focus-visible { transform: translateY(-1px); opacity: 0.9; }
+
+@media (max-width: 720px) {
+  .title-shelf__item { flex-basis: clamp(8.8rem, 42vw, 10.4rem); }
+  .title-shelf__heading { align-items: flex-start; flex-direction: column; gap: 0.25rem; }
+  .title-shelf__state { text-align: left; }
+}

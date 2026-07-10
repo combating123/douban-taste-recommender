@@ -1,0 +1,43 @@
+:root {
+  --motion-fast: 180ms;
+  --motion-standard: 280ms;
+  --motion-immersive: 440ms;
+}
+
+.motion-enter {
+  animation: cinescope-enter var(--motion-standard) ease both;
+}
+
+.motion-immersive {
+  transition: transform var(--motion-immersive) ease, opacity var(--motion-standard) ease;
+}
+
+.parallax,
+[data-parallax] {
+  will-change: transform;
+}
+
+@keyframes cinescope-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 1ms;
+    --motion-standard: 1ms;
+    --motion-immersive: 1ms;
+  }
+
+  .parallax,
+  [data-parallax] {
+    transform: none !important;
+  }
+}
