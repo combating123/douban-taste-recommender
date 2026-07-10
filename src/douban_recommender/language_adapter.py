@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -33,6 +34,14 @@ TEXT_FIELDS = {"pace", "complexity", "intensity_max", "free_text"}
 INTEGER_FIELDS = {"runtime_max", "episode_runtime_max", "year_min", "year_max"}
 NUMBER_FIELDS = {"quality_floor", "exploration_level", "surprise_level"}
 KNOWN_INTENT_FIELDS = TUPLE_FIELDS | TEXT_FIELDS | INTEGER_FIELDS | NUMBER_FIELDS
+JSON_ONLY_SYSTEM_PROMPT = "Return one strict JSON object only. Do not include markdown or extra text."
+TITLE_PATTERN = re.compile(r"《([^》]+)》")
+YEAR_CLAIM_PATTERN = re.compile(r"于(?P<year>\d{4})年(?:上映|播出|开播)")
+RATING_CLAIM_PATTERN = re.compile(r"豆瓣评分\s*(?P<rating>\d+(?:\.\d+)?)")
+GENRES_CLAIM_PATTERN = re.compile(r"类型[:：]\s*(?P<genres>[^，。；]+)")
+COUNTRIES_CLAIM_PATTERN = re.compile(r"国家/地区[:：]\s*(?P<countries>[^，。；]+)")
+LANGUAGES_CLAIM_PATTERN = re.compile(r"语言[:：]\s*(?P<languages>[^，。；]+)")
+LIST_SPLIT_PATTERN = re.compile(r"(?:\s*[、/,，]\s*)|(?:\s+and\s+)")
 
 
 class UngroundedResponseError(ValueError):
@@ -54,12 +63,12 @@ class LocalRuleLanguageAdapter(LanguageAdapter):
     def explain(self, request, evidence_items) -> str:
         catalog = _normalize_evidence(evidence_items)
         citation_ids = _requested_citations(request, catalog)
-        if not citation_ids:
+        if citation_ids is None:
             citation_ids = list(catalog)[:2]
         if not citation_ids:
-            return "暂无可引用证据。"
+            return "\u6682\u65e0\u53ef\u5f15\u7528\u8bc1\u636e\u3002"
         fragments = [_local_fragment(citation_id, catalog[citation_id]) for citation_id in citation_ids[:2]]
-        return "；".join(fragment for fragment in fragments if fragment) + "。"
+        return "\uff1b".join(fragment for fragment in fragments if fragment) + "\u3002"
 
 
 class OpenAICompatibleLanguageAdapter(LanguageAdapter):
@@ -77,6 +86,7 @@ class OpenAICompatibleLanguageAdapter(LanguageAdapter):
         self.model = str(model or "").strip()
         self.api_key = str(api_key or "")
         self.transport = transport or _default_transport
+        self._uses_default_transport = transport is None
         self.timeout = int(timeout) if int(timeout) > 0 else DEFAULT_TIMEOUT_SECONDS
         self.max_response_bytes = int(max_response_bytes) if int(max_response_bytes) > 0 else MAX_RESPONSE_BYTES
 
@@ -101,25 +111,20 @@ class OpenAICompatibleLanguageAdapter(LanguageAdapter):
             raise RuntimeError("language endpoint is not configured")
         if not self.model:
             raise ValueError("model is required")
-        body = json.dumps(
-            {
-                "model": self.model,
-                "input": {"task": task, **content},
-                "response_format": {"type": "json_object"},
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        protocol = _endpoint_protocol(endpoint)
+        body = _request_body(protocol, self.model, task, content)
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
         try:
-            response = self.transport(request, self.timeout)
-            text = _read_response_text(response, self.max_response_bytes)
+            if self._uses_default_transport:
+                response = self.transport(request, self.timeout, self.max_response_bytes)
+            else:
+                response = self.transport(request, self.timeout)
         except Exception as exc:  # pragma: no cover - exercised through tests
             raise RuntimeError("language model request failed") from exc
-        return _json_object(text)
+        return _decode_model_payload(response, self.max_response_bytes, protocol)
 
 
 class LanguageService(LanguageAdapter):
@@ -150,9 +155,9 @@ def detect_local_endpoint() -> str:
     return LOCAL_ENDPOINT_CANDIDATE
 
 
-def _default_transport(request: urllib.request.Request, timeout: int):
+def _default_transport(request: urllib.request.Request, timeout: int, limit: int):
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read(MAX_RESPONSE_BYTES + 1)
+        return response.read(limit + 1)
 
 
 def _validated_endpoint(endpoint: str) -> str:
@@ -185,7 +190,50 @@ def _validated_endpoint(endpoint: str) -> str:
     return urlunsplit((parsed.scheme, netloc, path, "", ""))
 
 
-def _read_response_text(response, limit: int) -> str:
+def _endpoint_protocol(endpoint: str) -> str:
+    parsed = urlsplit(endpoint)
+    return "responses" if parsed.path == "/v1/responses" else "chat"
+
+
+def _request_body(protocol: str, model: str, task: str, content: dict[str, Any]) -> bytes:
+    if protocol == "responses":
+        payload = {
+            "model": model,
+            "input": {"task": task, **content},
+            "response_format": {"type": "json_object"},
+        }
+    else:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": JSON_ONLY_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"task": task, **content},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+        }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _decode_model_payload(response, limit: int, protocol: str) -> dict[str, Any]:
+    payload = _response_object(response, limit)
+    if _looks_like_final_payload(payload):
+        return payload
+    if protocol == "responses":
+        return _responses_payload(payload, limit)
+    return _chat_payload(payload, limit)
+
+
+def _response_object(response, limit: int) -> dict[str, Any]:
+    if isinstance(response, dict):
+        _ensure_payload_size(response, limit)
+        return response
     if isinstance(response, str):
         data = response.encode("utf-8")
     elif isinstance(response, bytes):
@@ -196,7 +244,74 @@ def _read_response_text(response, limit: int) -> str:
         raise RuntimeError("unsupported transport response")
     if len(data) > limit:
         raise RuntimeError("language model response too large")
-    return data.decode("utf-8")
+    return _json_object(data.decode("utf-8"))
+
+
+def _ensure_payload_size(payload: dict[str, Any], limit: int) -> None:
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > limit:
+        raise RuntimeError("language model response too large")
+
+
+def _looks_like_final_payload(payload: dict[str, Any]) -> bool:
+    keys = set(payload)
+    if "choices" in payload or "output" in payload or "output_text" in payload:
+        return False
+    if {"text", "citations"}.issubset(keys):
+        return True
+    return keys <= KNOWN_INTENT_FIELDS
+
+
+def _chat_payload(payload: dict[str, Any], limit: int) -> dict[str, Any]:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("chat response must include choices")
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise ValueError("chat response must include choices")
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise ValueError("chat response must include message")
+    return _coerce_json_output(message.get("content"), limit, "chat response content")
+
+
+def _responses_payload(payload: dict[str, Any], limit: int) -> dict[str, Any]:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return _coerce_json_output(output_text, limit, "responses output_text")
+    output = payload.get("output")
+    if not isinstance(output, list) or not output:
+        raise ValueError("responses response must include output_text or output")
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "output_text" and isinstance(block.get("text"), str) and block["text"].strip():
+                return _coerce_json_output(block["text"], limit, "responses output")
+    raise ValueError("responses response must include output_text or output")
+
+
+def _coerce_json_output(value: Any, limit: int, label: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        _ensure_payload_size(value, limit)
+        return value
+    if isinstance(value, list):
+        parts = []
+        for block in value:
+            if isinstance(block, dict) and block.get("type") in {"text", "output_text"} and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        if parts:
+            value = "".join(parts)
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be JSON string")
+    if len(value.encode("utf-8")) > limit:
+        raise RuntimeError("language model response too large")
+    return _json_object(value)
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -256,18 +371,113 @@ def _grounded_text_from_payload(payload: dict[str, Any], evidence_items: dict[st
     uncited_titles = {title for item_id, title in all_titles.items() if item_id not in citation_ids}
     if any(title in text for title in uncited_titles):
         raise UngroundedResponseError("citation title is not grounded")
+    _validate_grounded_claims(text, citation_ids, evidence_items)
     return text.strip()
 
 
-def _requested_citations(request, evidence_items: dict[str, dict[str, Any]]) -> list[str]:
+def _validate_grounded_claims(text: str, citation_ids: list[str], evidence_items: dict[str, dict[str, Any]]) -> None:
+    claims = _extract_supported_claims(text)
+    _reject_unsafe_fact_markers(text, claims)
+    if not claims:
+        return
+    subject = _claim_subject(text, citation_ids, evidence_items)
+    if subject is None:
+        raise UngroundedResponseError("explicit fact is not grounded")
+    if "year" in claims and claims["year"] != subject.get("year"):
+        raise UngroundedResponseError("explicit fact is not grounded")
+    if "douban_rating" in claims and _normalize_number(claims["douban_rating"]) != _normalize_number(subject.get("douban_rating")):
+        raise UngroundedResponseError("explicit fact is not grounded")
+    for field in ("genres", "countries", "languages"):
+        if field not in claims:
+            continue
+        supported = set(_string_list(subject.get(field)))
+        if not supported or any(value not in supported for value in claims[field]):
+            raise UngroundedResponseError("explicit fact is not grounded")
+
+
+def _extract_supported_claims(text: str) -> dict[str, Any]:
+    claims: dict[str, Any] = {}
+    year_match = YEAR_CLAIM_PATTERN.search(text)
+    if year_match:
+        claims["year"] = int(year_match.group("year"))
+    rating_match = RATING_CLAIM_PATTERN.search(text)
+    if rating_match:
+        claims["douban_rating"] = float(rating_match.group("rating"))
+    genres_match = GENRES_CLAIM_PATTERN.search(text)
+    if genres_match:
+        genres = _split_claim_values(genres_match.group("genres"))
+        if genres:
+            claims["genres"] = genres
+    countries_match = COUNTRIES_CLAIM_PATTERN.search(text)
+    if countries_match:
+        countries = _split_claim_values(countries_match.group("countries"))
+        if countries:
+            claims["countries"] = countries
+    languages_match = LANGUAGES_CLAIM_PATTERN.search(text)
+    if languages_match:
+        languages = _split_claim_values(languages_match.group("languages"))
+        if languages:
+            claims["languages"] = languages
+    return claims
+
+
+def _reject_unsafe_fact_markers(text: str, claims: dict[str, Any]) -> None:
+    markers = (
+        (re.search(r"\d{4}年", text) is not None, "year"),
+        ("\u8c46\u74e3\u8bc4\u5206" in text, "douban_rating"),
+        ("\u7c7b\u578b" in text, "genres"),
+        ("\u56fd\u5bb6/\u5730\u533a" in text, "countries"),
+        ("\u8bed\u8a00" in text, "languages"),
+    )
+    for present, field in markers:
+        if present and field not in claims:
+            raise UngroundedResponseError("explicit fact is not grounded")
+
+
+def _claim_subject(text: str, citation_ids: list[str], evidence_items: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    if len(citation_ids) == 1:
+        return evidence_items[citation_ids[0]]
+    cited_titles = {
+        citation_id: _title(evidence_items[citation_id])
+        for citation_id in citation_ids
+        if _title(evidence_items[citation_id])
+    }
+    mentioned = [citation_id for citation_id, title in cited_titles.items() if title in text]
+    if len(mentioned) == 1:
+        return evidence_items[mentioned[0]]
+    mentioned_titles = {match.group(1) for match in TITLE_PATTERN.finditer(text)}
+    if len(mentioned_titles) == 1:
+        title = next(iter(mentioned_titles))
+        for citation_id in citation_ids:
+            if _title(evidence_items[citation_id]) == title:
+                return evidence_items[citation_id]
+    return None
+
+
+def _split_claim_values(value: str) -> list[str]:
+    items = [item.strip() for item in LIST_SPLIT_PATTERN.split(value) if item and item.strip()]
+    out: list[str] = []
+    for item in items:
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _normalize_number(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return ""
+    return f"{float(value):g}"
+
+
+def _requested_citations(request, evidence_items: dict[str, dict[str, Any]]) -> list[str] | None:
     if not isinstance(request, dict):
-        return []
+        return None
     raw = request.get("citations")
     if raw is None:
         raw = request.get("evidence_ids")
     if raw is None:
-        return []
-    if not isinstance(raw, list):
+        return None
+    if not isinstance(raw, list) or not raw:
         raise UngroundedResponseError("citation is required")
     citation_ids: list[str] = []
     for value in raw:
@@ -379,8 +589,8 @@ def _local_fragment(citation_id: str, item: dict[str, Any]) -> str:
         facts.append(str(year))
     rating = item.get("douban_rating")
     if isinstance(rating, (int, float)) and not isinstance(rating, bool):
-        facts.append(f"豆瓣{float(rating):g}")
-    return f"推荐《{title}》" + (f"：{'、'.join(facts)}" if facts else "")
+        facts.append(f"\u8c46\u74e3{float(rating):g}")
+    return f"\u63a8\u8350\u300a{title}\u300b" + (f"\uff1a{'\u3001'.join(facts)}" if facts else "")
 
 
 __all__ = [
