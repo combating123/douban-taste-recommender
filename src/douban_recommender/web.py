@@ -22,6 +22,7 @@ from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .media_api import MediaApi, build_default_media_api
 from .models import MediaItem
 from .profiler import build_taste_profile
+from .recommendation_api import RecommendationApi, RecommendationApiError, build_default_recommendation_api
 from .recommender import recommend
 from .serialization import media_item_from_dict, media_item_to_dict
 from .storage import CacheStore, default_cache_dir
@@ -44,6 +45,8 @@ MEDIA_API: MediaApi | None = None
 MEDIA_API_LOCK = threading.Lock()
 SYNC_API: SyncApi | None = None
 SYNC_API_LOCK = threading.Lock()
+RECOMMENDATION_API: RecommendationApi | None = None
+RECOMMENDATION_API_LOCK = threading.Lock()
 PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "黑泽明": "Akira Kurosawa",
     "三船敏郎": "Toshiro Mifune",
@@ -100,6 +103,16 @@ def get_sync_api() -> SyncApi:
         if SYNC_API is None:
             SYNC_API = build_default_sync_api()
     return SYNC_API
+
+
+def get_recommendation_api() -> RecommendationApi:
+    global RECOMMENDATION_API
+    if RECOMMENDATION_API is not None:
+        return RECOMMENDATION_API
+    with RECOMMENDATION_API_LOCK:
+        if RECOMMENDATION_API is None:
+            RECOMMENDATION_API = build_default_recommendation_api()
+    return RECOMMENDATION_API
 
 
 def anime_subsection_name(countries: list[str]) -> str:
@@ -673,11 +686,19 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 data = get_sync_api().get_job(job_id)
                 self.send_json(data, status=404 if data.get("error") else 200)
+            elif path.startswith("/api/v2/recommend/sessions/"):
+                session_id = path.removeprefix("/api/v2/recommend/sessions/").strip("/")
+                if not session_id or "/" in session_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                self.send_json(get_recommendation_api().get_session(session_id))
             elif path.startswith("/api/poster-jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 self.send_json(self.handle_poster_job_get(job_id))
             else:
                 self.send_json({"error": "not found"}, status=404)
+        except RecommendationApiError as exc:
+            self.send_json({"error": str(exc)}, status=exc.status_code)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
 
@@ -713,12 +734,36 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     self.send_json({"error": str(exc)}, status=400)
                     return
+            elif path == "/api/v2/recommend/sessions":
+                data = get_recommendation_api().create_session(payload)
+            elif path.startswith("/api/v2/recommend/sessions/") and path.endswith("/batch"):
+                session_id = path.removeprefix("/api/v2/recommend/sessions/")[: -len("/batch")].strip("/")
+                if not session_id or "/" in session_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                data = get_recommendation_api().next_batch(session_id, payload)
+            elif path.startswith("/api/v2/recommend/sessions/") and path.endswith("/previous"):
+                session_id = path.removeprefix("/api/v2/recommend/sessions/")[: -len("/previous")].strip("/")
+                if not session_id or "/" in session_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                data = get_recommendation_api().previous_batch(session_id, payload)
+            elif path == "/api/v2/feedback":
+                data = get_recommendation_api().record_feedback(payload)
+            elif path.startswith("/api/v2/feedback/") and path.endswith("/undo"):
+                event_id = path.removeprefix("/api/v2/feedback/")[: -len("/undo")].strip("/")
+                if not event_id or "/" in event_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                data = get_recommendation_api().undo_feedback(event_id, payload)
             elif path in {"/api/crawl-douban", "/api/sync-douban"}:
                 data = self.handle_sync_douban(payload)
             else:
                 self.send_json({"error": "not found"}, status=404)
                 return
             self.send_json(data)
+        except RecommendationApiError as exc:
+            self.send_json({"error": str(exc)}, status=exc.status_code)
         except Exception as exc:
             cookie = payload.get("cookie") if isinstance(payload, dict) else ""
             self.send_json({"error": redact_cookie_from_message(str(exc), cookie or "")}, status=500)
