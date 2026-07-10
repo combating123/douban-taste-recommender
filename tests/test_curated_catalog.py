@@ -8,6 +8,7 @@ from douban_recommender.curated_catalog import (
     premium_expansion_candidates,
 )
 from douban_recommender import curated_catalog as catalog
+from douban_recommender.eligibility import is_animated_series
 from douban_recommender.models import MediaItem
 
 
@@ -115,6 +116,17 @@ class CuratedCatalogTests(unittest.TestCase):
             "灵能百分百",
         ]:
             self.assertIn(expected, titles)
+
+    def test_curated_and_premium_anime_emit_explicit_series_format_and_remain_eligible(self):
+        items = [
+            item
+            for item in curated_seed_candidates() + premium_expansion_candidates()
+            if item.media_type == "动漫"
+        ]
+
+        self.assertTrue(items)
+        self.assertTrue(all(item.raw.get("format") == "SERIES" for item in items))
+        self.assertTrue(all(is_animated_series(item) for item in items))
 
     def test_backfill_missing_media_types_only_adds_requested_missing_categories(self):
         existing = [

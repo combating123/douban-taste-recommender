@@ -647,6 +647,9 @@ def _item(
     summary: str,
     year: int | None = None,
 ) -> MediaItem:
+    raw = {"people_photos": dict(PEOPLE_PHOTOS_BY_DOUBAN_ID[douban_id])} if douban_id in PEOPLE_PHOTOS_BY_DOUBAN_ID else {}
+    if media_type == "动漫":
+        raw["format"] = "SERIES"
     return MediaItem(
         title=title,
         media_type=media_type,
@@ -662,7 +665,7 @@ def _item(
         cover=POSTER_URLS_BY_DOUBAN_ID.get(douban_id, ""),
         summary=summary,
         source="curated_seed",
-        raw={"people_photos": dict(PEOPLE_PHOTOS_BY_DOUBAN_ID[douban_id])} if douban_id in PEOPLE_PHOTOS_BY_DOUBAN_ID else {},
+        raw=raw,
     )
 
 
@@ -1200,6 +1203,8 @@ def _premium_item(title: str, media_type: str, index: int) -> MediaItem:
     original_title = title
     display_title = _premium_display_title(title, media_type, index)
     raw = {"aliases": [original_title]} if original_title != display_title else {}
+    if media_type == "动漫":
+        raw["format"] = "SERIES"
     return MediaItem(
         title=display_title,
         media_type=media_type,

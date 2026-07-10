@@ -58,9 +58,7 @@ def is_animated_series(item: MediaItem) -> bool:
         return True
     if episodes is not None:
         return episodes > 0
-    # Curated anime rows and Douban/Jikan/AniList adapters are already series-only
-    # upstream. Unknown format remains eligible unless a movie signal is explicit.
-    return True
+    return False
 
 
 def _search_blob(item: MediaItem) -> str:

@@ -4,7 +4,7 @@ import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .database import AppDatabase
 from .intent_parser import RecommendationIntent
@@ -24,6 +24,19 @@ _LEGACY_EFFECT_KEYS = {
     "state_origin",
     "exclusion_origin_channels",
 }
+_REASON_MAX_LENGTH = 160
+_REASON_ADJUSTMENT_VERSION = 1
+_PREFERENCE_REASON_TERMS = {
+    "喜剧": ("喜剧", "搞笑", "comedy", "幽默", "欢乐", "轻松"),
+    "剧情": ("剧情", "drama", "叙事", "故事"),
+    "悬疑": ("悬疑", "推理", "mystery", "惊悚"),
+    "动作": ("动作", "action", "冒险", "热血"),
+    "科幻": ("科幻", "sci-fi", "science fiction"),
+    "爱情": ("爱情", "恋爱", "romance"),
+}
+_NOVELTY_REASON_TERMS = ("太相似", "换个口味", "不一样", "换一种", "来点新鲜")
+_REASON_ITEM_FIELDS = ("genres", "countries", "tags", "summary", "rating", "douban_rating", "my_rating", "directors", "casts", "score", "score_breakdown")
+_NOVELTY_FEATURE_FIELDS = ("genres", "countries", "tags", "directors", "casts")
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,7 @@ class RecommendationBatch:
     matched_size: int
     visible_size: int
     reason: str = ""
+    reason_adjustment: dict[str, object] = field(default_factory=dict)
     exhausted: bool = False
     created_at: float = 0.0
 
@@ -64,6 +78,7 @@ class RecommendationBatch:
             "matched_size": self.matched_size,
             "visible_size": self.visible_size,
             "reason": self.reason,
+            "reason_adjustment": _scrub_dict(self.reason_adjustment),
             "exhausted": self.exhausted,
             "created_at": self.created_at,
         }
@@ -98,6 +113,117 @@ def _json_object(value: object) -> dict[str, object]:
 def _scrub_dict(value: object) -> dict[str, object]:
     scrubbed = scrub_sensitive(value)
     return scrubbed if isinstance(scrubbed, dict) else {}
+
+
+def _bounded_scrubbed_text(value: object) -> str:
+    text = str(scrub_sensitive(str(value or "")) or "").strip()
+    return text[:_REASON_MAX_LENGTH]
+
+
+def _item_reason_text(item: dict[str, object]) -> str:
+    values: list[str] = []
+    for field_name in _REASON_ITEM_FIELDS:
+        value = item.get(field_name)
+        if isinstance(value, dict):
+            values.append(_json_dumps(value))
+        elif isinstance(value, (list, tuple, set)):
+            values.extend(str(part) for part in value if str(part))
+        elif value not in (None, ""):
+            values.append(str(value))
+    return " ".join(values).casefold()
+
+
+def _item_feature_values(item: dict[str, object]) -> dict[str, set[str]]:
+    values: dict[str, set[str]] = {}
+    for field_name in _NOVELTY_FEATURE_FIELDS:
+        raw = item.get(field_name)
+        parts = raw if isinstance(raw, (list, tuple, set)) else [raw]
+        cleaned = {str(part).strip().casefold() for part in parts if str(part).strip()}
+        if cleaned:
+            values[field_name] = cleaned
+    return values
+
+
+def _reason_mode(reason: object) -> tuple[str, str, list[str]]:
+    clean_reason = _bounded_scrubbed_text(reason)
+    normalized = clean_reason.casefold()
+    if any(term in normalized for term in _NOVELTY_REASON_TERMS):
+        return "novelty", clean_reason, []
+    matched = [
+        label
+        for label, aliases in _PREFERENCE_REASON_TERMS.items()
+        if any(alias in normalized for alias in aliases)
+    ]
+    return ("preference" if matched else ""), clean_reason, matched
+
+
+def _reorder_unconsumed_tail(
+    items: list[dict[str, object]],
+    cursor: int,
+    reason: object,
+    current_items: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    mode, clean_reason, matched_terms = _reason_mode(reason)
+    if not mode:
+        return items, {}
+    prefix = items[:cursor]
+    tail = items[cursor:]
+    if mode == "preference":
+        deltas = [
+            sum(
+                20
+                for term in matched_terms
+                if any(alias in _item_reason_text(item) for alias in _PREFERENCE_REASON_TERMS[term])
+            )
+            for item in tail
+        ]
+        feature_fields = [
+            field_name
+            for field_name in _REASON_ITEM_FIELDS
+            if any(item.get(field_name) not in (None, "", [], {}) for item in tail)
+        ]
+        metadata: dict[str, object] = {
+            "version": _REASON_ADJUSTMENT_VERSION,
+            "mode": mode,
+            "reason": clean_reason,
+            "matched_terms": matched_terms,
+            "feature_fields": feature_fields[:8],
+            "adjusted_count": sum(1 for delta in deltas if delta),
+        }
+    else:
+        current_features: dict[str, set[str]] = {}
+        for current in current_items:
+            for field_name, values in _item_feature_values(current).items():
+                current_features.setdefault(field_name, set()).update(values)
+        overlap_fields_by_item: list[list[str]] = []
+        deltas = []
+        for item in tail:
+            values = _item_feature_values(item)
+            overlap_fields = sorted(
+                field_name
+                for field_name in _NOVELTY_FEATURE_FIELDS
+                if values.get(field_name, set()) & current_features.get(field_name, set())
+            )
+            overlap_fields_by_item.append(overlap_fields)
+            deltas.append(-20 * len(overlap_fields))
+        metadata = {
+            "version": _REASON_ADJUSTMENT_VERSION,
+            "mode": mode,
+            "reason": clean_reason,
+            "matched_terms": [],
+            "feature_fields": list(_NOVELTY_FEATURE_FIELDS),
+            "overlap_fields": sorted({field_name for fields in overlap_fields_by_item for field_name in fields}),
+            "adjusted_count": sum(1 for delta in deltas if delta),
+        }
+    ordered = [
+        item
+        for _, item in sorted(
+            enumerate(tail),
+            key=lambda pair: (-deltas[pair[0]], pair[0], _item_key(pair[1])),
+        )
+    ]
+    metadata["top_item_keys"] = [_item_key(item) for item in ordered[:6]]
+    return prefix + ordered, _scrub_dict(metadata)
 
 
 def _undone_event_ids(connection, item_key: str | None = None) -> set[str]:
@@ -321,6 +447,7 @@ class RecommendationSessionService:
             matched_size=int(payload.get("matched_size") or 0),
             visible_size=int(payload.get("visible_size") or 0),
             reason=str(row["reason"] or ""),
+            reason_adjustment=_scrub_dict(payload.get("reason_adjustment")),
             exhausted=bool(payload.get("exhausted", False)),
             created_at=float(row["created_at"]),
         )
@@ -393,6 +520,7 @@ class RecommendationSessionService:
             matched_size=int(clean_payload.get("matched_size") or 0),
             visible_size=int(clean_payload.get("visible_size") or 0),
             reason=str(reason or ""),
+            reason_adjustment=_scrub_dict(clean_payload.get("reason_adjustment")),
             exhausted=bool(clean_payload.get("exhausted", False)),
             created_at=now,
         )
@@ -863,6 +991,16 @@ class RecommendationSessionService:
                     return batch
 
                 excluded_keys = {str(key) for key in state.get("excluded_keys", []) if str(key)}
+                index = last_batch + 1
+                current_items: list[dict[str, object]] = []
+                if active_batch > 0:
+                    current_items = list(self._batch_from_row(self._load_batch_row(connection, session_id, channel, active_batch)).items)
+                items, reason_adjustment = _reorder_unconsumed_tail(items, cursor, reason, current_items)
+                if reason_adjustment:
+                    state["items"] = items
+                    adjustments = state.setdefault("reason_adjustments", {})
+                    if isinstance(adjustments, dict):
+                        adjustments[str(index)] = reason_adjustment
                 selected: list[dict[str, object]] = []
                 next_cursor = cursor
                 while next_cursor < len(items) and len(selected) < batch_size:
@@ -872,7 +1010,6 @@ class RecommendationSessionService:
                         continue
                     selected.append(item)
 
-                index = last_batch + 1
                 item_keys = [_item_key(item) for item in selected]
                 payload = {
                     "items": selected,
@@ -880,6 +1017,7 @@ class RecommendationSessionService:
                     "matched_size": matched_size,
                     "visible_size": len(selected),
                     "exhausted": next_cursor >= len(items),
+                    "reason_adjustment": reason_adjustment,
                 }
                 batch = self._store_batch(connection, session_id, channel, index, item_keys, str(reason or ""), payload)
                 state["cursor"] = next_cursor

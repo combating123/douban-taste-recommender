@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .database import AppDatabase
 from .exploration_service import ExplorationError, ExplorationService
+from .models import is_safe_route_segment
 from .runtime_paths import resolve_database_path, resolve_media_dir
 
 
@@ -72,8 +73,8 @@ def build_default_catalog_api() -> CatalogApi:
 
 
 def _single_segment(value: str) -> str:
-    text = str(value or "").strip("/")
-    if not text or "/" in text or "\\" in text or ".." in text:
+    text = str(value or "")
+    if not is_safe_route_segment(text):
         raise CatalogApiNotFound("not found")
     return text
 

@@ -795,6 +795,7 @@ class RecommendationApi:
             "matched_size": batch.matched_size,
             "visible_size": batch.visible_size,
             "reason": batch.reason,
+            "reason_adjustment": dict(batch.reason_adjustment),
             "exhausted": batch.exhausted,
             "created_at": batch.created_at,
         }

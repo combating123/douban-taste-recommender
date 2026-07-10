@@ -22,9 +22,10 @@ from douban_recommender.web import Handler
 import douban_recommender.web as web_module
 
 try:
-    from douban_recommender.catalog_api import CatalogApi
+    from douban_recommender.catalog_api import CatalogApi, CatalogApiNotFound
 except ImportError:  # RED: implementation intentionally absent at first.
     CatalogApi = None
+    CatalogApiNotFound = ValueError
 
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
@@ -290,6 +291,20 @@ class CatalogApiV2Tests(unittest.TestCase):
         status, payload = self.request("/api/v2/titles/does-not-exist")
         self.assertEqual(status, 404)
         self.assertIn("not found", payload["error"])
+
+    def test_catalog_api_uses_shared_safe_route_segment_validator(self):
+        class EchoService:
+            def title(self, value):
+                return {"value": value}
+
+        api = CatalogApi(self.database, service=EchoService())
+        for unsafe in ("external:movie%201", "douban:1001?query", "item:abc#fragment", "derived:bad\x00segment"):
+            with self.subTest(unsafe=unsafe):
+                with self.assertRaises(CatalogApiNotFound):
+                    api.get_title(unsafe)
+        for safe in ("external:movie-1", "douban:1001", "item:abc_1", "derived:related-item"):
+            with self.subTest(safe=safe):
+                self.assertEqual(api.get_title(safe), {"value": safe})
 
     def test_title_lookup_normalizes_local_and_fallback_media_and_people(self):
         status, payload = self.request("/api/v2/titles/douban:1001")

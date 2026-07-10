@@ -17,16 +17,13 @@ class AnimatedSeriesEligibilityTests(unittest.TestCase):
         self.assertFalse(decision.eligible)
         self.assertIn("not-animated-series", decision.reasons)
 
-    def test_curated_anime_without_format_is_treated_as_series(self):
-        item = MediaItem(title="奇巧计程车", media_type="动漫", raw={})
-        self.assertTrue(is_animated_series(item))
-        self.assertTrue(
-            evaluate_eligibility(
-                item,
-                set(),
-                RecommendationIntent(media_types=("动漫",)),
-            ).eligible
-        )
+    def test_ordinary_anime_without_format_or_episode_evidence_is_rejected(self):
+        item = MediaItem(title="未标注格式的动画", media_type="动漫", raw={})
+
+        self.assertFalse(is_animated_series(item))
+        decision = evaluate_eligibility(item, set(), RecommendationIntent(media_types=("动漫",)))
+        self.assertFalse(decision.eligible)
+        self.assertIn("not-animated-series", decision.reasons)
 
     def test_ova_requires_multiple_episodes(self):
         single = MediaItem(title="单集 OVA", media_type="动漫", raw={"format": "OVA", "episodes": 1})

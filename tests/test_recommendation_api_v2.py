@@ -387,7 +387,20 @@ class RecommendationApiV2Tests(unittest.TestCase):
                 self.assert_bad_request_field("/api/v2/feedback", payload, field)
 
     def test_create_session_returns_three_distinct_counts(self):
-        response = self.post_json("/api/v2/recommend/sessions", self.session_payload(limit=160))
+        explicit_anime_series = [
+            self.item_payload(
+                title=f"明确格式动画{index}",
+                media_type="动漫",
+                douban_id=f"explicit-anime-{index}",
+                genres=["动画", "剧情"],
+                raw={"format": "SERIES"},
+            )
+            for index in range(3)
+        ]
+        response = self.post_json(
+            "/api/v2/recommend/sessions",
+            self.session_payload(limit=160, candidate_items=explicit_anime_series),
+        )
         anime = response["channels"]["动漫"]
         self.assertIn("pool_size", anime)
         self.assertIn("matched_size", anime)
@@ -477,6 +490,8 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertEqual(movie_next["restore"]["channels"]["电影"]["active_batch"], 2)
         self.assertEqual(movie_next["restore"]["channels"]["动漫"]["active_batch"], 1)
         self.assertFalse(set(movie_first["item_keys"]) & set(movie_next["batch"]["item_keys"]))
+        self.assertEqual(movie_next["batch"]["reason_adjustment"]["mode"], "novelty")
+        self.assertNotIn("profile", movie_next["batch"]["reason_adjustment"])
 
         movie_previous = self.post_json(
             f"/api/v2/recommend/sessions/{created['id']}/previous",

@@ -34,6 +34,21 @@ def pools():
     }
 
 
+def reason_pools():
+    return {
+        "电影": {
+            "items": [
+                {"title": "剧情开场", "media_type": "电影", "douban_id": "reason-1", "score": 100, "genres": ["剧情"], "tags": ["黑色电影"]},
+                {"title": "剧情尾项", "media_type": "电影", "douban_id": "reason-2", "score": 99, "genres": ["剧情"], "tags": ["人物"]},
+                {"title": "喜剧候选", "media_type": "电影", "douban_id": "reason-3", "score": 98, "genres": ["喜剧"], "tags": ["轻松"]},
+                {"title": "动作候选", "media_type": "电影", "douban_id": "reason-4", "score": 97, "genres": ["动作"], "tags": ["冒险"]},
+            ],
+            "pool_size": 4,
+            "matched_size": 4,
+        }
+    }
+
+
 class RecommendationSessionServiceTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -315,6 +330,69 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         self.assertEqual(json.loads(restored["payload_json"])["summary"], "newer candidate summary")
         self.assertEqual(restored["source"], refreshed["source"])
         self.assertEqual(restored["updated_at"], refreshed["updated_at"])
+
+    def create_reason_session(self):
+        return self.service.create_session(
+            "profile-reason",
+            RecommendationIntent(media_types=("电影",)),
+            reason_pools(),
+            {"电影": 1},
+        )
+
+    def test_known_reason_reorders_only_the_unseen_tail_and_persists_session_metadata(self):
+        baseline = self.create_reason_session()
+        reasoned = self.create_reason_session()
+        self.service.next_batch(baseline.id, "电影")
+        baseline_next = self.service.next_batch(baseline.id, "电影")
+        first = self.service.next_batch(reasoned.id, "电影")
+        reason = "想看喜剧 token=should-not-persist " + "x" * 200
+
+        adjusted = self.service.next_batch(reasoned.id, "电影", reason=reason)
+
+        self.assertEqual(first.items[0]["title"], "剧情开场")
+        self.assertEqual(baseline_next.items[0]["title"], "剧情尾项")
+        self.assertEqual(adjusted.items[0]["title"], "喜剧候选")
+        self.assertNotEqual(adjusted.item_keys, baseline_next.item_keys)
+        self.assertEqual(adjusted.reason, reason)
+        adjustment = adjusted.to_dict()["reason_adjustment"]
+        self.assertEqual(adjustment["mode"], "preference")
+        self.assertEqual(adjustment["matched_terms"], ["喜剧"])
+        self.assertLessEqual(len(adjustment["reason"]), 160)
+        self.assertIn("token=<redacted>", adjustment["reason"])
+        self.assertNotIn("should-not-persist", adjustment["reason"])
+        self.assertNotIn("profile", adjustment)
+        self.assertNotIn("permanent", json.dumps(adjustment, ensure_ascii=False).casefold())
+
+        restored = RecommendationSessionService(self.database)
+        restored_session = restored.restore_session(reasoned.id)
+        self.assertEqual(restored_session.intent.to_dict(), RecommendationIntent(media_types=("电影",)).to_dict())
+        self.assertEqual(restored_session.channels["电影"]["reason_adjustments"]["2"], adjustment)
+        self.assertEqual(restored.current_batch(reasoned.id, "电影").to_dict()["reason_adjustment"], adjustment)
+        with self.database.connection() as connection:
+            payload = json.loads(
+                connection.execute(
+                    "SELECT payload_json FROM recommendation_batches WHERE session_id = ? AND channel = ? AND batch_index = 2",
+                    (reasoned.id, "电影"),
+                ).fetchone()["payload_json"]
+            )
+        self.assertEqual(payload["reason_adjustment"], adjustment)
+
+    def test_novelty_reason_penalizes_overlap_without_repeats_or_forward_recomputation(self):
+        session = self.create_reason_session()
+        first = self.service.next_batch(session.id, "电影")
+        adjusted = self.service.next_batch(session.id, "电影", reason="太相似")
+
+        self.assertEqual(adjusted.items[0]["title"], "喜剧候选")
+        self.assertEqual(adjusted.to_dict()["reason_adjustment"]["mode"], "novelty")
+        previous = self.service.previous_batch(session.id, "电影")
+        forward = self.service.next_batch(session.id, "电影", reason="想看动作")
+        self.assertEqual(previous.id, first.id)
+        self.assertEqual(forward.id, adjusted.id)
+        self.assertEqual(forward.to_dict()["reason_adjustment"], adjusted.to_dict()["reason_adjustment"])
+
+        remaining = [self.service.next_batch(session.id, "电影") for _ in range(2)]
+        all_keys = [key for batch in [first, adjusted, *remaining] for key in batch.item_keys]
+        self.assertEqual(len(all_keys), len(set(all_keys)))
 
     def test_undo_recomputes_exclusion_from_all_remaining_active_events(self):
         session = self.create()
