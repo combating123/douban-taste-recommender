@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Personal movie/series recommender based on Douban ratings, taste profile, and Douban public candidate pools."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["Pillow>=10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
