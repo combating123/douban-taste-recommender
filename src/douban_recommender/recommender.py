@@ -21,6 +21,7 @@ class Recommendation:
     short_reason: str = ""
     risk_label: str = ""
     is_wishlist: bool = False
+    score_breakdown: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         item = self.item
@@ -52,6 +53,7 @@ class Recommendation:
             "short_reason": self.short_reason,
             "risk_label": self.risk_label,
             "is_wishlist": self.is_wishlist,
+            "score_breakdown": self.score_breakdown,
         }
 
 
