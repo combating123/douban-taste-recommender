@@ -176,15 +176,19 @@ class CrawlerParserTests(unittest.TestCase):
     def test_crawl_user_collections_classifies_403_login_redirect_as_cookie_needed(self):
         from douban_recommender.crawler import crawl_user_collections
 
+        body = io.BytesIO(
+            "<html><title>豆瓣 - 登录跳转页</title><body>请先登录后继续浏览</body></html>".encode("utf-8")
+        )
+        error = urllib.error.HTTPError(
+            url="https://movie.douban.com/people/moviefan123/collect",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=body,
+        )
+
         def forbidden_fetcher(user_id, status, start, cookie="", timeout=12):
-            body = "<html><title>豆瓣 - 登录跳转页</title><body>请先登录后继续浏览</body></html>".encode("utf-8")
-            raise urllib.error.HTTPError(
-                url="https://movie.douban.com/people/moviefan123/collect",
-                code=403,
-                msg="Forbidden",
-                hdrs={},
-                fp=io.BytesIO(body),
-            )
+            raise error
 
         result = crawl_user_collections(
             "moviefan123",
@@ -199,6 +203,8 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertEqual(result.diagnostics[0].classification, "login_required")
         self.assertIn("Cookie", result.diagnostics[0].message)
         self.assertIn("登录态", result.stopped_reason)
+        self.assertTrue(error.closed)
+        self.assertTrue(body.closed)
         self.assertIn("Cookie", result.errors[0])
 
     def test_crawl_user_collections_redacts_cookie_values_and_partial_headers_from_errors(self):

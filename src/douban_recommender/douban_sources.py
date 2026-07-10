@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
@@ -1006,8 +1007,12 @@ def fetch_tvmaze_suggestions(
             headers = dict(DEFAULT_HEADERS)
             headers["Accept"] = "application/json"
             request = urllib.request.Request(url, headers=headers)
-            with build_url_opener().open(request, timeout=timeout) as response:
-                payload = response.read()
+            try:
+                with build_url_opener().open(request, timeout=timeout) as response:
+                    payload = response.read()
+            except urllib.error.HTTPError as error:
+                error.close()
+                raise
         else:
             try:
                 payload = fetch(url, accept_json=True)

@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from douban_recommender.crawler import CrawlResult, PageDiagnostic
 from douban_recommender.database import AppDatabase
@@ -183,7 +184,10 @@ class SyncApiRouteTests(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read().decode("utf-8"))
+            try:
+                return error.code, json.loads(error.read().decode("utf-8"))
+            finally:
+                error.close()
 
     def wait_for_terminal(self, job_id):
         deadline = time.time() + 3
@@ -218,13 +222,27 @@ class SyncApiRouteTests(unittest.TestCase):
         self.assertNotIn("second-session-secret", json.dumps(resumed, ensure_ascii=False))
 
     def test_v2_sync_route_rejects_subscription_url_as_bad_request(self):
-        status, payload = self.request(
-            "/api/v2/sync/jobs",
-            method="POST",
-            payload={"user": "272042071", "subscription": "https://example.com/api/v1/sub"},
-        )
+        errors = []
+        original_urlopen = urllib.request.urlopen
+
+        def recording_urlopen(*args, **kwargs):
+            try:
+                return original_urlopen(*args, **kwargs)
+            except urllib.error.HTTPError as error:
+                errors.append(error)
+                raise
+
+        with mock.patch("urllib.request.urlopen", side_effect=recording_urlopen):
+            status, payload = self.request(
+                "/api/v2/sync/jobs",
+                method="POST",
+                payload={"user": "272042071", "subscription": "https://example.com/api/v1/sub"},
+            )
+
         self.assertEqual(status, 400)
         self.assertIn("subscription", payload["error"])
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].closed)
 
 
 if __name__ == "__main__":

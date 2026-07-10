@@ -472,27 +472,53 @@ def fetch_proxy_image(url: str) -> tuple[bytes, str]:
             content_type = response.headers.get("Content-Type") or "image/jpeg"
             return validate_image_payload(response.read(), content_type)
 
+    def closed_http_error_details(error: urllib.error.HTTPError) -> tuple[int, str]:
+        try:
+            return error.code, str(error.reason)
+        finally:
+            error.close()
+
     cache_key = str(url or "").strip()
     cached = IMAGE_PROXY_CACHE.get(cache_key)
     if cached:
         return cached
 
-    last_error: Exception | None = None
+    last_error: urllib.error.URLError | tuple[int, str] | None = None
     result: tuple[bytes, str] | None = None
     for candidate_url in image_url_candidates(cache_key):
         try:
             result = read_with_opener(build_url_opener(), candidate_url)
             break
-        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+        except urllib.error.HTTPError as exc:
+            last_error = closed_http_error_details(exc)
+            try:
+                direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                result = read_with_opener(direct_opener, candidate_url)
+                break
+            except urllib.error.HTTPError as direct_exc:
+                last_error = closed_http_error_details(direct_exc)
+                continue
+            except urllib.error.URLError as direct_exc:
+                last_error = direct_exc
+                continue
+        except urllib.error.URLError as exc:
             last_error = exc
             try:
                 direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 result = read_with_opener(direct_opener, candidate_url)
                 break
-            except (urllib.error.HTTPError, urllib.error.URLError) as direct_exc:
+            except urllib.error.HTTPError as direct_exc:
+                last_error = closed_http_error_details(direct_exc)
+                continue
+            except urllib.error.URLError as direct_exc:
                 last_error = direct_exc
                 continue
     if result is None:
+        if isinstance(last_error, tuple):
+            status_code, reason = last_error
+            error = urllib.error.HTTPError("", status_code, reason, hdrs=None, fp=None)
+            error.close()
+            raise error
         if last_error:
             raise last_error
         raise ValueError("invalid image url")

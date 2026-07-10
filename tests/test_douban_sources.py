@@ -1,5 +1,8 @@
+import io
 import json
 import unittest
+import urllib.error
+from unittest import mock
 
 from douban_recommender.candidate_planner import CandidateQuery
 from douban_recommender.douban_sources import (
@@ -656,6 +659,27 @@ class CandidateFetchPlanTests(unittest.TestCase):
         self.assertEqual(suggestions[0].title, "去他妈的世界")
         self.assertEqual(suggestions[0].douban_id, "tvmaze-28866")
         self.assertTrue(any("The+End" in url or "The%20End" in url for url in calls))
+
+    def test_tvmaze_fetch_closes_open_stage_http_error_before_reraising(self):
+        body = io.BytesIO(b'{"message":"Not Found"}')
+        error = urllib.error.HTTPError(
+            url="https://api.tvmaze.com/singlesearch/shows?q=Missing",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=body,
+        )
+
+        class FailingOpener:
+            def open(self, request, timeout=0):
+                raise error
+
+        with mock.patch("douban_recommender.douban_sources.build_url_opener", return_value=FailingOpener()):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                fetch_tvmaze_suggestions("Missing", media_type="电视剧")
+
+        self.assertIs(raised.exception, error)
+        self.assertTrue(body.closed)
 
     def test_source_config_controls_api_source_order(self):
         calls = []

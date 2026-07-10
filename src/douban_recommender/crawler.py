@@ -256,21 +256,24 @@ def fetch_user_collection_page(user_id: str, status: str, start: int, cookie: st
 
 def classify_http_error(exc: urllib.error.HTTPError, cookie: str) -> tuple[str, str, int | None]:
     try:
-        body = exc.read().decode("utf-8", errors="ignore")
-    except Exception:
-        body = ""
-    classification, page_message = classify_collection_page(body, 0) if body else ("network_error", "")
-    status_code = getattr(exc, "code", None)
-    if status_code in {401, 403} and classification in {"login_required", "true_empty_page", "parse_failed_nonempty", "network_error"}:
-        return (
-            "login_required",
-            f"HTTP {status_code}：豆瓣要求登录态或 Cookie；请粘贴 Cookie 后重试，或先用本地高质量片库继续推荐。",
-            status_code,
-        )
-    message = page_message or redact_cookie_from_message(str(exc), cookie)
-    if status_code:
-        message = f"HTTP {status_code}：{message}"
-    return classification, message, status_code
+        try:
+            body = exc.read().decode("utf-8", errors="ignore")
+        except Exception:
+            body = ""
+        classification, page_message = classify_collection_page(body, 0) if body else ("network_error", "")
+        status_code = getattr(exc, "code", None)
+        if status_code in {401, 403} and classification in {"login_required", "true_empty_page", "parse_failed_nonempty", "network_error"}:
+            return (
+                "login_required",
+                f"HTTP {status_code}：豆瓣要求登录态或 Cookie；请粘贴 Cookie 后重试，或先用本地高质量片库继续推荐。",
+                status_code,
+            )
+        message = page_message or redact_cookie_from_message(str(exc), cookie)
+        if status_code:
+            message = f"HTTP {status_code}：{message}"
+        return classification, message, status_code
+    finally:
+        exc.close()
 
 
 def redact_cookie_from_message(message: str, cookie: str) -> str:

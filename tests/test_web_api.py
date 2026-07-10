@@ -1,3 +1,4 @@
+import io
 import json
 import time
 import threading
@@ -6,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
+from unittest import mock
 
 from douban_recommender.crawler import CrawlResult
 from douban_recommender.douban_sources import PosterSourceConfig
@@ -37,7 +39,10 @@ class WebApiTests(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            return json.loads(error.read().decode("utf-8"))
+            try:
+                return json.loads(error.read().decode("utf-8"))
+            finally:
+                error.close()
 
     def get_raw(self, path):
         request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
@@ -247,16 +252,26 @@ class WebApiTests(unittest.TestCase):
 
     def test_crawl_api_top_level_exception_redacts_cookie(self):
         original = web_module.crawl_user_collections
+        errors = []
+        original_urlopen = urllib.request.urlopen
 
         def fake_crawl(user_id_or_url, cookie="", max_pages=8, include_wish=True):
             raise RuntimeError(f"crawler failed with Cookie: {cookie}")
 
+        def recording_urlopen(*args, **kwargs):
+            try:
+                return original_urlopen(*args, **kwargs)
+            except urllib.error.HTTPError as error:
+                errors.append(error)
+                raise
+
         web_module.crawl_user_collections = fake_crawl
         try:
-            response = self.post_json("/api/crawl-douban", {
-                "user_id_or_url": "moviefan123",
-                "cookie": "bid=secret-cookie-value; ck=hidden-token",
-            })
+            with mock.patch("urllib.request.urlopen", side_effect=recording_urlopen):
+                response = self.post_json("/api/crawl-douban", {
+                    "user_id_or_url": "moviefan123",
+                    "cookie": "bid=secret-cookie-value; ck=hidden-token",
+                })
         finally:
             web_module.crawl_user_collections = original
 
@@ -265,6 +280,8 @@ class WebApiTests(unittest.TestCase):
         self.assertIn("<redacted>", response["error"])
         self.assertNotIn("secret-cookie-value", serialized)
         self.assertNotIn("hidden-token", serialized)
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].closed)
 
     def test_recommend_api_accepts_json_rated_items(self):
         response = self.post_json("/api/recommend", {
@@ -962,6 +979,8 @@ class WebApiTests(unittest.TestCase):
         original_build_opener = web_module.urllib.request.build_opener
         original_cache = dict(getattr(web_module, "IMAGE_PROXY_CACHE", {}))
         calls = []
+        errors = []
+        bodies = []
 
         class FakeResponse:
             headers = {"Content-Type": "image/jpeg"}
@@ -978,13 +997,17 @@ class WebApiTests(unittest.TestCase):
         class ProxyOpener:
             def open(self, request, timeout=0):
                 calls.append(("proxy", request.full_url))
-                raise urllib.error.HTTPError(
+                body = io.BytesIO(b"proxy throttled")
+                error = urllib.error.HTTPError(
                     url=request.full_url,
                     code=429,
                     msg="Too Many Requests",
                     hdrs={},
-                    fp=None,
+                    fp=body,
                 )
+                bodies.append(body)
+                errors.append(error)
+                raise error
 
         class DirectOpener:
             def open(self, request, timeout=0):
@@ -1005,12 +1028,16 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual([kind for kind, _ in calls], ["proxy", "direct"])
         self.assertEqual(content_type, "image/jpeg")
         self.assertTrue(data.startswith(b"\xff\xd8"))
+        self.assertTrue(all(error.closed for error in errors))
+        self.assertTrue(all(body.closed for body in bodies))
 
     def test_fetch_proxy_image_tries_wikimedia_thumbnail_candidate_when_original_fails(self):
         original_build_url_opener = web_module.build_url_opener
         original_build_opener = web_module.urllib.request.build_opener
         original_cache = dict(getattr(web_module, "IMAGE_PROXY_CACHE", {}))
         calls = []
+        errors = []
+        bodies = []
 
         class FakeResponse:
             headers = {"Content-Type": "image/jpeg"}
@@ -1032,13 +1059,17 @@ class WebApiTests(unittest.TestCase):
                 calls.append((self.kind, request.full_url))
                 if "/thumb/" in request.full_url:
                     return FakeResponse()
-                raise urllib.error.HTTPError(
+                body = io.BytesIO(b"service unavailable")
+                error = urllib.error.HTTPError(
                     url=request.full_url,
                     code=503,
                     msg="temporarily unavailable",
                     hdrs={},
-                    fp=None,
+                    fp=body,
                 )
+                bodies.append(body)
+                errors.append(error)
+                raise error
 
         try:
             web_module.IMAGE_PROXY_CACHE.clear()
@@ -1057,6 +1088,9 @@ class WebApiTests(unittest.TestCase):
         self.assertTrue(any("/wikipedia/commons/thumb/8/81/" in url for url in tried_urls))
         self.assertEqual(content_type, "image/jpeg")
         self.assertTrue(data.startswith(b"\xff\xd8"))
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all(error.closed for error in errors))
+        self.assertTrue(all(body.closed for body in bodies))
 
     def test_fetch_proxy_image_retries_direct_when_configured_proxy_refuses_connection(self):
         original_build_url_opener = web_module.build_url_opener
