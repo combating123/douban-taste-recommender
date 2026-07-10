@@ -20,6 +20,7 @@ def run_node_module(script):
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     if result.returncode:
@@ -614,6 +615,220 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual("person", result["active"]["name"])
         self.assertIn("render:person:person-7", result["events"])
+
+    def test_tonight_renders_distinct_counts_three_shelves_and_batch_requests(self):
+        output = run_node_module(
+            f'''
+            import {{
+              configureTonight,
+              renderTonight,
+              requestNextBatch,
+              restorePreviousBatch,
+            }} from "{module_url('js/features/tonight.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.attributes = new Map();
+                this.className = "";
+                this.textContent = "";
+                this.disabled = false;
+                this.value = "";
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              remove() {{ this.parentNode?.children.splice(this.parentNode.children.indexOf(this), 1); }}
+              focus() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            Object.defineProperty(FakeElement.prototype, "innerHTML", {{
+              set() {{ throw new Error("innerHTML must not be used"); }},
+            }});
+
+            globalThis.document = {{ createElement: (tagName) => new FakeElement(tagName) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            const root = new FakeElement("main");
+            const calls = [];
+            const actions = [];
+            const state = {{
+              recommendation: {{
+                sessionId: "session-42",
+                activeChannel: "movie",
+                channels: {{
+                  movie: {{
+                    pool_size: 30,
+                    matched_size: 17,
+                    visible_size: 12,
+                    active_batch: 2,
+                    batch: {{ index: 2, visible_size: 12, items: Array.from({{ length: 12 }}, (_, index) => ({{ title: `电影${{index}}` }})) }},
+                  }},
+                  series: {{
+                    pool_size: 24,
+                    matched_size: 11,
+                    visible_size: 8,
+                    active_batch: 3,
+                    batch: {{ index: 3, visible_size: 8, items: Array.from({{ length: 8 }}, (_, index) => ({{ title: `剧集${{index}}` }})) }},
+                  }},
+                  "anime-series": {{
+                    pool_size: 19,
+                    matched_size: 10,
+                    visible_size: 7,
+                    active_batch: 4,
+                    batch: {{ index: 4, visible_size: 7, items: Array.from({{ length: 7 }}, (_, index) => ({{ title: `动画${{index}}` }})) }},
+                  }},
+                }},
+              }},
+            }};
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{ actions.push(action); }},
+            }};
+            const api = {{
+              async postV2(path, payload) {{
+                calls.push({{ path, payload }});
+                return {{ session_id: "session-42", channel: payload.channel, batch: {{ id: `batch-${{calls.length}}`, index: calls.length + 4, items: [], pool_size: 30, matched_size: 17, visible_size: 0 }} }};
+              }},
+            }};
+            configureTonight({{ store, api, root }});
+            const page = renderTonight(state);
+
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const all = collect(page);
+            const text = all.map((node) => node.textContent).filter(Boolean);
+            const shelfRails = all.filter((node) => node.className === "title-shelf__rail");
+            if (!text.includes("候选池 30") || !text.includes("匹配 17") || !text.includes("本批可见 12")) {{
+              throw new Error(`three count semantics were not rendered: ${{text}}`);
+            }}
+            if (shelfRails.length !== 3) throw new Error(`expected three shelves, got ${{shelfRails.length}}`);
+            if (shelfRails.some((rail) => rail.children.length > 9)) throw new Error("initial shelf exceeded the nine-card cap");
+
+            await requestNextBatch("series", "太相似");
+            await restorePreviousBatch("anime-series");
+            if (calls[0].path !== "/api/v2/recommend/sessions/session-42/batch") throw new Error("next batch path mismatch");
+            if (calls[0].payload.channel !== "电视剧" || calls[0].payload.reason !== "太相似") throw new Error("reasoned series shuffle was not grounded");
+            if (calls[1].path !== "/api/v2/recommend/sessions/session-42/previous" || calls[1].payload.channel !== "动漫") throw new Error("anime previous batch path mismatch");
+            if (actions.map((action) => action.channel).join(",") !== "series,anime-series") throw new Error("channel-specific batch actions were not dispatched");
+            console.log(JSON.stringify({{ text, shelfSizes: shelfRails.map((rail) => rail.children.length), calls, actions }}));
+            '''
+        )
+        rendered = json.loads(output)
+        self.assertEqual([9, 8, 7], rendered["shelfSizes"])
+        self.assertEqual("太相似", rendered["calls"][0]["payload"]["reason"])
+
+    def test_command_lens_uses_only_server_chips_and_ctrl_k(self):
+        output = run_node_module(
+            f'''
+            import {{
+              configureCommandLens,
+              openCommandLens,
+              submitIntent,
+            }} from "{module_url('js/features/command-lens.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.attributes = new Map();
+                this.className = "";
+                this.textContent = "";
+                this.value = "";
+                this.hidden = false;
+                this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              remove() {{ this.parentNode?.children.splice(this.parentNode.children.indexOf(this), 1); }}
+              focus() {{ this.focused = true; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            Object.defineProperty(FakeElement.prototype, "innerHTML", {{
+              set() {{ throw new Error("innerHTML must not be used"); }},
+            }});
+
+            const listeners = new Map();
+            const root = new FakeElement("div");
+            globalThis.document = {{
+              createElement: (tagName) => new FakeElement(tagName),
+              addEventListener(type, listener) {{ listeners.set(type, listener); }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            const calls = [];
+            const actions = [];
+            const serverResponse = {{
+              id: "session-grounded",
+              intent: {{ genres: ["悬疑"], free_text: "<img src=x onerror=alert(1)>" }},
+              chips: [{{ key: "genre", label: "服务端悬疑", value: "悬疑", removable: true }}],
+              channels: {{}},
+            }};
+            const replacementResponse = {{
+              id: "session-replacement",
+              intent: {{ genres: [], free_text: "" }},
+              chips: [],
+              channels: {{}},
+            }};
+            configureCommandLens({{
+              root,
+              store: {{
+                getState: () => ({{ commandLens: {{ draft: "", chips: [] }} }}),
+                dispatch(action) {{ actions.push(action); }},
+              }},
+              api: {{ async postV2(path, payload) {{ calls.push({{ path, payload }}); return calls.length === 1 ? serverResponse : replacementResponse; }} }},
+            }});
+
+            let prevented = false;
+            listeners.get("keydown")({{ key: "K", ctrlKey: true, metaKey: false, preventDefault() {{ prevented = true; }} }});
+            if (!prevented || root.children.length !== 1) throw new Error("Ctrl+K did not open the command lens");
+            openCommandLens("今晚想看悬疑片");
+            await submitIntent("今晚想看悬疑片");
+
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const all = collect(root);
+            const text = all.map((node) => node.textContent).filter(Boolean);
+            if (!text.includes("服务端悬疑")) throw new Error("server chip was not rendered");
+            if (text.includes(serverResponse.intent.free_text)) throw new Error("free-form model text was parsed into visible chips");
+            if (!all.some((node) => node.className.includes("intent-chip"))) throw new Error("editable intent chip was not rendered");
+            if (calls[0].path !== "/api/v2/recommend/sessions" || calls[0].payload.intent_text !== "今晚想看悬疑片") throw new Error("intent submission path mismatch");
+            if (!actions.some((action) => action.type === "recommendation/sessionReceived" && action.session.id === "session-grounded")) throw new Error("grounded session was not dispatched");
+            const remove = all.find((node) => node.className === "intent-chip__remove");
+            await remove.onclick();
+            if (calls[1].payload.intent_text !== undefined || calls[1].payload.intent.genres.length !== 0) {{
+              throw new Error("chip removal did not rebuild from the server structured intent");
+            }}
+            console.log(JSON.stringify({{ text, calls, actions, prevented }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["prevented"])
+        self.assertEqual("今晚想看悬疑片", result["calls"][0]["payload"]["intent_text"])
+        self.assertEqual([], result["calls"][1]["payload"]["intent"]["genres"])
+
+    def test_tonight_stylesheet_is_static_and_motion_safe(self):
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "tonight.css").read_text(encoding="utf-8")
+
+        self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/tonight.css" />', html)
+        self.assertIn("prefers-reduced-motion", css)
+        declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
+        for declaration in declarations:
+            for transition in declaration.split(","):
+                property_name = transition.strip().split(maxsplit=1)[0]
+                with self.subTest(transition=transition):
+                    self.assertIn(property_name, {"transform", "opacity"})
+
+        app_source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertNotIn("createElement(\"link\")", app_source)
+        self.assertNotIn("createElement('link')", app_source)
 
 
 if __name__ == "__main__":

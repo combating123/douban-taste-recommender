@@ -408,6 +408,30 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertGreater(anime["pool_size"], anime["matched_size"])
         self.assertGreater(anime["matched_size"], anime["visible_size"])
 
+    def test_session_response_returns_grounded_intent_chips(self):
+        created = self.create_session(intent_text="90分钟内的悬疑电影")
+
+        self.assertTrue(created["chips"])
+        self.assertEqual(
+            {"key", "label", "value", "removable"},
+            set(created["chips"][0]),
+        )
+        self.assertIn(
+            {"key": "media_type", "label": "电影", "value": "电影", "removable": True},
+            created["chips"],
+        )
+        self.assertIn(
+            {"key": "genre", "label": "悬疑", "value": "悬疑", "removable": True},
+            created["chips"],
+        )
+        self.assertIn(
+            {"key": "runtime_max", "label": "片长 ≤ 90 分钟", "value": 90, "removable": True},
+            created["chips"],
+        )
+
+        restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
+        self.assertEqual(restored["chips"], created["chips"])
+
     def test_feedback_api_does_not_accept_unknown_permanent_scope(self):
         status, payload = self.post_json_status("/api/v2/feedback", {
             "schema_version": 2,

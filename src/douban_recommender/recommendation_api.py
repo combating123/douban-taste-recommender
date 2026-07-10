@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
@@ -11,7 +11,7 @@ from .curated_catalog import apply_curated_people_photos, apply_curated_posters,
 from .database import AppDatabase
 from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .feedback_service import FeedbackEvent, FeedbackService
-from .intent_parser import RecommendationIntent, parse_recommendation_intent
+from .intent_parser import RecommendationIntent, intent_to_chips, parse_recommendation_intent
 from .io import load_media_csv, load_media_csv_from_text
 from .language_adapter import LanguageService, LocalRuleLanguageAdapter, OpenAICompatibleLanguageAdapter
 from .media.store import MediaStore
@@ -745,6 +745,7 @@ class RecommendationApi:
             "profile_key": restored.profile_key,
             "status": restored.status,
             "intent": restored.intent.to_dict(),
+            "chips": [asdict(chip) for chip in intent_to_chips(restored.intent)],
             "channels": channels,
             "restore": self._restore_metadata(restored.channels),
             "created_at": restored.created_at,

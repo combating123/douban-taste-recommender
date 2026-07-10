@@ -1,6 +1,9 @@
 import { renderRoutePlaceholder, setCurrentNavigation, setText } from "./core/dom.js";
+import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState } from "./core/store.js";
+import { configureCommandLens, openCommandLens } from "./features/command-lens.js";
+import { configureTonight, renderTonight, restoreTonightSession } from "./features/tonight.js";
 
 const APP_ROUTES = [
   { pattern: "/tonight", name: "tonight" },
@@ -27,12 +30,97 @@ const ROUTE_COPY = {
   "not-found": ["未找到页面", "这个地址不属于 CineScope 工作台。"],
 };
 
+const ROUTE_CHANNELS = Object.freeze({
+  movie: "电影",
+  series: "电视剧",
+  "anime-series": "动漫",
+});
+
+function channelSlug(route) {
+  if (route.name === "tonight-anime") return "anime-series";
+  return Object.hasOwn(ROUTE_CHANNELS, route.params?.channel) ? route.params.channel : "movie";
+}
+
+function backendChannelsToState(session, previous = {}) {
+  const result = {};
+  for (const [slug, backend] of Object.entries(ROUTE_CHANNELS)) {
+    const current = previous[slug] && typeof previous[slug] === "object" ? previous[slug] : {};
+    const incoming = session?.channels?.[backend] && typeof session.channels[backend] === "object"
+      ? session.channels[backend]
+      : {};
+    const batch = incoming.batch && typeof incoming.batch === "object" ? incoming.batch : {};
+    const batchIds = [...(Array.isArray(current.batchIds) ? current.batchIds : [])];
+    if (typeof batch.id === "string" && batch.id && !batchIds.includes(batch.id)) batchIds.push(batch.id);
+    result[slug] = {
+      ...current,
+      ...incoming,
+      sessionId: typeof session?.id === "string" ? session.id : current.sessionId,
+      batchIndex: Number.isInteger(batch.index) ? batch.index : current.batchIndex || 0,
+      batchIds: batchIds.slice(-50),
+    };
+  }
+  return result;
+}
+
+function batchChannelState(current, payload) {
+  const batch = payload?.batch && typeof payload.batch === "object" ? payload.batch : {};
+  const batchIds = [...(Array.isArray(current.batchIds) ? current.batchIds : [])];
+  if (typeof batch.id === "string" && batch.id && !batchIds.includes(batch.id)) batchIds.push(batch.id);
+  return {
+    ...current,
+    pool_size: Number.isFinite(batch.pool_size) ? batch.pool_size : current.pool_size,
+    matched_size: Number.isFinite(batch.matched_size) ? batch.matched_size : current.matched_size,
+    visible_size: Number.isFinite(batch.visible_size) ? batch.visible_size : current.visible_size,
+    active_batch: Number.isInteger(batch.index) ? batch.index : current.active_batch,
+    batch,
+    batchIndex: Number.isInteger(batch.index) ? batch.index : current.batchIndex || 0,
+    batchIds: batchIds.slice(-50),
+  };
+}
+
 function reduceUiState(state, action) {
   switch (action.type) {
     case "route/changed":
-      return { ...state, activePath: action.route.path, activeParams: action.route.params };
+      return {
+        ...state,
+        activePath: action.route.path,
+        activeParams: action.route.params,
+        recommendation: action.route.path.startsWith("/tonight")
+          ? { ...state.recommendation, activeChannel: channelSlug(action.route) }
+          : state.recommendation,
+      };
     case "rail/changed":
       return { ...state, rail: { mode: action.mode } };
+    case "recommendation/sessionReceived":
+      return {
+        ...state,
+        commandLens: {
+          ...state.commandLens,
+          chips: Array.isArray(action.session?.chips) ? action.session.chips : state.commandLens.chips,
+        },
+        recommendation: {
+          ...state.recommendation,
+          sessionId: action.session?.id || state.recommendation.sessionId,
+          intent: action.session?.intent && typeof action.session.intent === "object" ? action.session.intent : {},
+          channels: backendChannelsToState(action.session, state.recommendation.channels),
+        },
+      };
+    case "recommendation/batchReceived":
+      return {
+        ...state,
+        recommendation: {
+          ...state.recommendation,
+          channels: {
+            ...state.recommendation.channels,
+            [action.channel]: batchChannelState(state.recommendation.channels[action.channel] || {}, action.batch),
+          },
+        },
+      };
+    case "commandLens/grounded":
+      return {
+        ...state,
+        commandLens: { draft: action.draft || "", chips: Array.isArray(action.chips) ? action.chips : [] },
+      };
     default:
       return state;
   }
@@ -71,6 +159,15 @@ export function bootstrapCineScopeShell() {
   if (!appView || !status) return;
 
   const store = createStore(restoreUiState(), reduceUiState);
+  store.subscribe((state, action) => {
+    persistUiState(state);
+    if (state.activePath?.startsWith("/tonight") && ["recommendation/sessionReceived", "recommendation/batchReceived"].includes(action.type)) {
+      renderTonight(state);
+    }
+  });
+  configureCommandLens({ root: document.getElementById("command-lens-root"), store, api: { postV2 } });
+  configureTonight({ store, api: { postV2 }, root: appView, openCommandLens });
+  document.getElementById("command-lens-trigger")?.addEventListener("click", () => openCommandLens());
   const setRailMode = (mode) => {
     store.dispatch({ type: "rail/changed", mode });
     persistUiState(store.getState());
@@ -87,12 +184,27 @@ export function bootstrapCineScopeShell() {
   const router = createRouter(APP_ROUTES, {
     onRoute: async (route) => {
       store.dispatch({ type: "route/changed", route });
-      persistUiState(store.getState());
       appView.dataset.route = route.path;
       const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
-      renderRoutePlaceholder(appView, { heading, description });
-      setCurrentNavigation(route.path);
-      setText(status, `CineScope 正在浏览：${heading}`);
+      if (route.path.startsWith("/tonight")) {
+        renderTonight(store.getState());
+        const sessionId = store.getState().recommendation.sessionId;
+        let restoreFailed = false;
+        if (sessionId) {
+          try {
+            await restoreTonightSession(sessionId);
+          } catch {
+            restoreFailed = true;
+          }
+        }
+        setText(status, restoreFailed
+          ? "今晚会话暂时无法恢复，可用 Command Lens 创建新片单"
+          : `CineScope 正在浏览：${heading}`);
+      } else {
+        renderRoutePlaceholder(appView, { heading, description });
+        setText(status, `CineScope 正在浏览：${heading}`);
+      }
+      setCurrentNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
     },
   });
 
