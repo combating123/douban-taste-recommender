@@ -499,6 +499,44 @@ class LanguageAdapterTests(unittest.TestCase):
 
         self.assertEqual(result, "推荐《真实标题》；推荐《第二部》于2016年上映，类型：悬疑，国家/地区：韩国。")
 
+    def test_explain_accepts_cited_full_title_even_when_uncited_title_is_a_substring(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload='{"text":"\u63a8\u8350\u300a\u963f\u51e1\u8fbe2\u300b","citations":["ev1"]}'
+            ),
+        )
+
+        result = adapter.explain(
+            "\u89e3\u91ca",
+            {
+                "ev1": {"title": "\u963f\u51e1\u8fbe2"},
+                "ev2": {"title": "\u963f\u51e1\u8fbe"},
+            },
+        )
+
+        self.assertEqual(result, "\u63a8\u8350\u300a\u963f\u51e1\u8fbe2\u300b")
+
+    def test_explain_maps_same_titled_evidence_by_citation_id_not_title_text(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload='{"text":"\u63a8\u8350\u300a\u963f\u51e1\u8fbe\u300b\uff0c\u8c46\u74e3\u8bc4\u52068.8","citations":["ev2"]}'
+            ),
+        )
+
+        result = adapter.explain(
+            "\u89e3\u91ca",
+            {
+                "ev1": {"title": "\u963f\u51e1\u8fbe", "douban_rating": 7.9},
+                "ev2": {"title": "\u963f\u51e1\u8fbe", "douban_rating": 8.8},
+            },
+        )
+
+        self.assertEqual(result, "\u63a8\u8350\u300a\u963f\u51e1\u8fbe\u300b\uff0c\u8c46\u74e3\u8bc4\u52068.8")
+
     def test_default_transport_reads_using_instance_response_limit(self):
         response = FakeUrlopenResponse(b'{"genres":["x"]}')
         adapter = OpenAICompatibleLanguageAdapter(

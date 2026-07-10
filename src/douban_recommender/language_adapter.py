@@ -395,13 +395,6 @@ def _grounded_text_from_payload(payload: dict[str, Any], evidence_items: dict[st
     for citation_id in citation_ids:
         if citation_id not in evidence_items:
             raise UngroundedResponseError("citation is not grounded")
-    all_titles = {item_id: _title(evidence) for item_id, evidence in evidence_items.items() if _title(evidence)}
-    cited_titles = {all_titles[item_id] for item_id in citation_ids if item_id in all_titles}
-    if cited_titles and not any(title in text for title in cited_titles):
-        raise UngroundedResponseError("citation title is not grounded")
-    uncited_titles = {title for item_id, title in all_titles.items() if item_id not in citation_ids}
-    if any(title in text for title in uncited_titles):
-        raise UngroundedResponseError("citation title is not grounded")
     _validate_grounded_claims(text, citation_ids, evidence_items)
     return text.strip()
 
@@ -410,16 +403,12 @@ def _validate_grounded_claims(text: str, citation_ids: list[str], evidence_items
     segments = _split_explanation_segments(text)
     if len(segments) != len(citation_ids):
         raise UngroundedResponseError("citation title is not grounded")
-    cited_titles = _cited_title_map(citation_ids, evidence_items)
-    seen_citations: set[str] = set()
-    for segment in segments:
-        citation_id, claims = _parse_explanation_segment(segment, cited_titles)
-        if citation_id in seen_citations:
+    for segment, citation_id in zip(segments, citation_ids):
+        title = _title(evidence_items[citation_id])
+        if not title:
             raise UngroundedResponseError("citation title is not grounded")
+        claims = _parse_explanation_segment(segment, title)
         _validate_segment_claims(claims, evidence_items[citation_id])
-        seen_citations.add(citation_id)
-    if seen_citations != set(citation_ids):
-        raise UngroundedResponseError("citation title is not grounded")
 
 
 def _split_explanation_segments(text: str) -> list[str]:
@@ -433,25 +422,12 @@ def _split_explanation_segments(text: str) -> list[str]:
     return segments
 
 
-def _cited_title_map(citation_ids: list[str], evidence_items: dict[str, dict[str, Any]]) -> dict[str, str]:
-    title_to_citation: dict[str, str] = {}
-    for citation_id in citation_ids:
-        title = _title(evidence_items[citation_id])
-        if not title:
-            raise UngroundedResponseError("citation title is not grounded")
-        if title in title_to_citation and title_to_citation[title] != citation_id:
-            raise UngroundedResponseError("citation title is not grounded")
-        title_to_citation[title] = citation_id
-    return title_to_citation
-
-
-def _parse_explanation_segment(segment: str, cited_titles: dict[str, str]) -> tuple[str, dict[str, Any]]:
+def _parse_explanation_segment(segment: str, expected_title: str) -> dict[str, Any]:
     match = SEGMENT_TITLE_PATTERN.match(segment.strip())
     if not match:
         raise UngroundedResponseError("explicit fact is not grounded")
     title = match.group("title").strip()
-    citation_id = cited_titles.get(title)
-    if not citation_id:
+    if title != expected_title:
         raise UngroundedResponseError("citation title is not grounded")
     cursor = match.end()
     claims: dict[str, Any] = {}
@@ -468,7 +444,7 @@ def _parse_explanation_segment(segment: str, cited_titles: dict[str, str]) -> tu
         claims[field] = value
     if segment[cursor:].strip():
         raise UngroundedResponseError("explicit fact is not grounded")
-    return citation_id, claims
+    return claims
 
 
 def _consume_segment_fact(segment: str, cursor: int, pattern: re.Pattern[str], group_name: str, coerce) -> tuple[Any, int]:
