@@ -41,6 +41,7 @@ let dependencies = {
   fetchJson: requestJson,
   api: { postV2 },
   openPersonSheet,
+  onExploreUniverse: () => {},
 };
 
 export function configureDetail(options = {}) {
@@ -50,6 +51,7 @@ export function configureDetail(options = {}) {
     fetchJson: options.fetchJson || dependencies.fetchJson,
     api: options.api || { postV2: options.postV2 || dependencies.api.postV2 },
     openPersonSheet: options.openPersonSheet || dependencies.openPersonSheet,
+    onExploreUniverse: options.onExploreUniverse || dependencies.onExploreUniverse,
   };
 }
 
@@ -240,6 +242,10 @@ function renderRelations(title, universe) {
     element("h2", "detail-section__title", "本地关联路径"),
     element("p", "detail-section__deck", "以下关系来自本地片库共同字段，只用于关系预览，不代表经过服务端验证的推荐结论。"),
   );
+  const universeAction = element("button", "detail-universe-action route-recovery__action", "在口味宇宙展开");
+  universeAction.type = "button";
+  universeAction.addEventListener("click", () => dependencies.onExploreUniverse(textValue(title?.item_key)));
+  section.append(universeAction);
   const nodes = relatedNodes(title, universe);
   if (!nodes.length) {
     section.append(element("p", "detail-limited", "资料有限：本地片库暂未形成可展示的关联路径。"));

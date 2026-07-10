@@ -1842,6 +1842,245 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("detail-stable", result["detail"])
         self.assertEqual("person-stable", result["person"])
 
+    def test_universe_lazily_draws_bounded_nodes_and_keeps_semantic_relations_in_sync(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{
+              constructor(owner) {{ this.owner = owner; }}
+              toggle(name, force) {{
+                const names = new Set(this.owner.className.split(/\\s+/).filter(Boolean));
+                if (force) names.add(name); else names.delete(name);
+                this.owner.className = [...names].join(" ");
+              }}
+              add(name) {{ this.toggle(name, true); }}
+              remove(name) {{ this.toggle(name, false); }}
+            }}
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.style = {{ setProperty() {{}} }}; this.listeners = new Map();
+                this.classList = new FakeClassList(this); this.width = 0; this.height = 0; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              dispatch(type, event = {{}}) {{ for (const listener of this.listeners.get(type) ?? []) listener({{ target: this, currentTarget: this, ...event }}); }}
+              focus() {{ document.activeElement = this; }}
+              getBoundingClientRect() {{ return {{ left: 0, top: 0, width: 900, height: 560 }}; }}
+              getContext() {{ return this.tagName === "CANVAS" ? context2d : null; }}
+              setPointerCapture(id) {{ this.pointerCapture = id; }}
+              hasPointerCapture(id) {{ return this.pointerCapture === id; }}
+              releasePointerCapture(id) {{ if (this.pointerCapture === id) this.pointerCapture = null; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const drawCalls = [];
+            const context2d = new Proxy({{
+              canvas: null, measureText(text) {{ return {{ width: String(text).length * 7 }}; }},
+            }}, {{ get(target, key) {{
+              if (key in target) return target[key];
+              if (key === "setTransform" || key === "clearRect" || key === "beginPath" || key === "moveTo" || key === "lineTo" || key === "stroke" || key === "arc" || key === "fill" || key === "fillText" || key === "save" || key === "restore") return (...args) => drawCalls.push([key, ...args]);
+              return target[key];
+            }}, set(target, key, value) {{ target[key] = value; return true; }} }});
+            const observers = [];
+            globalThis.IntersectionObserver = class {{ constructor(callback) {{ this.callback = callback; this.disconnected = false; observers.push(this); }} observe(target) {{ this.target = target; }} disconnect() {{ this.disconnected = true; }} }};
+            globalThis.ResizeObserver = class {{ constructor(callback) {{ this.callback = callback; this.disconnected = false; }} observe(target) {{ this.target = target; }} disconnect() {{ this.disconnected = true; }} }};
+            const rafs = new Map(); let rafId = 0;
+            globalThis.requestAnimationFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            globalThis.cancelAnimationFrame = (id) => rafs.delete(id);
+            globalThis.window = {{ devicePixelRatio: 1, addEventListener() {{}}, removeEventListener() {{}}, matchMedia: () => ({{ matches: false }}) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            globalThis.document = {{ activeElement: null, createElement: (tag) => new FakeElement(tag) }};
+
+            const {{ configureUniverse, destroyUniverse, focusNode, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            configureUniverse({{ async fetchJson() {{ throw new Error("render must not fetch"); }} }});
+            const nodes = Array.from({{ length: 12 }}, (_, index) => ({{
+              id: `item:${{index}}`, title: `作品 ${{index}}`, media_type: "movie", year: 2000 + index,
+              poster: {{ url: index === 1 ? "https://remote.test/poster.jpg" : "", media_status: "missing" }},
+            }}));
+            const edges = Array.from({{ length: 11 }}, (_, index) => ({{
+              source: "item:0", target: `item:${{index + 1}}`, score: index === 0 ? 8.2 : 0.95 - index / 100,
+              reason: `主理由 ${{index + 1}}`, reasons: [`共同导演 ${{index + 1}}`, `共同类型 剧情`],
+            }}));
+            const container = new FakeElement("main");
+            const view = renderUniverse(container, {{ focus_id: "item:0", nodes, edges }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const all = collect(view);
+            const canvas = all.find((node) => node.tagName === "CANVAS");
+            const relationList = all.find((node) => node.className.includes("relationship-list"));
+            const relationRows = all.filter((node) => node.className.includes("relationship-list__item"));
+            const nodeButtons = all.filter((node) => node.className.includes("universe-node-button"));
+            if (!canvas || canvas.getAttribute("tabindex") !== "0" || !canvas.getAttribute("aria-label")?.includes("口味宇宙")) throw new Error("canvas keyboard contract missing");
+            if (!relationList || relationRows.length !== 8 || nodeButtons.length !== 9) throw new Error(`bounded semantic graph mismatch: ${{relationRows.length}}/${{nodeButtons.length}}`);
+            const relationText = relationRows.map((row) => collect(row).map((node) => node.textContent).join(" ")).join(" | ");
+            if (!relationText.includes("作品 0") || !relationText.includes("作品 1") || !relationText.includes("主理由 1") || !relationText.includes("共同导演 1") || !relationText.includes("8.2")) throw new Error("semantic relation omitted source, target, reason/reasons, or score");
+            if (drawCalls.length !== 0 || rafs.size !== 0) throw new Error("canvas drew before intersection");
+
+            observers[0].callback([{{ isIntersecting: true, target: canvas }}]);
+            if (rafs.size !== 1) throw new Error("intersection did not schedule one bounded draw");
+            const firstFrame = [...rafs.entries()][0]; rafs.delete(firstFrame[0]); firstFrame[1](16);
+            if (!drawCalls.length || rafs.size !== 0) throw new Error("static canvas kept a resident RAF loop");
+
+            focusNode("item:2");
+            const focusedButton = nodeButtons.find((button) => button.dataset.nodeId === "item:2");
+            if (focusedButton?.getAttribute("aria-current") !== "true") throw new Error("semantic list did not follow canvas focus");
+            let prevented = 0;
+            canvas.dispatch("wheel", {{ deltaY: -1, preventDefault() {{ prevented += 1; }} }});
+            if (prevented !== 0) throw new Error("unfocused canvas blocked page scroll");
+            canvas.focus();
+            canvas.dispatch("wheel", {{ deltaY: -1, preventDefault() {{ prevented += 1; }} }});
+            if (prevented !== 1 || rafs.size !== 1) throw new Error("focused canvas did not own wheel zoom");
+            canvas.dispatch("pointerdown", {{ pointerId: 7, clientX: 20, clientY: 20 }});
+            if (canvas.pointerCapture !== 7) throw new Error("pointer drag did not capture the canvas");
+
+            destroyUniverse();
+            const remainingListeners = [...canvas.listeners.values()].reduce((total, listeners) => total + listeners.size, 0);
+            if (!observers[0].disconnected || rafs.size !== 0 || container.children.length !== 0 || canvas.pointerCapture !== null || remainingListeners !== 0) throw new Error("destroy left observer, RAF, capture, listeners, or DOM alive");
+            const empty = renderUniverse(container, null);
+            if (!empty?.className.includes("universe-empty") || container.children.length !== 1) throw new Error("bare universe did not render its designed empty state");
+            destroyUniverse();
+            if (container.children.length !== 0) throw new Error("destroy did not clear the focusless universe DOM");
+            console.log(JSON.stringify({{ relations: relationRows.length, nodes: nodeButtons.length, prevented, draws: drawCalls.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(8, result["relations"])
+        self.assertEqual(9, result["nodes"])
+        self.assertEqual(1, result["prevented"])
+        self.assertGreater(result["draws"], 0)
+
+    def test_universe_expansion_dedupes_requests_caps_graph_and_ignores_destroyed_responses(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{ this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}}; this.className = ""; this.textContent = ""; this.style = {{ setProperty() {{}} }}; this.listeners = new Map(); }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }} appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }} setAttribute(name, value) {{ this.attributes.set(name, String(value)); }} getAttribute(name) {{ return this.attributes.get(name) ?? null; }} removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }} removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              getBoundingClientRect() {{ return {{ left: 0, top: 0, width: 800, height: 500 }}; }} getContext() {{ return this.tagName === "CANVAS" ? new Proxy({{}}, {{ get: () => () => {{}} }}) : null; }}
+              hasPointerCapture() {{ return false; }} get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            globalThis.document = {{ activeElement: null, createElement: (tag) => new FakeElement(tag) }};
+            globalThis.window = {{ devicePixelRatio: 1, addEventListener() {{}}, removeEventListener() {{}}, matchMedia: () => ({{ matches: true }}) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            globalThis.requestAnimationFrame = (callback) => 1; globalThis.cancelAnimationFrame = () => {{}};
+            delete globalThis.IntersectionObserver; delete globalThis.ResizeObserver;
+
+            const requests = []; const contexts = [];
+            const {{ configureUniverse, destroyUniverse, expandNode, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            configureUniverse({{
+              fetchJson(path, options) {{ const pending = deferred(); requests.push({{ path, options, pending }}); return pending.promise; }},
+              onContextChange(context) {{ contexts.push(context); }},
+            }});
+            const container = new FakeElement("main");
+            renderUniverse(container, {{ focus_id: "item:0", nodes: [{{ id: "item:0", title: "起点" }}], edges: [] }});
+            const first = expandNode("item:1"); const shared = expandNode("item:1");
+            if (first !== shared || requests.length !== 1 || !requests[0].path.endsWith("focus=item%3A1&limit=9")) throw new Error("same-node expansion was not shared");
+            const expansionNodes = Array.from({{ length: 45 }}, (_, index) => ({{ id: `item:${{index}}`, title: `作品 ${{index}}` }}));
+            const expansionEdges = Array.from({{ length: 44 }}, (_, index) => ({{ source: "item:1", target: `item:${{index + 1}}`, score: 1 - index / 100, reasons: [`理由 ${{index}}`] }}));
+            requests[0].pending.resolve({{ focus_id: "item:1", nodes: expansionNodes, edges: expansionEdges }});
+            await first;
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const all = collect(container);
+            const buttons = all.filter((node) => node.className.includes("universe-node-button"));
+            if (buttons.length > 36) throw new Error(`graph exceeded cap: ${{buttons.length}}`);
+            if (!all.map((node) => node.textContent).join(" ").includes("36")) throw new Error("cap explanation was not visible");
+            if (!contexts.at(-1)?.expandedIds?.includes("item:1") || contexts.at(-1)?.universeFocusId !== "item:1") throw new Error("persisted context did not use stable ids");
+
+            const late = expandNode("item:2");
+            if (requests.length !== 2) throw new Error("second expansion did not start");
+            destroyUniverse();
+            requests[1].pending.resolve({{ focus_id: "item:2", nodes: [{{ id: "late", title: "迟到" }}], edges: [] }});
+            await late;
+            if (container.children.length !== 0 || !requests[1].options.signal.aborted) throw new Error("destroyed generation accepted a late response or failed to abort");
+            console.log(JSON.stringify({{ requests: requests.length, nodes: buttons.length, contexts: contexts.length, aborted: requests[1].options.signal.aborted }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["requests"])
+        self.assertLessEqual(result["nodes"], 36)
+        self.assertGreaterEqual(result["contexts"], 1)
+        self.assertTrue(result["aborted"])
+
+    def test_universe_route_requires_persisted_focus_and_title_entry_uses_stable_id(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ createUniverseRouteGate, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const renders = []; const expands = []; const statuses = []; let destroys = 0;
+            let context = {{}};
+            const gate = createUniverseRouteGate({{
+              root: {{ id: "root" }}, getContext: () => context,
+              render(root, graph) {{ renders.push({{ root, graph }}); return graph; }},
+              expand(id) {{ expands.push(id); return Promise.resolve({{ focus_id: id }}); }},
+              destroy() {{ destroys += 1; }}, setStatus(message) {{ statuses.push(message); }},
+            }});
+            await gate.render();
+            if (expands.length !== 0 || renders[0].graph !== null) throw new Error("bare universe requested or fabricated a graph");
+            context = {{ universeFocusId: "douban:42", expandedIds: ["douban:7"] }};
+            await gate.render();
+            if (expands[0] !== "douban:42" || renders[1].graph.focus_id !== "douban:42") throw new Error("persisted stable focus was not loaded");
+            const initial = {{ candidateTray: {{ itemIds: [], context: {{ reason: "keep" }} }} }};
+            const next = reduceUiState(initial, {{ type: "universe/contextChanged", context: {{ universeFocusId: "douban:42", expandedIds: ["douban:7", "douban:42"] }} }});
+            if (next.candidateTray.context.reason !== "keep" || next.candidateTray.context.universeFocusId !== "douban:42" || next.candidateTray.context.expandedIds.length !== 2) throw new Error("universe context escaped the existing candidate tray context");
+            console.log(JSON.stringify({{ renders: renders.length, expands, destroys, statuses, context: next.candidateTray.context }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["douban:42"], result["expands"])
+        self.assertEqual("douban:42", result["context"]["universeFocusId"])
+        self.assertGreaterEqual(result["destroys"], 2)
+
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{ this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}}; this.className = ""; this.textContent = ""; this.style = {{ setProperty() {{}} }}; }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }} appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }} replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }} getAttribute(name) {{ return this.attributes.get(name) ?? null; }} addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }} get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }}; globalThis.location = {{ origin: "https://cinescope.test" }};
+            const root = new FakeElement("main"); const routed = [];
+            const title = {{ item_key: "douban:42", title: "绝不能拿标题猜 ID", media_type: "movie", year: 2024, poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }}, item: {{ directors: [], casts: [] }}, people: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{ root, async fetchJson(path) {{ return path.startsWith("/api/v2/titles/") ? title : {{ focus_id: "douban:42", nodes: [], edges: [] }}; }}, onExploreUniverse(id) {{ routed.push(id); }} }});
+            await renderTitleDetail("douban:42");
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const action = collect(root).find((node) => node.textContent === "在口味宇宙展开");
+            if (!action || typeof action.onclick !== "function") throw new Error("detail universe action missing");
+            action.onclick();
+            if (routed[0] !== "douban:42" || routed[0] === title.title) throw new Error("detail routed with guessed title instead of stable id");
+            console.log(JSON.stringify({{ routed, label: action.textContent }}));
+            '''
+        )
+        detail_result = json.loads(output)
+        self.assertEqual(["douban:42"], detail_result["routed"])
+
+    def test_universe_stylesheet_is_static_responsive_and_motion_safe(self):
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "universe.css").read_text(encoding="utf-8")
+
+        self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/universe.css" />', html)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*relationship-list")
+        self.assertIn("prefers-reduced-motion", css)
+        declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
+        for declaration in declarations:
+            for transition in declaration.split(","):
+                property_name = transition.strip().split(maxsplit=1)[0]
+                with self.subTest(transition=transition):
+                    self.assertIn(property_name, {"transform", "opacity"})
+
+        source = "".join(
+            (UI_ROOT / path).read_text(encoding="utf-8")
+            for path in ("js/features/universe.js", "js/features/detail.js", "js/app.js")
+        )
+        self.assertNotIn("innerHTML", source)
+        self.assertNotIn('createElement("link")', source)
+
     def test_detail_stylesheet_is_static_cinematic_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
         css = (UI_ROOT / "styles" / "detail.css").read_text(encoding="utf-8")

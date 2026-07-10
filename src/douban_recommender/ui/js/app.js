@@ -6,6 +6,7 @@ import { configureCommandLens, openCommandLens, syncCommandLensState } from "./f
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
 import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
+import { configureUniverse, destroyUniverse, expandNode, renderUniverse } from "./features/universe.js";
 
 const APP_ROUTES = [
   { pattern: "/tonight", name: "tonight" },
@@ -174,6 +175,14 @@ export function reduceUiState(state, action) {
       };
     case "rail/changed":
       return { ...state, rail: { mode: action.mode } };
+    case "universe/contextChanged":
+      return {
+        ...state,
+        candidateTray: {
+          ...state.candidateTray,
+          context: { ...state.candidateTray?.context, ...action.context },
+        },
+      };
     case "recommendation/sessionReceived":
       if (action.source === "restore") {
         const expectedChannel = action.channel;
@@ -257,6 +266,47 @@ function bindNavigation(router) {
 
 export function prepareRouteChange() {
   closePersonSheet();
+  destroyUniverse();
+}
+
+function stableUniverseId(value) {
+  const clean = textValue(value);
+  return /^[A-Za-z0-9:._~-]{1,256}$/.test(clean) ? clean : "";
+}
+
+export function createUniverseRouteGate({
+  root,
+  getContext = () => ({}),
+  render = renderUniverse,
+  expand = expandNode,
+  destroy = destroyUniverse,
+  setStatus = () => {},
+} = {}) {
+  let generation = 0;
+  const invalidate = () => {
+    generation += 1;
+    destroy();
+    return generation;
+  };
+  const renderRoute = async () => {
+    const requestGeneration = invalidate();
+    const focusId = stableUniverseId(getContext()?.universeFocusId);
+    if (!focusId) {
+      render(root, null);
+      setStatus("CineScope 口味宇宙正在等待一个作品焦点");
+      return null;
+    }
+    render(root, { focus_id: focusId, nodes: [], edges: [] });
+    try {
+      const graph = await expand(focusId);
+      if (generation === requestGeneration) setStatus("CineScope 正在浏览：口味宇宙");
+      return generation === requestGeneration ? graph : null;
+    } catch {
+      if (generation === requestGeneration) setStatus("口味宇宙暂时无法展开；已保留恢复入口");
+      return null;
+    }
+  };
+  return { invalidate, render: renderRoute };
 }
 
 function explorationRecovery(route, retry) {
@@ -394,10 +444,40 @@ export function bootstrapCineScopeShell() {
   configureCommandLens({ root: document.getElementById("command-lens-root"), store, api: { postV2 } });
   configureTonight({ store, api: { postV2 }, root: appView, openCommandLens });
   configurePeople({ root: appView, overlayRoot: document.getElementById("overlay-root") });
-  configureDetail({ root: appView, api: { postV2 }, openPersonSheet });
+  configureUniverse({
+    onContextChange: (context) => {
+      const previous = store.getState().candidateTray?.context || {};
+      const expandedIds = [...new Set([
+        ...(Array.isArray(previous.expandedIds) ? previous.expandedIds : []),
+        ...(Array.isArray(context.expandedIds) ? context.expandedIds : []),
+      ])].slice(-36);
+      store.dispatch({ type: "universe/contextChanged", context: { ...context, expandedIds } });
+    },
+  });
+  let router = null;
+  configureDetail({
+    root: appView,
+    api: { postV2 },
+    openPersonSheet,
+    onExploreUniverse: (id) => {
+      const focusId = stableUniverseId(id);
+      if (!focusId) return;
+      const previous = store.getState().candidateTray?.context || {};
+      store.dispatch({
+        type: "universe/contextChanged",
+        context: { universeFocusId: focusId, expandedIds: Array.isArray(previous.expandedIds) ? previous.expandedIds : [] },
+      });
+      router?.navigate("/universe");
+    },
+  });
   const explorationGate = createExplorationRouteGate({
     root: appView,
     getActivePath: () => store.getState().activePath,
+    setStatus: (message) => setText(status, message),
+  });
+  const universeGate = createUniverseRouteGate({
+    root: appView,
+    getContext: () => store.getState().candidateTray?.context || {},
     setStatus: (message) => setText(status, message),
   });
   document.getElementById("command-lens-trigger")?.addEventListener("click", () => openCommandLens());
@@ -414,21 +494,38 @@ export function bootstrapCineScopeShell() {
   document.getElementById("rail-hide-toggle")?.addEventListener("click", () => setRailMode("hidden"));
   document.getElementById("rail-restore")?.addEventListener("click", () => setRailMode("expanded"));
 
-  const router = createRouter(APP_ROUTES, {
+  router = createRouter(APP_ROUTES, {
     onRoute: async (route) => {
       prepareRouteChange();
       store.dispatch({ type: "route/changed", route });
+      if (route.name === "title") {
+        const focusId = stableUniverseId(route.params?.id);
+        if (focusId) {
+          const previous = store.getState().candidateTray?.context || {};
+          store.dispatch({
+            type: "universe/contextChanged",
+            context: { universeFocusId: focusId, expandedIds: Array.isArray(previous.expandedIds) ? previous.expandedIds : [] },
+          });
+        }
+      }
       appView.dataset.route = route.path;
       setCurrentNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
       const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
       if (route.path.startsWith("/tonight")) {
+        universeGate.invalidate();
         explorationGate.invalidate();
         renderTonight(store.getState());
         await restoreGate.restore(route, heading);
       } else if (route.name === "title" || route.name === "person") {
+        universeGate.invalidate();
         restoreGate.invalidate();
         await explorationGate.render(route, heading);
+      } else if (route.name === "universe") {
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        await universeGate.render();
       } else {
+        universeGate.invalidate();
         restoreGate.invalidate();
         explorationGate.invalidate();
         renderRoutePlaceholder(appView, { heading, description });
