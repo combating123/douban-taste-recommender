@@ -713,28 +713,33 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
     def test_unsafe_external_identifier_returns_single_segment_catalog_key(self):
         channel_name = next(iter(self.create_session()["channels"]))
-        created = self.create_session(
-            rated_items=[],
-            candidates_csv="",
-            candidate_items=[
-                {
-                    "title": "Unsafe external identity",
-                    "year": 2024,
-                    "media_type": channel_name,
-                    "douban_id": "provider/..\\title?token=secret#fragment%2F",
-                    "douban_rating": 9.0,
-                    "vote_count": 1000,
-                }
-            ],
-            use_sample_candidates=False,
-            batch_size=1,
-        )
-        item = created["channels"][channel_name]["batch"]["items"][0]
+        for index, identifier in enumerate(
+            ("provider/..\\title?token=secret#fragment%2F", "foo..bar", "..."),
+            start=1,
+        ):
+            with self.subTest(identifier=identifier):
+                created = self.create_session(
+                    rated_items=[],
+                    candidates_csv="",
+                    candidate_items=[
+                        {
+                            "title": f"Unsafe external identity {index}",
+                            "year": 2024,
+                            "media_type": channel_name,
+                            "douban_id": identifier,
+                            "douban_rating": 9.0,
+                            "vote_count": 1000,
+                        }
+                    ],
+                    use_sample_candidates=False,
+                    batch_size=1,
+                )
+                item = created["channels"][channel_name]["batch"]["items"][0]
 
-        self.assertRegex(item["item_key"], r"^external:[0-9a-f]{24}$")
-        self.assertFalse(any(marker in item["item_key"] for marker in ("/", "\\", "..", "?", "#", "%")))
-        title = self.get_json(f"/api/v2/titles/{item['item_key']}")
-        self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
+                self.assertRegex(item["item_key"], r"^external:[0-9a-f]{24}$")
+                self.assertFalse(any(marker in item["item_key"] for marker in ("/", "\\", "..", "?", "#", "%")))
+                title = self.get_json(f"/api/v2/titles/{item['item_key']}")
+                self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
 
     def test_create_session_rejects_malformed_language_configuration(self):
         cases = [

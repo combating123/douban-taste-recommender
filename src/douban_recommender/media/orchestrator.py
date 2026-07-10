@@ -256,18 +256,6 @@ class MediaOrchestrator:
         error = ""
         if result and result.status != "ready" and attempts:
             error = str(attempts[-1].get("error") or attempts[-1].get("status") or "")
-        with self._jobs_lock:
-            current = self._jobs.get(job_id)
-            if current is not None:
-                current.update(
-                    {
-                        "state": state,
-                        "updated_at": now,
-                        "result": result_dict,
-                        "attempts": attempts,
-                        "error": error,
-                    }
-                )
         next_retry_at = now + 30.0 if state == "degraded" else None
         with self.database.connection() as connection:
             connection.execute(
@@ -285,6 +273,18 @@ class MediaOrchestrator:
                     job_id,
                 ),
             )
+        with self._jobs_lock:
+            current = self._jobs.get(job_id)
+            if current is not None:
+                current.update(
+                    {
+                        "state": state,
+                        "updated_at": now,
+                        "result": result_dict,
+                        "attempts": attempts,
+                        "error": error,
+                    }
+                )
 
     def _worker_loop(self) -> None:
         while not self._closed.is_set():

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from douban_recommender.database import AppDatabase
+from douban_recommender.feedback_service import FeedbackEvent, FeedbackService
 from douban_recommender.intent_parser import RecommendationIntent
 from douban_recommender.models import recommendation_item_key
 from douban_recommender.recommendation_service import RecommendationSessionService
@@ -325,6 +326,108 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         self.service.undo_feedback(watched["event_id"])
         self.assertIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
         self.service.undo_feedback(not_tonight["event_id"])
+
+        self.assertNotIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
+
+    def test_undo_ignores_inert_no_session_library_feedback(self):
+        cases = (("watched", "want"), ("want", "watched"))
+        feedback = FeedbackService(self.database)
+        for index, (inert_type, materialized_type) in enumerate(cases):
+            with self.subTest(inert_type=inert_type, materialized_type=materialized_type):
+                session = self.create()
+                channel = list(pools())[index]
+                key = self.service.next_batch(session.id, channel).item_keys[0]
+                feedback.record_feedback(
+                    FeedbackEvent(
+                        event_type=inert_type,
+                        item_key=key,
+                        profile_key="profile-1",
+                        payload={"source": "inert-profile-feedback"},
+                        created_at=time.time(),
+                    )
+                )
+
+                applied = self.service.apply_feedback(session.id, materialized_type, key)
+                self.service.undo_feedback(applied["event_id"])
+
+                self.assertEqual(self._library_row(key)["state"], "candidate")
+
+    def test_inert_legacy_session_feedback_is_not_reused_or_materialized(self):
+        session = self.create()
+        channel = next(iter(pools()))
+        key = recommendation_item_key(pools()[channel]["items"][0])
+        inert_id = "legacy-inert-not-tonight"
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO feedback_events(
+                    id, profile_key, session_id, item_key, event_type,
+                    payload_json, undone_by, created_at
+                ) VALUES(?, 'profile-1', ?, ?, 'not-tonight', ?, NULL, ?)
+                """,
+                (
+                    inert_id,
+                    session.id,
+                    key,
+                    json.dumps(
+                        {
+                            "item": pools()[channel]["items"][0],
+                            "_recommendation_undo": {
+                                "state_effect": {
+                                    "source": "recommendation-session-service",
+                                    "version": "not-a-number",
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    time.time(),
+                ),
+            )
+
+        applied = self.service.apply_feedback(session.id, "not-tonight", key)
+        self.assertNotEqual(applied["event_id"], inert_id)
+        self.assertIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
+
+        self.service.undo_feedback(applied["event_id"])
+        self.assertNotIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
+
+    def test_legacy_materialized_feedback_metadata_remains_undoable(self):
+        session = self.create()
+        channel = next(iter(pools()))
+        key = recommendation_item_key(pools()[channel]["items"][0])
+        event_id = "legacy-materialized-not-tonight"
+        restored = self.service.restore_session(session.id)
+        channels = restored.channels
+        channels[channel]["excluded_keys"] = [key]
+        metadata = {
+            "prior_excluded_channels": [],
+            "prior_library": None,
+            "state_origin": None,
+            "exclusion_origin_channels": [],
+        }
+        with self.database.connection() as connection:
+            connection.execute(
+                "UPDATE recommendation_sessions SET channels_json = ? WHERE id = ?",
+                (json.dumps(channels, ensure_ascii=False), session.id),
+            )
+            connection.execute(
+                """
+                INSERT INTO feedback_events(
+                    id, profile_key, session_id, item_key, event_type,
+                    payload_json, undone_by, created_at
+                ) VALUES(?, 'profile-1', ?, ?, 'not-tonight', ?, NULL, ?)
+                """,
+                (
+                    event_id,
+                    session.id,
+                    key,
+                    json.dumps({"item": pools()[channel]["items"][0], "_recommendation_undo": metadata}, ensure_ascii=False),
+                    time.time(),
+                ),
+            )
+
+        self.service.undo_feedback(event_id)
 
         self.assertNotIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
 

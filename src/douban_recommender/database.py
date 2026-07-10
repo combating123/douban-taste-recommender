@@ -178,6 +178,8 @@ CREATE INDEX IF NOT EXISTS idx_batches_session_channel
     ON recommendation_batches(session_id, channel, batch_index);
 CREATE INDEX IF NOT EXISTS idx_feedback_profile_time
     ON feedback_events(profile_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_item_event_session_time
+    ON feedback_events(item_key, event_type, session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_provider_entity
     ON provider_identities(entity_kind, entity_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_entity
@@ -217,13 +219,22 @@ class AppDatabase:
         with self.connection() as connection:
             connection.executescript(SCHEMA_V1)
             connection.execute("BEGIN IMMEDIATE")
-            from .migrations import migrate_recommendation_item_keys
+            row = connection.execute(
+                "SELECT value FROM schema_meta WHERE key = 'version'"
+            ).fetchone()
+            try:
+                old_version = int(row[0]) if row else 0
+            except (TypeError, ValueError):
+                old_version = 0
+            if old_version < 4:
+                from .migrations import migrate_recommendation_item_keys
 
-            migrate_recommendation_item_keys(connection)
-            connection.execute(
-                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
-                (str(self.SCHEMA_VERSION),),
-            )
+                migrate_recommendation_item_keys(connection)
+            if old_version < self.SCHEMA_VERSION:
+                connection.execute(
+                    "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
+                    (str(self.SCHEMA_VERSION),),
+                )
 
     def set_meta(self, key: str, value: str) -> None:
         self.initialize()

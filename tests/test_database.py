@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from douban_recommender.catalog_api import CatalogApi
 from douban_recommender.database import AppDatabase, SCHEMA_V1
@@ -52,9 +53,16 @@ class DatabaseTests(unittest.TestCase):
                     "SELECT value FROM schema_meta WHERE key='version'"
                 ).fetchone()[0]
                 foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+                indexes = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )
+                }
             self.assertTrue(self.EXPECTED_TABLES <= names)
             self.assertEqual(version, str(AppDatabase.SCHEMA_VERSION))
             self.assertEqual(foreign_keys, 1)
+            self.assertIn("idx_feedback_item_event_session_time", indexes)
 
     def test_ui_snapshot_round_trip_uses_json(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,7 +240,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(batch.item_keys, (key,))
             self.assertEqual(batch.items[0]["item_key"], key)
             self.assertEqual(restored.channels["电影"]["excluded_keys"], [key])
-            self.assertEqual(replayed["event_id"], "legacy-feedback")
+            self.assertNotEqual(replayed["event_id"], "legacy-feedback")
             self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
 
     def test_initialize_migrates_unsafe_legacy_identity_across_relational_and_json_references(self):
@@ -295,7 +303,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(provider["entity_id"], canonical_key)
             self.assertEqual(referenced_entity_ids, {canonical_key})
             self.assertEqual(restored.channels["电影"]["excluded_keys"], [canonical_key])
-            self.assertEqual(replayed["event_id"], "legacy-feedback")
+            self.assertNotEqual(replayed["event_id"], "legacy-feedback")
             self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
 
     def test_legacy_identity_migration_is_idempotent(self):
@@ -333,6 +341,188 @@ class DatabaseTests(unittest.TestCase):
 
             self.assertEqual(second, first)
             self.assertEqual(first["library_items"], 1)
+
+    def test_identity_migration_rewrites_only_schema_identity_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "schema-aware.db"
+            legacy_key = "external:provider/foo"
+            canonical_key = recommendation_item_key({"douban_id": "provider/foo"})
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(SCHEMA_V1)
+                connection.execute("INSERT INTO schema_meta(key, value) VALUES('version', '3')")
+                connection.execute(
+                    "INSERT INTO ui_snapshots(key, payload_json, updated_at) VALUES('primary', ?, 1)",
+                    (
+                        json.dumps(
+                            {
+                                "note": legacy_key,
+                                "items_by_key": {
+                                    legacy_key: {"item_key": legacy_key, "title": "Mapped item"}
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            database = AppDatabase(path)
+            database.initialize()
+            snapshot = database.get_ui_snapshot("primary")
+
+            self.assertEqual(snapshot["note"], legacy_key)
+            self.assertNotIn(legacy_key, snapshot["items_by_key"])
+            self.assertEqual(snapshot["items_by_key"][canonical_key]["item_key"], canonical_key)
+
+    def test_identity_migration_discovers_orphan_media_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "orphan-identities.db"
+            legacy_key = "external:orphan/provider"
+            canonical_key = recommendation_item_key({"douban_id": "orphan/provider"})
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(SCHEMA_V1)
+                connection.execute("INSERT INTO schema_meta(key, value) VALUES('version', '3')")
+                connection.execute(
+                    """
+                    INSERT INTO provider_identities(
+                        entity_kind, entity_id, provider, provider_id, confidence,
+                        metadata_json, created_at, updated_at
+                    ) VALUES('media', ?, 'orphan', 'provider-id', 1, '{}', 1, 1)
+                    """,
+                    (legacy_key,),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO asset_candidates(
+                        id, entity_kind, entity_id, kind, source, url, confidence,
+                        status, metadata_json, created_at, updated_at
+                    ) VALUES('orphan-asset', 'media', ?, 'poster', 'test', '', 0, 'missing', '{}', 1, 1)
+                    """,
+                    (legacy_key,),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO resolution_jobs(
+                        id, entity_kind, entity_id, kind, priority, state,
+                        current_source, attempts_json, error, next_retry_at, created_at, updated_at
+                    ) VALUES('orphan-job', 'media', ?, 'poster', 0, 'done', '', '[]', '', NULL, 1, 1)
+                    """,
+                    (legacy_key,),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO user_asset_overrides(
+                        id, entity_kind, entity_id, kind, asset_id, decision, created_at, updated_at
+                    ) VALUES('orphan-override', 'media', ?, 'poster', NULL, 'rejected', 1, 1)
+                    """,
+                    (legacy_key,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            database = AppDatabase(path)
+            database.initialize()
+            with database.connection() as connection:
+                entity_ids = {
+                    connection.execute(f"SELECT entity_id FROM {table}").fetchone()["entity_id"]
+                    for table in (
+                        "provider_identities",
+                        "asset_candidates",
+                        "resolution_jobs",
+                        "user_asset_overrides",
+                    )
+                }
+
+            self.assertEqual(entity_ids, {canonical_key})
+
+    def test_initialize_runs_v4_identity_migration_only_for_older_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "version-gate.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(SCHEMA_V1)
+                connection.execute("INSERT INTO schema_meta(key, value) VALUES('version', '3')")
+                connection.commit()
+            finally:
+                connection.close()
+
+            from douban_recommender import migrations as migrations_module
+
+            database = AppDatabase(path)
+            with patch.object(
+                migrations_module,
+                "migrate_recommendation_item_keys",
+                wraps=migrations_module.migrate_recommendation_item_keys,
+            ) as migration:
+                database.initialize()
+                self.assertEqual(migration.call_count, 1)
+                migration.reset_mock()
+                database.initialize()
+                migration.assert_not_called()
+
+    def test_initialize_skips_v4_migration_for_current_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "current-version.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(SCHEMA_V1)
+                connection.execute(
+                    "INSERT INTO schema_meta(key, value) VALUES('version', ?)",
+                    (str(AppDatabase.SCHEMA_VERSION),),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with patch(
+                "douban_recommender.migrations.migrate_recommendation_item_keys",
+                side_effect=AssertionError("migration must be skipped"),
+            ) as migration:
+                AppDatabase(path).initialize()
+                migration.assert_not_called()
+
+    def test_failed_v4_migration_rolls_back_without_upgrading_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "failed-version.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.executescript(SCHEMA_V1)
+                connection.execute("INSERT INTO schema_meta(key, value) VALUES('version', '3')")
+                connection.commit()
+            finally:
+                connection.close()
+
+            def fail_migration(connection):
+                connection.execute(
+                    "INSERT INTO ui_snapshots(key, payload_json, updated_at) VALUES('partial', '{}', 1)"
+                )
+                raise RuntimeError("migration failed")
+
+            with patch(
+                "douban_recommender.migrations.migrate_recommendation_item_keys",
+                side_effect=fail_migration,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "migration failed"):
+                    AppDatabase(path).initialize()
+
+            connection = sqlite3.connect(path)
+            try:
+                version = connection.execute(
+                    "SELECT value FROM schema_meta WHERE key = 'version'"
+                ).fetchone()[0]
+                partial = connection.execute(
+                    "SELECT COUNT(*) FROM ui_snapshots WHERE key = 'partial'"
+                ).fetchone()[0]
+            finally:
+                connection.close()
+
+            self.assertEqual(version, "3")
+            self.assertEqual(partial, 0)
 
 
 if __name__ == "__main__":

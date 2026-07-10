@@ -15,6 +15,15 @@ _FEEDBACK_LIBRARY_STATES = {"watched": "watched", "want": "wanted"}
 _FEEDBACK_EXCLUSION_EVENTS = {"not-tonight", "watched"}
 _ALLOWED_FEEDBACK_EVENTS = set(_FEEDBACK_LIBRARY_STATES) | _FEEDBACK_EXCLUSION_EVENTS
 _UNDO_METADATA_KEY = "_recommendation_undo"
+_STATE_EFFECT_KEY = "state_effect"
+_STATE_EFFECT_SOURCE = "recommendation-session-service"
+_STATE_EFFECT_VERSION = 1
+_LEGACY_EFFECT_KEYS = {
+    "prior_excluded_channels",
+    "prior_library",
+    "state_origin",
+    "exclusion_origin_channels",
+}
 
 
 @dataclass(frozen=True)
@@ -91,9 +100,15 @@ def _scrub_dict(value: object) -> dict[str, object]:
     return scrubbed if isinstance(scrubbed, dict) else {}
 
 
-def _undone_event_ids(connection) -> set[str]:
+def _undone_event_ids(connection, item_key: str | None = None) -> set[str]:
+    where = "WHERE event_type = 'undo'"
+    params: tuple[object, ...] = ()
+    if item_key is not None:
+        where += " AND item_key = ?"
+        params = (str(item_key),)
     rows = connection.execute(
-        "SELECT payload_json FROM feedback_events WHERE event_type = 'undo'"
+        f"SELECT payload_json FROM feedback_events {where}",
+        params,
     ).fetchall()
     return {
         target
@@ -122,15 +137,16 @@ def _active_feedback_rows(connection, item_key: str, event_types: set[str], sess
         SELECT id, session_id, item_key, event_type, payload_json, undone_by, created_at
         FROM feedback_events
         WHERE item_key = ? AND event_type IN ({placeholders}){session_filter}
+          AND COALESCE(undone_by, '') = ''
         ORDER BY created_at, id
         """,
         params,
     ).fetchall()
-    undone_ids = _undone_event_ids(connection)
+    undone_ids = _undone_event_ids(connection, item_key)
     return [
         row
         for row in rows
-        if not str(row["undone_by"] or "") and str(row["id"]) not in undone_ids
+        if str(row["id"]) not in undone_ids and _is_materialized_feedback_row(row)
     ]
 
 
@@ -138,6 +154,28 @@ def _feedback_metadata(row) -> dict[str, object]:
     payload = _json_object(row["payload_json"])
     metadata = payload.get(_UNDO_METADATA_KEY)
     return metadata if isinstance(metadata, dict) else {}
+
+
+def _is_materialized_feedback_row(row) -> bool:
+    metadata = _feedback_metadata(row)
+    marker = metadata.get(_STATE_EFFECT_KEY)
+    if isinstance(marker, dict):
+        try:
+            version = int(marker.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        return (
+            str(marker.get("source") or "") == _STATE_EFFECT_SOURCE
+            and version == _STATE_EFFECT_VERSION
+        )
+    if not _LEGACY_EFFECT_KEYS.issubset(metadata):
+        return False
+    return (
+        isinstance(metadata.get("prior_excluded_channels"), list)
+        and isinstance(metadata.get("exclusion_origin_channels"), list)
+        and (metadata.get("prior_library") is None or isinstance(metadata.get("prior_library"), dict))
+        and (metadata.get("state_origin") is None or isinstance(metadata.get("state_origin"), dict))
+    )
 
 
 def _chain_origin(rows, origin_key: str, legacy_key: str, fallback):
@@ -470,10 +508,10 @@ class RecommendationSessionService:
 
                 state = _FEEDBACK_LIBRARY_STATES.get(clean_event_type, "")
                 excluded = clean_event_type in _FEEDBACK_EXCLUSION_EVENTS
-                undone_ids = _undone_event_ids(connection)
+                undone_ids = _undone_event_ids(connection, clean_item_key)
                 existing_rows = connection.execute(
                     """
-                    SELECT id, undone_by FROM feedback_events
+                    SELECT id, payload_json, undone_by FROM feedback_events
                     WHERE session_id = ? AND item_key = ? AND event_type = ?
                     ORDER BY created_at DESC, id DESC
                     """,
@@ -483,7 +521,9 @@ class RecommendationSessionService:
                     (
                         candidate
                         for candidate in existing_rows
-                        if not str(candidate["undone_by"] or "") and str(candidate["id"]) not in undone_ids
+                        if not str(candidate["undone_by"] or "")
+                        and str(candidate["id"]) not in undone_ids
+                        and _is_materialized_feedback_row(candidate)
                     ),
                     None,
                 )
@@ -568,6 +608,10 @@ class RecommendationSessionService:
                     event_payload = _scrub_dict(dict(payload or {}))
                     event_payload["item"] = item_payload
                     event_payload[_UNDO_METADATA_KEY] = {
+                        _STATE_EFFECT_KEY: {
+                            "source": _STATE_EFFECT_SOURCE,
+                            "version": _STATE_EFFECT_VERSION,
+                        },
                         "prior_excluded_channels": prior_excluded_channels,
                         "prior_library": prior_library,
                         "state_origin": state_origin,
@@ -620,7 +664,11 @@ class RecommendationSessionService:
                     raise ValueError("feedback event not found")
                 session_id = str(row["session_id"] or "")
                 event_type = str(row["event_type"] or "")
-                if not session_id or event_type not in _ALLOWED_FEEDBACK_EVENTS:
+                if (
+                    not session_id
+                    or event_type not in _ALLOWED_FEEDBACK_EVENTS
+                    or not _is_materialized_feedback_row(row)
+                ):
                     return None
                 if str(row["undone_by"] or ""):
                     return str(row["undone_by"])

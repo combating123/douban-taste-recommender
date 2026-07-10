@@ -7,6 +7,14 @@ from typing import Any
 
 
 _SAFE_EXTERNAL_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._~-]+$")
+_SAFE_ROUTE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9:._~-]+$")
+
+
+def is_safe_route_segment(value: object) -> bool:
+    text = str(value or "")
+    if not text or text != text.strip() or text in {".", ".."} or ".." in text:
+        return False
+    return bool(_SAFE_ROUTE_SEGMENT_RE.fullmatch(text))
 
 
 def _clean_list(values: list[str] | None) -> list[str]:
@@ -127,7 +135,7 @@ def recommendation_item_key(item: MediaItem | dict[str, Any]) -> str:
     if identifier:
         if identifier.isdigit():
             return f"douban:{identifier}"
-        if identifier not in {".", ".."} and _SAFE_EXTERNAL_IDENTIFIER_RE.fullmatch(identifier):
+        if _SAFE_EXTERNAL_IDENTIFIER_RE.fullmatch(identifier) and is_safe_route_segment(identifier):
             return f"external:{identifier}"
         opaque_identifier = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:24]
         return f"external:{opaque_identifier}"

@@ -99,30 +99,118 @@ def _json_value(value, fallback):
         return fallback
 
 
-def _collect_legacy_key_mappings(value, mappings: dict[str, str]) -> None:
+_IDENTITY_SCALAR_FIELDS = {
+    "item_key",
+    "itemkey",
+    "media_id",
+    "mediaid",
+    "entity_id",
+    "entityid",
+}
+_IDENTITY_LIST_FIELDS = {"item_keys", "itemkeys", "excluded_keys", "excludedkeys"}
+_IDENTITY_MAP_FIELDS = {
+    "items_by_key",
+    "itemsbykey",
+    "library_by_key",
+    "librarybykey",
+    "titles_by_key",
+    "titlesbykey",
+    "media_by_key",
+    "mediabykey",
+}
+
+
+def _normalized_field_name(value: object) -> str:
+    return str(value or "").strip().replace("-", "_").casefold()
+
+
+def _collect_legacy_key(value: object, mappings: dict[str, str]) -> None:
+    if not isinstance(value, str) or not value.startswith("external:"):
+        return
+    canonical = recommendation_item_key({"douban_id": value.removeprefix("external:")})
+    if canonical != value:
+        mappings[value] = canonical
+
+
+def _collect_known_identity_mappings(
+    value,
+    mappings: dict[str, str],
+    *,
+    context: str = "object",
+) -> None:
+    if context == "identity_value":
+        _collect_legacy_key(value, mappings)
+        return
+    if context == "identity_list":
+        if isinstance(value, (list, tuple)):
+            for nested in value:
+                _collect_legacy_key(nested, mappings)
+        return
+    if context == "identity_map":
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                _collect_legacy_key(str(key), mappings)
+                _collect_known_identity_mappings(nested, mappings)
+        return
     if isinstance(value, dict):
-        for nested in value.values():
-            _collect_legacy_key_mappings(nested, mappings)
+        for key, nested in value.items():
+            field = _normalized_field_name(key)
+            if field in _IDENTITY_SCALAR_FIELDS:
+                _collect_known_identity_mappings(nested, mappings, context="identity_value")
+            elif field in _IDENTITY_LIST_FIELDS:
+                _collect_known_identity_mappings(nested, mappings, context="identity_list")
+            elif field in _IDENTITY_MAP_FIELDS:
+                _collect_known_identity_mappings(nested, mappings, context="identity_map")
+            elif isinstance(nested, (dict, list, tuple)):
+                _collect_known_identity_mappings(nested, mappings)
         return
     if isinstance(value, (list, tuple)):
         for nested in value:
-            _collect_legacy_key_mappings(nested, mappings)
-        return
-    if isinstance(value, str) and value.startswith("external:"):
-        canonical = recommendation_item_key({"douban_id": value.removeprefix("external:")})
-        if canonical != value:
-            mappings[value] = canonical
+            if isinstance(nested, (dict, list, tuple)):
+                _collect_known_identity_mappings(nested, mappings)
 
 
-def _rewrite_legacy_keys(value, mappings: dict[str, str]):
+def _rewrite_known_identity_fields(value, mappings: dict[str, str], *, context: str = "object"):
+    if context == "identity_value":
+        return mappings.get(value, value) if isinstance(value, str) else value
+    if context == "identity_list":
+        if not isinstance(value, (list, tuple)):
+            return value
+        return [mappings.get(nested, nested) if isinstance(nested, str) else nested for nested in value]
+    if context == "identity_map":
+        if not isinstance(value, dict):
+            return value
+        rewritten: dict[str, object] = {}
+        for key, nested in value.items():
+            clean_key = str(key)
+            canonical_key = mappings.get(clean_key, clean_key)
+            clean_value = _rewrite_known_identity_fields(nested, mappings)
+            if canonical_key not in rewritten or clean_key == canonical_key:
+                rewritten[canonical_key] = clean_value
+        return rewritten
     if isinstance(value, dict):
-        return {str(key): _rewrite_legacy_keys(nested, mappings) for key, nested in value.items()}
-    if isinstance(value, list):
-        return [_rewrite_legacy_keys(nested, mappings) for nested in value]
-    if isinstance(value, tuple):
-        return [_rewrite_legacy_keys(nested, mappings) for nested in value]
-    if isinstance(value, str):
-        return mappings.get(value, value)
+        rewritten: dict[str, object] = {}
+        for key, nested in value.items():
+            field = _normalized_field_name(key)
+            if field in _IDENTITY_SCALAR_FIELDS:
+                clean_value = _rewrite_known_identity_fields(nested, mappings, context="identity_value")
+            elif field in _IDENTITY_LIST_FIELDS:
+                clean_value = _rewrite_known_identity_fields(nested, mappings, context="identity_list")
+            elif field in _IDENTITY_MAP_FIELDS:
+                clean_value = _rewrite_known_identity_fields(nested, mappings, context="identity_map")
+            elif isinstance(nested, (dict, list, tuple)):
+                clean_value = _rewrite_known_identity_fields(nested, mappings)
+            else:
+                clean_value = nested
+            rewritten[str(key)] = clean_value
+        return rewritten
+    if isinstance(value, (list, tuple)):
+        return [
+            _rewrite_known_identity_fields(nested, mappings)
+            if isinstance(nested, (dict, list, tuple))
+            else nested
+            for nested in value
+        ]
     return value
 
 
@@ -133,33 +221,41 @@ def _encoded_json(value) -> str:
 def migrate_recommendation_item_keys(connection) -> int:
     """Canonicalize unsafe legacy external keys in one caller-owned transaction."""
     mappings: dict[str, str] = {}
-    for table, column in (
-        ("library_items", "item_key"),
-        ("feedback_events", "item_key"),
-        ("sync_items", "item_key"),
-        ("media_identities", "id"),
+    for table, column, where in (
+        ("library_items", "item_key", ""),
+        ("feedback_events", "item_key", ""),
+        ("sync_items", "item_key", ""),
+        ("media_identities", "id", ""),
+        ("provider_identities", "entity_id", " WHERE entity_kind = 'media'"),
+        ("asset_candidates", "entity_id", " WHERE entity_kind = 'media'"),
+        ("resolution_jobs", "entity_id", " WHERE entity_kind = 'media'"),
+        ("user_asset_overrides", "entity_id", " WHERE entity_kind = 'media'"),
     ):
-        for row in connection.execute(f"SELECT {column} FROM {table}").fetchall():
-            _collect_legacy_key_mappings(str(row[column]), mappings)
+        for row in connection.execute(f"SELECT {column} FROM {table}{where}").fetchall():
+            _collect_legacy_key(str(row[column]), mappings)
     json_columns = (
-        ("ui_snapshots", "payload_json"),
-        ("recommendation_sessions", "channels_json"),
-        ("recommendation_batches", "item_keys_json"),
-        ("recommendation_batches", "payload_json"),
-        ("feedback_events", "payload_json"),
-        ("library_items", "payload_json"),
-        ("sync_items", "payload_json"),
-        ("media_identities", "metadata_json"),
-        ("person_identities", "metadata_json"),
-        ("provider_identities", "metadata_json"),
-        ("asset_candidates", "metadata_json"),
-        ("resolution_jobs", "attempts_json"),
-        ("sync_jobs", "request_json"),
-        ("sync_jobs", "result_json"),
+        ("ui_snapshots", "payload_json", "object"),
+        ("recommendation_sessions", "channels_json", "object"),
+        ("recommendation_batches", "item_keys_json", "identity_list"),
+        ("recommendation_batches", "payload_json", "object"),
+        ("feedback_events", "payload_json", "object"),
+        ("library_items", "payload_json", "object"),
+        ("sync_items", "payload_json", "object"),
+        ("media_identities", "metadata_json", "object"),
+        ("person_identities", "metadata_json", "object"),
+        ("provider_identities", "metadata_json", "object"),
+        ("asset_candidates", "metadata_json", "object"),
+        ("resolution_jobs", "attempts_json", "object"),
+        ("sync_jobs", "request_json", "object"),
+        ("sync_jobs", "result_json", "object"),
     )
-    for table, column in json_columns:
+    for table, column, context in json_columns:
         for row in connection.execute(f"SELECT {column} FROM {table}").fetchall():
-            _collect_legacy_key_mappings(_json_value(row[column], {}), mappings)
+            _collect_known_identity_mappings(
+                _json_value(row[column], {}),
+                mappings,
+                context=context,
+            )
     if not mappings:
         return 0
 
@@ -187,7 +283,7 @@ def migrate_recommendation_item_keys(connection) -> int:
             (str(candidate["state"] or "candidate") for candidate in rows),
             key=lambda value: ({"watched": 3, "wanted": 2, "candidate": 1}.get(value, 0), value),
         )
-        payload = _rewrite_legacy_keys(_json_value(payload_winner["payload_json"], {}), mappings)
+        payload = _rewrite_known_identity_fields(_json_value(payload_winner["payload_json"], {}), mappings)
         connection.executemany(
             "DELETE FROM library_items WHERE item_key = ?",
             [(str(candidate["item_key"]),) for candidate in rows],
@@ -228,7 +324,7 @@ def migrate_recommendation_item_keys(connection) -> int:
                 str(candidate["id"]),
             ),
         )
-        metadata = _rewrite_legacy_keys(_json_value(winner["metadata_json"], {}), mappings)
+        metadata = _rewrite_known_identity_fields(_json_value(winner["metadata_json"], {}), mappings)
         connection.executemany(
             "DELETE FROM media_identities WHERE id = ?",
             [(str(candidate["id"]),) for candidate in rows],
@@ -308,7 +404,7 @@ def migrate_recommendation_item_keys(connection) -> int:
         if len(rows) == 1 and str(rows[0]["item_key"]) == canonical_key:
             continue
         winner = max(rows, key=lambda candidate: (str(candidate["item_key"]) == canonical_key, str(candidate["item_key"])))
-        payload = _rewrite_legacy_keys(_json_value(winner["payload_json"], {}), mappings)
+        payload = _rewrite_known_identity_fields(_json_value(winner["payload_json"], {}), mappings)
         connection.executemany(
             "DELETE FROM sync_items WHERE job_id = ? AND item_key = ?",
             [(job_id, str(candidate["item_key"])) for candidate in rows],
@@ -318,7 +414,7 @@ def migrate_recommendation_item_keys(connection) -> int:
             (job_id, canonical_key, _encoded_json(payload), str(winner["source"]), str(winner["status"])),
         )
 
-    for table, column in json_columns:
+    for table, column, context in json_columns:
         rows = connection.execute(
             f"SELECT rowid AS migration_rowid, {column} FROM {table}"
         ).fetchall()
@@ -326,7 +422,7 @@ def migrate_recommendation_item_keys(connection) -> int:
             decoded = _json_value(row[column], None)
             if decoded is None:
                 continue
-            rewritten = _rewrite_legacy_keys(decoded, mappings)
+            rewritten = _rewrite_known_identity_fields(decoded, mappings, context=context)
             if rewritten != decoded:
                 connection.execute(
                     f"UPDATE {table} SET {column} = ? WHERE rowid = ?",

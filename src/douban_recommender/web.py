@@ -21,7 +21,7 @@ from .douban_sources import needs_external_poster_rescue, poster_source_config_f
 from .douban_sources import build_url_opener
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .media_api import MediaApi, build_default_media_api
-from .models import MediaItem
+from .models import MediaItem, is_safe_route_segment
 from .profiler import build_taste_profile
 from .recommendation_api import RecommendationApi, RecommendationApiError, build_default_recommendation_api
 from .recommender import recommend
@@ -699,13 +699,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(data, status=404 if data.get("error") else 200)
             elif path.startswith("/api/v2/titles/"):
                 title_id = path.removeprefix("/api/v2/titles/").strip("/")
-                if not title_id or "/" in title_id or "\\" in title_id or ".." in title_id:
+                if not is_safe_route_segment(title_id):
                     self.send_json(catalog_error_payload("not found"), status=404)
                     return
                 self.send_json(get_catalog_api().get_title(title_id))
             elif path.startswith("/api/v2/people/"):
                 person_id = path.removeprefix("/api/v2/people/").strip("/")
-                if not person_id or "/" in person_id or "\\" in person_id or ".." in person_id:
+                if not is_safe_route_segment(person_id):
                     self.send_json(catalog_error_payload("not found"), status=404)
                     return
                 self.send_json(get_catalog_api().get_person(person_id))

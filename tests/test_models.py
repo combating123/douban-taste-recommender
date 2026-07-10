@@ -1,7 +1,12 @@
 import unittest
 import re
 
-from douban_recommender.models import MediaItem, canonical_media_type, recommendation_item_key
+from douban_recommender.models import (
+    MediaItem,
+    canonical_media_type,
+    is_safe_route_segment,
+    recommendation_item_key,
+)
 
 
 class MediaModelCanonicalizationTests(unittest.TestCase):
@@ -56,6 +61,17 @@ class MediaModelCanonicalizationTests(unittest.TestCase):
         item = MediaItem(title="Legacy safe external", douban_id="movie-1")
 
         self.assertEqual(recommendation_item_key(item), "external:movie-1")
+
+    def test_route_segment_validation_matches_external_key_preservation(self):
+        self.assertTrue(is_safe_route_segment("external:movie-1"))
+        self.assertTrue(is_safe_route_segment("douban:35280649"))
+
+        for unsafe in ("foo..bar", "...", ".", "..", "a/b", "a\\b", "a?b", "a#b", "a%b", "a\x00b"):
+            with self.subTest(unsafe=unsafe):
+                self.assertFalse(is_safe_route_segment(unsafe))
+                key = recommendation_item_key(MediaItem(title="Unsafe", douban_id=unsafe))
+                self.assertRegex(key, r"^external:[0-9a-f]{24}$")
+                self.assertTrue(is_safe_route_segment(key))
 
 
 if __name__ == "__main__":
