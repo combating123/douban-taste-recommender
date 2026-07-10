@@ -116,6 +116,7 @@ git commit -m "feat: add modular cinescope v3 shell"
 - Create: `src/douban_recommender/ui/js/core/dom.js`
 - Create: `src/douban_recommender/ui/styles/shell.css`
 - Create: `tests/test_ui_v3_contract.py`
+- Modify: `src/douban_recommender/ui/index.html`
 - Modify: `src/douban_recommender/ui/js/app.js`
 
 **Interfaces:**
@@ -199,6 +200,8 @@ export function backendChannel(routeSlug) {
 
 Use classes `rail-collapsed` and `rail-hidden`; expose buttons with `aria-expanded`. On screens below 720px, replace the rail with a five-item bottom navigation.
 
+Load `styles/shell.css` from `index.html` after `styles/tokens.css` so shell overrides are deterministic without runtime stylesheet injection.
+
 - [ ] **Step 5: Run syntax and contract tests**
 
 Run: `python -m unittest tests.test_ui_v3_contract -v; Get-ChildItem src/douban_recommender/ui/js -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }`
@@ -208,7 +211,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add src/douban_recommender/ui/js/core src/douban_recommender/ui/js/app.js src/douban_recommender/ui/styles/shell.css tests/test_ui_v3_contract.py
+git add src/douban_recommender/ui/js/core src/douban_recommender/ui/index.html src/douban_recommender/ui/js/app.js src/douban_recommender/ui/styles/shell.css tests/test_ui_v3_contract.py
 git commit -m "feat: add restorable cinescope navigation"
 ```
 
