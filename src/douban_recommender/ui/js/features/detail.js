@@ -298,26 +298,39 @@ function recoveryPanel(titleId, retry) {
   return panel;
 }
 
-function swapPreparedView(root, view) {
-  if (!root) return false;
-  let updated = false;
-  const update = () => { updated = true; root.replaceChildren(view); };
-  if (typeof document.startViewTransition === "function") {
-    try {
-      document.startViewTransition(update);
-      return true;
-    } catch {
-      if (updated) return true;
-    }
+async function swapPreparedView(root, view, isCurrent = () => true) {
+  if (!root || !view || !isCurrent()) return false;
+  let committed = false;
+  const update = () => {
+    if (committed || !isCurrent()) return false;
+    root.replaceChildren(view);
+    committed = true;
+    return true;
+  };
+  if (typeof document.startViewTransition !== "function") return update();
+  let transition;
+  try {
+    transition = document.startViewTransition(update);
+  } catch {
+    return committed || update();
   }
-  update();
-  return true;
+  const updateDone = transition?.updateCallbackDone || transition?.finished;
+  if (transition?.finished && transition.finished !== updateDone) void Promise.resolve(transition.finished).catch(() => {});
+  if (!updateDone || typeof updateDone.then !== "function") return committed || update();
+  try {
+    await updateDone;
+  } catch {
+    if (!committed && isCurrent()) return update();
+    return committed;
+  }
+  return committed;
 }
 
-function commitView(view, meta, options = {}) {
+async function commitView(view, meta, options = {}) {
   if (options.signal?.aborted || (typeof options.isCurrent === "function" && !options.isCurrent())) return false;
-  if (typeof options.commit === "function") return options.commit(view, meta);
-  return swapPreparedView(options.root || dependencies.root, view);
+  if (typeof options.commit === "function") return Boolean(await options.commit(view, meta));
+  const isCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => !options.signal?.aborted;
+  return swapPreparedView(options.root || dependencies.root, view, isCurrent);
 }
 
 async function boundedUniverse(titleId, signal) {
@@ -389,15 +402,15 @@ export async function renderTitleDetail(titleId, options = {}) {
     if (options.signal?.aborted || (typeof options.isCurrent === "function" && !options.isCurrent())) return null;
     const universe = await universePromise;
     if (options.signal?.aborted || (typeof options.isCurrent === "function" && !options.isCurrent())) return null;
-    setPersonContext(title);
     const page = renderDetailPage(title, universe || {});
-    commitView(page, { heading: textValue(title?.title, "作品详情") }, options);
+    const committed = await commitView(page, { heading: textValue(title?.title, "作品详情") }, options);
+    if (!committed) return null;
+    setPersonContext(title);
     void prefetchVisiblePeople(title);
     return page;
   } catch (error) {
     if (options.signal?.aborted || error?.name === "AbortError") return null;
     const recovery = recoveryPanel(cleanId, () => { void renderTitleDetail(cleanId, options); });
-    commitView(recovery, { heading: "作品详情恢复" }, options);
-    return recovery;
+    return await commitView(recovery, { heading: "作品详情恢复" }, options) ? recovery : null;
   }
 }

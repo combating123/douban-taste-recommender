@@ -5,7 +5,7 @@ import { createStore, persistUiState, restoreUiState } from "./core/store.js";
 import { configureCommandLens, openCommandLens, syncCommandLensState } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
-import { configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
+import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
 
 const APP_ROUTES = [
   { pattern: "/tonight", name: "tonight" },
@@ -255,6 +255,10 @@ function bindNavigation(router) {
   });
 }
 
+export function prepareRouteChange() {
+  closePersonSheet();
+}
+
 function explorationRecovery(route, retry) {
   if (typeof document.createElement !== "function") return { className: "route-recovery", route: route.path };
   const panel = document.createElement("section");
@@ -277,18 +281,35 @@ function explorationRecovery(route, retry) {
   return panel;
 }
 
-function replacePreparedView(root, view) {
-  let updated = false;
-  const update = () => { updated = true; root.replaceChildren(view); };
-  if (typeof document.startViewTransition === "function") {
-    try {
-      document.startViewTransition(update);
-      return;
-    } catch {
-      if (updated) return;
-    }
+async function replacePreparedView(root, view, isCurrent = () => true) {
+  if (!root || !view || !isCurrent()) return false;
+  let committed = false;
+  const update = () => {
+    if (committed || !isCurrent()) return false;
+    root.replaceChildren(view);
+    committed = true;
+    return true;
+  };
+  if (typeof document.startViewTransition !== "function") return update();
+
+  let transition;
+  try {
+    transition = document.startViewTransition(update);
+  } catch {
+    return committed || update();
   }
-  update();
+  const updateDone = transition?.updateCallbackDone || transition?.finished;
+  if (transition?.finished && transition.finished !== updateDone) {
+    void Promise.resolve(transition.finished).catch(() => {});
+  }
+  if (!updateDone || typeof updateDone.then !== "function") return committed || update();
+  try {
+    await updateDone;
+  } catch {
+    if (!committed && isCurrent()) return update();
+    return committed;
+  }
+  return committed;
 }
 
 export function createExplorationRouteGate({
@@ -318,9 +339,10 @@ export function createExplorationRouteGate({
       && generation === requestGeneration
       && getActivePath() === expectedPath
     );
-    const commit = (view, meta = {}) => {
+    const commit = async (view, meta = {}) => {
       if (!isCurrent() || !root || !view) return false;
-      replacePreparedView(root, view);
+      const committed = await replacePreparedView(root, view, isCurrent);
+      if (!committed || !isCurrent()) return false;
       setStatus(`CineScope 正在浏览：${textValue(meta.heading, fallbackHeading)}`);
       return true;
     };
@@ -335,7 +357,7 @@ export function createExplorationRouteGate({
     } catch {
       if (!isCurrent()) return null;
       const recovery = explorationRecovery(route, () => { void render(route, fallbackHeading); });
-      commit(recovery, { heading: fallbackHeading });
+      await commit(recovery, { heading: fallbackHeading });
       return recovery;
     } finally {
       if (controller === requestController) controller = null;
@@ -394,6 +416,7 @@ export function bootstrapCineScopeShell() {
 
   const router = createRouter(APP_ROUTES, {
     onRoute: async (route) => {
+      prepareRouteChange();
       store.dispatch({ type: "route/changed", route });
       appView.dataset.route = route.path;
       setCurrentNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);

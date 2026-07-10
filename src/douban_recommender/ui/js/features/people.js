@@ -51,6 +51,21 @@ export function setPersonContext(title = null) {
   titleContext = title && typeof title === "object" ? title : null;
 }
 
+function canRestoreFocus(trigger) {
+  if (!trigger || typeof trigger.focus !== "function" || trigger.isConnected === false || trigger.disabled === true || trigger.hidden === true) return false;
+  if (trigger.inert === true) return false;
+  const ariaHidden = typeof trigger.getAttribute === "function" ? trigger.getAttribute("aria-hidden") : null;
+  return ariaHidden !== "true";
+}
+
+export function closePersonSheet({ restoreFocus = true } = {}) {
+  const close = closeActiveSheet;
+  if (typeof close !== "function") return false;
+  closeActiveSheet = null;
+  close({ restoreFocus });
+  return true;
+}
+
 function contextPerson(personId) {
   const people = Array.isArray(titleContext?.people) ? titleContext.people : [];
   return people.find((person) => textValue(person?.id) === personId) || null;
@@ -67,16 +82,17 @@ function personRoute(personId) {
   return cleanId ? `/person/${cleanId}` : "";
 }
 
-function titleContextLink() {
+function titleContextLink(onNavigate = () => {}) {
   const route = titleRouteForItem(titleContext || {});
   if (!route) return null;
   const link = element("a", "person-origin__link", `返回《${textValue(titleContext?.title, "当前作品")}》`);
   link.setAttribute("href", route);
   link.setAttribute("data-route", "");
+  link.addEventListener("click", onNavigate);
   return link;
 }
 
-function renderOriginContext(personId, compact = false) {
+function renderOriginContext(personId, compact = false, onNavigate = () => {}) {
   const context = element("div", compact ? "person-origin person-origin--compact" : "person-origin");
   const matched = contextPerson(personId);
   const workTitle = textValue(titleContext?.title);
@@ -85,7 +101,7 @@ function renderOriginContext(personId, compact = false) {
       element("p", "eyebrow", "ORIGIN TITLE / 原作品上下文"),
       element("p", "person-origin__copy", `${roleLabel(matched?.role)} · 《${workTitle}》`),
     );
-    const link = titleContextLink();
+    const link = titleContextLink(onNavigate);
     if (link) context.append(link);
   } else {
     context.append(element("p", "person-origin__copy", "资料有限：当前没有可确认的原作品上下文。"));
@@ -108,16 +124,34 @@ function renderPersonIdentity(person, { compact = false } = {}) {
   return identity;
 }
 
-function sheetContent(personId, person, onNavigate = () => {}) {
-  const content = element("div", "person-sheet__content");
-  content.append(renderPersonIdentity(person, { compact: true }));
+function sheetActions(personId, onNavigate = () => {}) {
   const actions = element("div", "person-sheet__actions");
   const fullPage = element("a", "person-sheet__full-link", "进入人物全页");
   fullPage.setAttribute("href", personRoute(personId));
   fullPage.setAttribute("data-route", "");
   fullPage.addEventListener("click", onNavigate);
   actions.append(fullPage);
-  content.append(actions, renderOriginContext(personId, true));
+  return actions;
+}
+
+function sheetContent(personId, person, onNavigate = () => {}) {
+  const content = element("div", "person-sheet__content");
+  content.append(
+    renderPersonIdentity(person, { compact: true }),
+    sheetActions(personId, onNavigate),
+    renderOriginContext(personId, true, onNavigate),
+  );
+  return content;
+}
+
+function sheetFailureContent(personId, onNavigate = () => {}) {
+  const content = element("div", "person-sheet__content person-sheet__content--failure");
+  const failure = element("div", "person-sheet__failure");
+  failure.append(
+    element("strong", "person-sheet__failure-title", "人物资料暂时无法读取"),
+    element("p", "person-sheet__failure-copy", "原作品上下文仍保留在此处，可继续进入人物全页或返回原作品。"),
+  );
+  content.append(failure, sheetActions(personId, onNavigate), renderOriginContext(personId, true, onNavigate));
   return content;
 }
 
@@ -142,13 +176,14 @@ function fallbackPerson(personId) {
 export async function openPersonSheet(personId, originRect = null) {
   const cleanId = apiRouteSegment(personId);
   if (!cleanId) return null;
-  closeActiveSheet?.();
+  closePersonSheet({ restoreFocus: false });
 
   const overlayRoot = dependencies.overlayRoot || document.getElementById("overlay-root");
   if (!overlayRoot) return null;
   const trigger = document.activeElement;
   const generation = sheetGeneration + 1;
   sheetGeneration = generation;
+  const fetchController = new AbortController();
 
   const backdrop = element("div", "person-sheet-backdrop person-sheet-backdrop--enter");
   const sheet = element("section", "person-sheet");
@@ -173,15 +208,16 @@ export async function openPersonSheet(personId, originRect = null) {
   overlayRoot.replaceChildren(backdrop);
 
   let closed = false;
-  close = () => {
+  close = ({ restoreFocus = true } = {}) => {
     if (closed) return;
     closed = true;
     sheetGeneration += 1;
+    fetchController.abort();
     document.removeEventListener("keydown", onKeyDown);
     backdrop.classList?.add("person-sheet-backdrop--leave");
     backdrop.remove();
-    closeActiveSheet = null;
-    if (trigger && typeof trigger.focus === "function") trigger.focus();
+    if (closeActiveSheet === close) closeActiveSheet = null;
+    if (restoreFocus && canRestoreFocus(trigger)) trigger.focus();
   };
   const onKeyDown = (event) => {
     if (event.key === "Escape") close();
@@ -195,19 +231,13 @@ export async function openPersonSheet(personId, originRect = null) {
   closeButton.focus?.();
 
   try {
-    const person = await dependencies.fetchJson(`/api/v2/people/${cleanId}`);
+    const person = await dependencies.fetchJson(`/api/v2/people/${cleanId}`, { signal: fetchController.signal });
     if (closed || generation !== sheetGeneration) return null;
     body.replaceChildren(sheetContent(cleanId, person, () => close()));
     return person;
   } catch {
     if (closed || generation !== sheetGeneration) return null;
-    const failure = element("div", "person-sheet__failure");
-    failure.append(
-      element("strong", "person-sheet__failure-title", "人物资料暂时无法读取"),
-      element("p", "person-sheet__failure-copy", "原作品上下文仍保留在此处，可关闭后稍后重试。"),
-      renderOriginContext(cleanId, true),
-    );
-    body.replaceChildren(failure);
+    body.replaceChildren(sheetFailureContent(cleanId, () => close()));
     return null;
   }
 }
@@ -257,26 +287,39 @@ function evidenceSection(person) {
   return section;
 }
 
-function swapPreparedView(root, view) {
-  if (!root) return false;
-  let updated = false;
-  const update = () => { updated = true; root.replaceChildren(view); };
-  if (typeof document.startViewTransition === "function") {
-    try {
-      document.startViewTransition(update);
-      return true;
-    } catch {
-      if (updated) return true;
-    }
+async function swapPreparedView(root, view, isCurrent = () => true) {
+  if (!root || !view || !isCurrent()) return false;
+  let committed = false;
+  const update = () => {
+    if (committed || !isCurrent()) return false;
+    root.replaceChildren(view);
+    committed = true;
+    return true;
+  };
+  if (typeof document.startViewTransition !== "function") return update();
+  let transition;
+  try {
+    transition = document.startViewTransition(update);
+  } catch {
+    return committed || update();
   }
-  update();
-  return true;
+  const updateDone = transition?.updateCallbackDone || transition?.finished;
+  if (transition?.finished && transition.finished !== updateDone) void Promise.resolve(transition.finished).catch(() => {});
+  if (!updateDone || typeof updateDone.then !== "function") return committed || update();
+  try {
+    await updateDone;
+  } catch {
+    if (!committed && isCurrent()) return update();
+    return committed;
+  }
+  return committed;
 }
 
-function commitView(view, meta, options = {}) {
+async function commitView(view, meta, options = {}) {
   if (options.signal?.aborted || (typeof options.isCurrent === "function" && !options.isCurrent())) return false;
-  if (typeof options.commit === "function") return options.commit(view, meta);
-  return swapPreparedView(options.root || dependencies.root, view);
+  if (typeof options.commit === "function") return Boolean(await options.commit(view, meta));
+  const isCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => !options.signal?.aborted;
+  return swapPreparedView(options.root || dependencies.root, view, isCurrent);
 }
 
 function personRecovery(personId, retry) {
@@ -301,12 +344,10 @@ export async function renderPersonPage(personId, options = {}) {
     if (options.signal?.aborted || (typeof options.isCurrent === "function" && !options.isCurrent())) return null;
     const page = element("article", "person-page route-view--enter");
     page.append(renderPersonIdentity(person), renderOriginContext(cleanId), evidenceSection(person));
-    commitView(page, { heading: textValue(person?.name, "人物详情") }, options);
-    return page;
+    return await commitView(page, { heading: textValue(person?.name, "人物详情") }, options) ? page : null;
   } catch (error) {
     if (options.signal?.aborted || error?.name === "AbortError") return null;
     const recovery = personRecovery(cleanId, () => { void renderPersonPage(cleanId, options); });
-    commitView(recovery, { heading: "人物资料恢复" }, options);
-    return recovery;
+    return await commitView(recovery, { heading: "人物资料恢复" }, options) ? recovery : null;
   }
 }

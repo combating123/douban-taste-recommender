@@ -1590,53 +1590,257 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("/person/person:1", result["href"])
         self.assertIn("资料有限", result["pageText"])
 
-    def test_exploration_route_gate_keeps_old_dom_until_current_view_is_ready(self):
+    def test_person_sheet_route_lifecycle_aborts_fetch_cleans_listeners_and_ignores_late_response(self):
         output = run_node_module(
             f'''
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            class FakeClassList {{ add() {{}} }}
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.classList = new FakeClassList(); this.style = {{ setProperty() {{}} }};
+                this.focusCount = 0; this.isConnected = true; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              remove() {{ if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); this.isConnected = false; }}
+              focus() {{ this.focusCount += 1; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const overlayRoot = new FakeElement("div");
+            const trigger = new FakeElement("button");
+            const listeners = new Map();
+            const requests = [];
+            globalThis.document = {{
+              readyState: "loading", activeElement: trigger,
+              createElement: (tag) => new FakeElement(tag),
+              getElementById(id) {{ return id === "overlay-root" ? overlayRoot : null; }},
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ configurePeople, openPersonSheet, closePersonSheet, setPersonContext }} = await import("{module_url('js/features/people.js')}");
+            configurePeople({{
+              overlayRoot,
+              fetchJson(path, options) {{ const pending = deferred(); requests.push({{ path, signal: options?.signal, pending }}); return pending.promise; }},
+            }});
+            setPersonContext({{ item_key: "douban:42", title: "Origin title", people: [{{ id: "person:1", name: "Person", role: "cast" }}] }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+
+            const originRequest = openPersonSheet("person:1", {{ left: 1, top: 1, width: 2, height: 2 }});
+            if (!requests[0]?.signal || requests[0].signal.aborted) throw new Error("sheet fetch did not receive its own active AbortSignal");
+            const originLink = collect(overlayRoot).find((node) => node.className === "person-origin__link");
+            if (typeof originLink?.onclick !== "function") throw new Error("origin title link was not bound to sheet close lifecycle");
+            originLink.onclick();
+            if (!requests[0].signal.aborted || overlayRoot.children.length !== 0 || (listeners.get("keydown")?.size ?? 0) !== 0) throw new Error("origin navigation did not abort and fully clean the sheet");
+            requests[0].pending.resolve({{ id: "person:1", name: "Late person", portrait: {{ url: "", media_status: "missing" }} }});
+            await originRequest;
+            if (overlayRoot.children.length !== 0) throw new Error("late origin response remounted a closed sheet");
+            if (trigger.focusCount !== 1) throw new Error("connected trigger did not regain focus after origin navigation");
+
+            trigger.isConnected = false;
+            const routeRequest = openPersonSheet("person:1", {{ left: 1, top: 1, width: 2, height: 2 }});
+            const {{ prepareRouteChange }} = await import("{module_url('js/app.js')}");
+            prepareRouteChange();
+            if (!requests[1].signal.aborted || overlayRoot.children.length !== 0 || (listeners.get("keydown")?.size ?? 0) !== 0) throw new Error("external route change did not invalidate active sheet resources");
+            requests[1].pending.resolve({{ id: "person:1", name: "Later person", portrait: {{ url: "", media_status: "missing" }} }});
+            await routeRequest;
+            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 1) throw new Error("detached trigger was focused or late route response mutated overlay");
+            closePersonSheet();
+            console.log(JSON.stringify({{ requests: requests.length, focusCount: trigger.focusCount, listeners: listeners.get("keydown")?.size ?? 0, overlay: overlayRoot.children.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["requests"])
+        self.assertEqual(1, result["focusCount"])
+        self.assertEqual(0, result["listeners"])
+        self.assertEqual(0, result["overlay"])
+
+    def test_person_sheet_api_failure_keeps_full_page_and_origin_navigation(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{ add() {{}} }}
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.classList = new FakeClassList(); this.style = {{ setProperty() {{}} }};
+                this.isConnected = true; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              remove() {{ if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); this.isConnected = false; }}
+              focus() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const overlayRoot = new FakeElement("div");
+            const listeners = new Map();
+            globalThis.document = {{
+              activeElement: new FakeElement("button"),
+              createElement: (tag) => new FakeElement(tag),
+              getElementById(id) {{ return id === "overlay-root" ? overlayRoot : null; }},
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ configurePeople, openPersonSheet, setPersonContext }} = await import("{module_url('js/features/people.js')}");
+            configurePeople({{ overlayRoot, async fetchJson() {{ throw new Error("person unavailable"); }} }});
+            setPersonContext({{ item_key: "douban:42", title: "Origin title", people: [{{ id: "person:1", name: "Person", role: "cast" }}] }});
+            await openPersonSheet("person:1", {{ left: 0, top: 0, width: 1, height: 1 }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const nodes = collect(overlayRoot);
+            const fullPage = nodes.find((node) => node.className === "person-sheet__full-link");
+            const origin = nodes.find((node) => node.className === "person-origin__link");
+            if (fullPage?.attributes.get("href") !== "/person/person:1" || typeof fullPage.onclick !== "function") throw new Error("failure state removed full person navigation");
+            if (origin?.attributes.get("href") !== "/title/douban:42" || typeof origin.onclick !== "function") throw new Error("failure state removed origin navigation");
+            if (!nodes.map((node) => node.textContent).join("|").includes("Origin title")) throw new Error("failure state lost origin context copy");
+            fullPage.onclick();
+            if (overlayRoot.children.length !== 0 || (listeners.get("keydown")?.size ?? 0) !== 0) throw new Error("failure navigation did not close and clean sheet");
+            console.log(JSON.stringify({{ full: fullPage.attributes.get("href"), origin: origin.attributes.get("href"), overlay: overlayRoot.children.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("/person/person:1", result["full"])
+        self.assertEqual("/title/douban:42", result["origin"])
+        self.assertEqual(0, result["overlay"])
+
+    def test_async_view_transition_rechecks_route_and_only_current_rejection_falls_back(self):
+        output = run_node_module(
+            f'''
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            const transitions = [];
             globalThis.document = {{
               readyState: "loading", addEventListener() {{}},
-              startViewTransition() {{ throw new Error("transition unavailable during navigation"); }},
+              startViewTransition(update) {{
+                const done = deferred();
+                transitions.push({{ update, done }});
+                return {{ updateCallbackDone: done.promise, finished: done.promise }};
+              }},
             }};
             const {{ createExplorationRouteGate }} = await import("{module_url('js/app.js')}");
-            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
             const stable = {{ id: "stable" }};
             const root = {{ children: [stable], replaceChildren(...nodes) {{ this.children = nodes; }} }};
             let activePath = "/title/old";
-            const requests = [];
-            const renderer = (id, options) => {{
-              const pending = deferred(); requests.push({{ id, options, pending }});
-              return pending.promise.then((view) => options.commit(view, {{ heading: id }}));
-            }};
+            const statuses = [];
+            const renderer = (id, options) => options.commit({{ id: `${{id}}-view` }}, {{ heading: id }});
             const gate = createExplorationRouteGate({{
               root,
               getActivePath: () => activePath,
               renderTitle: renderer,
               renderPerson: renderer,
-              setStatus() {{}},
+              setStatus(message) {{ statuses.push(message); }},
             }});
-            const oldRender = gate.render({{ path: "/title/old", name: "title", params: {{ id: "old" }} }});
-            activePath = "/title/new";
-            const newRender = gate.render({{ path: "/title/new", name: "title", params: {{ id: "new" }} }});
-            if (!requests[0].options.signal.aborted) throw new Error("new route did not abort stale exploration request");
-            if (root.children[0] !== stable) throw new Error("stable DOM was cleared before a replacement was ready");
-            requests[0].pending.resolve({{ id: "old-view" }});
-            await oldRender;
-            if (root.children[0] !== stable) throw new Error("stale route committed after resolving");
-            requests[1].pending.resolve({{ id: "new-view" }});
-            await newRender;
-            if (root.children[0]?.id !== "new-view") throw new Error("current prepared route did not commit");
 
-            activePath = "/person/missing";
-            const failed = gate.render({{ path: activePath, name: "person", params: {{ id: "missing" }} }});
-            requests[2].pending.reject(new Error("Request failed: 404"));
-            await failed;
-            if (!String(root.children[0]?.className).includes("route-recovery")) throw new Error("current 404 did not render a recovery panel");
-            console.log(JSON.stringify({{ requestCount: requests.length, current: root.children[0].className }}));
+            const oldRender = gate.render({{ path: "/title/old", name: "title", params: {{ id: "old" }} }});
+            if (transitions.length !== 1 || root.children[0] !== stable) throw new Error("old transition did not defer its DOM update");
+            activePath = "/tonight";
+            gate.invalidate();
+            transitions[0].update();
+            transitions[0].done.resolve();
+            await oldRender;
+            if (root.children[0] !== stable || statuses.length) throw new Error("stale deferred callback committed old view or status");
+
+            activePath = "/title/current";
+            const currentRender = gate.render({{ path: activePath, name: "title", params: {{ id: "current" }} }});
+            if (transitions.length !== 2 || root.children[0] !== stable) throw new Error("current transition cleared stable DOM before callback outcome");
+            transitions[1].done.reject(new Error("update callback failed asynchronously"));
+            await currentRender;
+            if (root.children[0]?.id !== "current-view") throw new Error("current transition rejection did not use guarded fallback");
+            if (statuses.length !== 1 || !statuses[0].includes("current")) throw new Error(`current commit status was not emitted exactly once: ${{statuses}}`);
+            transitions[1].update();
+            if (root.children[0]?.id !== "current-view" || statuses.length !== 1) throw new Error("late callback duplicated a completed fallback commit");
+
+            activePath = "/title/stale-rejection";
+            const staleRejection = gate.render({{ path: activePath, name: "title", params: {{ id: "stale-rejection" }} }});
+            activePath = "/tonight";
+            gate.invalidate();
+            transitions[2].done.reject(new Error("stale transition failed"));
+            await staleRejection;
+            if (root.children[0]?.id !== "current-view" || statuses.length !== 1) throw new Error("stale transition rejection replaced the current stable DOM");
+            console.log(JSON.stringify({{ transitions: transitions.length, current: root.children[0].id, statuses }}));
             '''
         )
         result = json.loads(output)
-        self.assertEqual(3, result["requestCount"])
-        self.assertIn("route-recovery", result["current"])
+        self.assertEqual(3, result["transitions"])
+        self.assertEqual("current-view", result["current"])
+        self.assertEqual(1, len(result["statuses"]))
+
+    def test_standalone_detail_and_person_deferred_transitions_recheck_current_state(self):
+        output = run_node_module(
+            f'''
+            const deferred = () => {{ let resolve, reject; const promise = new Promise((yes, no) => {{ resolve = yes; reject = no; }}); return {{ promise, resolve, reject }}; }};
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.id = ""; this.style = {{ setProperty() {{}} }};
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const transitions = [];
+            globalThis.document = {{
+              createElement: (tag) => new FakeElement(tag),
+              startViewTransition(update) {{
+                const done = deferred(); transitions.push({{ update, done }});
+                return {{ updateCallbackDone: done.promise, finished: done.promise }};
+              }},
+            }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const title = {{
+              item_key: "douban:42", title: "Deferred title", media_type: "movie", year: 2024,
+              poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }},
+              item: {{ directors: [], casts: [] }}, people: [],
+            }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            const detailStable = {{ id: "detail-stable" }};
+            const detailRoot = {{ children: [detailStable], replaceChildren(...nodes) {{ this.children = nodes; }} }};
+            configureDetail({{
+              root: detailRoot,
+              async fetchJson(path) {{ return path.startsWith("/api/v2/titles/") ? title : {{ focus_id: "douban:42", nodes: [], edges: [] }}; }},
+              api: {{ async postV2() {{ return {{ job_id: "unused" }}; }} }},
+            }});
+            let detailCurrent = true;
+            const detailRender = renderTitleDetail("douban:42", {{ isCurrent: () => detailCurrent }});
+            for (let index = 0; index < 12 && transitions.length < 1; index += 1) await Promise.resolve();
+            if (transitions.length !== 1 || detailRoot.children[0] !== detailStable) throw new Error("standalone detail transition was not deferred");
+            detailCurrent = false;
+            transitions[0].update(); transitions[0].done.resolve();
+            await detailRender;
+            if (detailRoot.children[0] !== detailStable) throw new Error("stale standalone detail callback replaced stable DOM");
+
+            const {{ configurePeople, renderPersonPage }} = await import("{module_url('js/features/people.js')}");
+            const personStable = {{ id: "person-stable" }};
+            const personRoot = {{ children: [personStable], replaceChildren(...nodes) {{ this.children = nodes; }} }};
+            configurePeople({{
+              root: personRoot,
+              async fetchJson() {{ return {{ id: "person:1", name: "Deferred person", portrait: {{ url: "", media_status: "missing" }}, known_for: [], evidence: [] }}; }},
+            }});
+            let personCurrent = true;
+            const personRender = renderPersonPage("person:1", {{ isCurrent: () => personCurrent }});
+            for (let index = 0; index < 12 && transitions.length < 2; index += 1) await Promise.resolve();
+            if (transitions.length !== 2 || personRoot.children[0] !== personStable) throw new Error("standalone person transition was not deferred");
+            personCurrent = false;
+            transitions[1].update(); transitions[1].done.resolve();
+            await personRender;
+            if (personRoot.children[0] !== personStable) throw new Error("stale standalone person callback replaced stable DOM");
+            console.log(JSON.stringify({{ transitions: transitions.length, detail: detailRoot.children[0].id, person: personRoot.children[0].id }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["transitions"])
+        self.assertEqual("detail-stable", result["detail"])
+        self.assertEqual("person-stable", result["person"])
 
     def test_detail_stylesheet_is_static_cinematic_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
