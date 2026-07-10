@@ -2,7 +2,6 @@
   display: grid;
   grid-template-columns: var(--rail-width) minmax(0, 1fr);
   min-height: 100vh;
-  transition: grid-template-columns var(--motion-standard) ease;
 }
 
 .app-rail {
@@ -15,7 +14,7 @@
   padding: 1rem 0.5rem;
   border-right: 1px solid var(--line);
   background: rgba(8, 11, 18, 0.76);
-  transition: width var(--motion-standard) ease, opacity var(--motion-fast) ease, transform var(--motion-standard) ease;
+  transition: opacity var(--motion-fast) ease, transform var(--motion-standard) ease;
 }
 
 .app-rail nav { display: grid; gap: 0.55rem; margin-top: 2rem; }
@@ -31,7 +30,7 @@
   line-height: 1.2;
   text-align: center;
   text-decoration: none;
-  transition: transform var(--motion-fast) ease, opacity var(--motion-fast) ease, color var(--motion-fast) ease;
+  transition: transform var(--motion-fast) ease, opacity var(--motion-fast) ease;
 }
 
 .app-rail a:hover,

@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import textwrap
 import unittest
@@ -119,16 +120,36 @@ class UiV3ContractTests(unittest.TestCase):
             f'''
             import {{ backendChannel, postV2 }} from "{module_url('js/core/api.js')}";
 
-            let captured;
+            const calls = [];
+            globalThis.location = {{ origin: "https://cinescope.test" }};
             globalThis.fetch = async (path, options) => {{
-              captured = {{ path, options }};
+              calls.push({{ path, options }});
               return {{ ok: true, json: async () => ({{ ok: true }}) }};
             }};
 
+            for (const unsafePath of [
+              "https://attacker.test/api/v2/recommend",
+              "//attacker.test/api/v2/recommend",
+              "data:application/json,{{}}",
+              "blob:https://cinescope.test/asset",
+              "/api/v1/recommend",
+              "/health",
+            ]) {{
+              let rejected = false;
+              try {{ await postV2(unsafePath, {{ schema_version: 99 }}); }} catch (error) {{ rejected = error instanceof TypeError; }}
+              if (!rejected) throw new Error(`unsafe path was accepted: ${{unsafePath}}`);
+              if (calls.length !== 0) throw new Error(`fetch ran for unsafe path: ${{unsafePath}}`);
+            }}
+
             await postV2("/api/v2/recommend", {{ schema_version: 99, intent: "mystery" }});
-            const body = JSON.parse(captured.options.body);
-            if (body.schema_version !== 2) throw new Error("caller replaced schema version");
-            if (captured.options.method !== "POST") throw new Error("request was not POST");
+            await postV2("https://cinescope.test/api/v2/recommend?source=absolute", {{ schema_version: 77 }});
+            if (calls.length !== 2) throw new Error("valid V2 requests were not sent");
+            const [relativeCall, absoluteCall] = calls;
+            const body = JSON.parse(relativeCall.options.body);
+            const absoluteBody = JSON.parse(absoluteCall.options.body);
+            if (body.schema_version !== 2 || absoluteBody.schema_version !== 2) throw new Error("caller replaced schema version");
+            if (relativeCall.options.method !== "POST") throw new Error("request was not POST");
+            if (absoluteCall.path !== "/api/v2/recommend?source=absolute") throw new Error("same-origin absolute URL was not normalised");
             if (backendChannel("movie") !== "电影") throw new Error("movie channel mismatch");
             if (backendChannel("series") !== "电视剧") throw new Error("series channel mismatch");
             if (backendChannel("anime-series") !== "动漫") throw new Error("anime channel mismatch");
@@ -139,6 +160,17 @@ class UiV3ContractTests(unittest.TestCase):
             '''
         )
         self.assertEqual(2, json.loads(output)["schema_version"])
+
+    def test_shell_transitions_only_animate_transform_or_opacity(self):
+        css = (UI_ROOT / "styles" / "shell.css").read_text(encoding="utf-8")
+        declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
+
+        self.assertTrue(declarations)
+        for declaration in declarations:
+            for transition in declaration.split(","):
+                property_name = transition.strip().split(maxsplit=1)[0]
+                with self.subTest(transition=transition):
+                    self.assertIn(property_name, {"transform", "opacity"})
 
     def test_router_matches_params_and_restores_scroll_after_render(self):
         output = run_node_module(

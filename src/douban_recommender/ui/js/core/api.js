@@ -5,7 +5,26 @@ export const CHANNEL_KEYS = Object.freeze({
   "anime-series": "动漫",
 });
 
-export async function request(path, { method = "GET", body, headers = {} } = {}) {
+function normaliseV2Path(path) {
+  const origin = globalThis.location?.origin;
+  const candidate = typeof path === "string" ? path.trim() : "";
+  if (!origin || origin === "null" || !candidate || candidate.startsWith("//")) {
+    throw new TypeError("V2 requests require a same-origin /api/v2/ path");
+  }
+
+  let target;
+  try {
+    target = new URL(candidate, origin);
+  } catch {
+    throw new TypeError("V2 requests require a valid same-origin URL");
+  }
+  if (target.origin !== origin || !target.pathname.startsWith("/api/v2/")) {
+    throw new TypeError("V2 requests require a same-origin /api/v2/ path");
+  }
+  return `${target.pathname}${target.search}`;
+}
+
+async function request(path, { method = "GET", body, headers = {} } = {}) {
   const options = { method, headers: { ...headers } };
   if (body !== undefined) {
     options.headers["Content-Type"] = "application/json";
@@ -19,7 +38,7 @@ export async function request(path, { method = "GET", body, headers = {} } = {})
 
 export function postV2(path, payload = {}) {
   const body = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
-  return request(path, {
+  return request(normaliseV2Path(path), {
     method: "POST",
     body: { ...body, schema_version: V2_SCHEMA_VERSION },
   });
