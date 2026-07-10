@@ -60,7 +60,9 @@ python -m douban_recommender.web
 | 条件命中 | 通过当前意图、过滤和降权后仍然可参与展示的条目数 | 这是“满足当前条件的可用库存” |
 | 当前批次 | 当前屏幕这一批实际拿出来的条目 | 这是你此刻看到或准备切到的一屏 |
 
-请不要把 `limit`、展示数、库存数混成一个概念。**`limit=160` 仅在未提供自定义候选时作为候选回填目标**；它**不是推荐会话上限、频道库存上限或当前批次数量**。`batch_size=30` 才控制当前页或当前屏幕的一批展示量；每个频道的 `pool_size` 由实际候选决定。提供自定义 candidates（`candidate_items` 或 `candidates_csv`）时不会按 `limit` 回填，**自定义 candidates 可使 `pool_size` 超过或不同于 `limit`**。**每频道独立换一批/上一批/耗尽恢复**：电影、电视剧、动画剧集都有各自的前进、回退与耗尽后恢复逻辑。
+请不要把 `limit`、展示数、库存数混成一个概念。**`limit=160` 仅在未提供自定义候选时作为候选回填目标**；它**不是推荐会话上限、频道库存上限或当前批次数量**。`batch_size=24` 才控制当前页或当前屏幕的一批展示量；每个频道的 `pool_size` 由实际候选决定。提供自定义 candidates（`candidate_items` 或 `candidates_csv`）时不会按 `limit` 回填，**自定义 candidates 可使 `pool_size` 超过或不同于 `limit`**。**每频道独立换一批/上一批/耗尽恢复**：电影、电视剧、动画剧集都有各自的前进、回退与耗尽后恢复逻辑。
+
+每个频道的 `batch_size` 会 clamp 到 `1..24`：传入大于 24 的值（如 `batch_size=30`）最多只会展示 24 条，而不是 30 条。较短的默认批次更适合视觉货架。
 
 ## 同步建议
 
@@ -147,7 +149,7 @@ python -m douban_recommender.cli `
   "use_sample_candidates": false,
   "like_terms": "评分高，剧情好，叙事强",
   "dislike_terms": "电视剧古装，注水剧",
-  "batch_size": 30,
+  "batch_size": 24,
   "limit": 160
 }
 ```

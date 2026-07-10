@@ -119,6 +119,14 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("自定义 candidates 可使 `pool_size` 超过或不同于 `limit`", text)
         self.assertIn("每频道独立换一批/上一批/耗尽恢复", text)
 
+    def test_readme_documents_per_channel_batch_size_clamp_and_visual_shelf_default(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("\u6bcf\u4e2a\u9891\u9053\u7684 `batch_size` \u4f1a clamp \u5230 `1..24`", text)
+        self.assertIn('"batch_size": 24', text)
+        self.assertNotIn("`batch_size=30` \u624d\u63a7\u5236", text)
+        self.assertIn("\u8f83\u77ed\u7684\u9ed8\u8ba4\u6279\u6b21\u66f4\u9002\u5408\u89c6\u89c9\u8d27\u67b6", text)
+
     def test_readme_documents_feedback_scope_and_append_only_undo(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
 
