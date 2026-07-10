@@ -14,6 +14,7 @@ from .privacy import scrub_sensitive
 _FEEDBACK_LIBRARY_STATES = {"watched": "watched", "want": "wanted"}
 _FEEDBACK_EXCLUSION_EVENTS = {"not-tonight", "watched"}
 _ALLOWED_FEEDBACK_EVENTS = set(_FEEDBACK_LIBRARY_STATES) | _FEEDBACK_EXCLUSION_EVENTS
+_UNDO_METADATA_KEY = "_recommendation_undo"
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,25 @@ def _json_object(value: object) -> dict[str, object]:
 def _scrub_dict(value: object) -> dict[str, object]:
     scrubbed = scrub_sensitive(value)
     return scrubbed if isinstance(scrubbed, dict) else {}
+
+
+def _undone_event_ids(connection) -> set[str]:
+    rows = connection.execute(
+        "SELECT payload_json FROM feedback_events WHERE event_type = 'undo'"
+    ).fetchall()
+    return {
+        target
+        for row in rows
+        for payload in [_json_object(row["payload_json"])]
+        for target in [str(payload.get("target_event_id") or "")]
+        if target
+    }
+
+
+def _next_feedback_timestamp(connection) -> float:
+    row = connection.execute("SELECT MAX(created_at) AS latest FROM feedback_events").fetchone()
+    latest = float(row["latest"] or 0) if row else 0.0
+    return max(time.time(), latest + 1e-6)
 
 
 class RecommendationSessionService:
@@ -410,18 +430,51 @@ class RecommendationSessionService:
 
                 state = _FEEDBACK_LIBRARY_STATES.get(clean_event_type, "")
                 excluded = clean_event_type in _FEEDBACK_EXCLUSION_EVENTS
-                existing = connection.execute(
+                undone_ids = _undone_event_ids(connection)
+                existing_rows = connection.execute(
                     """
-                    SELECT id FROM feedback_events
+                    SELECT id, undone_by FROM feedback_events
                     WHERE session_id = ? AND item_key = ? AND event_type = ?
-                    ORDER BY created_at, id
-                    LIMIT 1
+                    ORDER BY created_at DESC, id DESC
                     """,
                     (session.id, clean_item_key, clean_event_type),
-                ).fetchone()
+                ).fetchall()
+                existing = next(
+                    (
+                        candidate
+                        for candidate in existing_rows
+                        if not str(candidate["undone_by"] or "") and str(candidate["id"]) not in undone_ids
+                    ),
+                    None,
+                )
                 if existing:
                     event_id = str(existing["id"])
                 else:
+                    prior_excluded_channels = [
+                        channel
+                        for channel, channel_state in channels.items()
+                        if clean_item_key in {str(key) for key in channel_state.get("excluded_keys", [])}
+                    ]
+                    prior_library = None
+                    if state:
+                        library_row = connection.execute(
+                            """
+                            SELECT payload_json, state, source, created_at, updated_at
+                            FROM library_items WHERE item_key = ?
+                            """,
+                            (clean_item_key,),
+                        ).fetchone()
+                        if library_row:
+                            prior_library = {
+                                "exists": True,
+                                "payload": _json_object(library_row["payload_json"]),
+                                "state": str(library_row["state"] or ""),
+                                "source": str(library_row["source"] or ""),
+                                "created_at": float(library_row["created_at"] or 0),
+                                "updated_at": float(library_row["updated_at"] or 0),
+                            }
+                        else:
+                            prior_library = {"exists": False}
                     if state:
                         self._upsert_library_item(
                             connection,
@@ -436,6 +489,10 @@ class RecommendationSessionService:
 
                     event_payload = _scrub_dict(dict(payload or {}))
                     event_payload["item"] = item_payload
+                    event_payload[_UNDO_METADATA_KEY] = {
+                        "prior_excluded_channels": prior_excluded_channels,
+                        "prior_library": prior_library,
+                    }
                     event_id = uuid.uuid4().hex
                     connection.execute(
                         """
@@ -451,7 +508,7 @@ class RecommendationSessionService:
                             clean_item_key,
                             clean_event_type,
                             _json_dumps(event_payload),
-                            time.time(),
+                            _next_feedback_timestamp(connection),
                         ),
                     )
 
@@ -464,6 +521,138 @@ class RecommendationSessionService:
             "excluded": excluded,
             "payload": item_payload,
         }
+
+    def undo_feedback(self, event_id: str) -> str | None:
+        target_id = str(event_id or "").strip()
+        with self._lock:
+            with self.database.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """
+                    SELECT id, profile_key, session_id, item_key, event_type,
+                           payload_json, undone_by, created_at
+                    FROM feedback_events
+                    WHERE id = ? AND event_type != 'undo'
+                    """,
+                    (target_id,),
+                ).fetchone()
+                if not row:
+                    raise ValueError("feedback event not found")
+                session_id = str(row["session_id"] or "")
+                event_type = str(row["event_type"] or "")
+                if not session_id or event_type not in _ALLOWED_FEEDBACK_EVENTS:
+                    return None
+                if str(row["undone_by"] or ""):
+                    return str(row["undone_by"])
+
+                existing_undo = connection.execute(
+                    "SELECT id, payload_json FROM feedback_events WHERE event_type = 'undo' ORDER BY created_at, id"
+                ).fetchall()
+                for undo_row in existing_undo:
+                    undo_payload = _json_object(undo_row["payload_json"])
+                    if str(undo_payload.get("target_event_id") or "") == target_id:
+                        undo_id = str(undo_row["id"])
+                        connection.execute("UPDATE feedback_events SET undone_by = ? WHERE id = ?", (undo_id, target_id))
+                        return undo_id
+
+                session = self._session_from_row(self._session_row_in_connection(connection, session_id))
+                item_key = str(row["item_key"] or "")
+                target_created_at = float(row["created_at"] or 0)
+                undone_ids = _undone_event_ids(connection)
+                later_session_rows = connection.execute(
+                    """
+                    SELECT id, event_type, undone_by, created_at
+                    FROM feedback_events
+                    WHERE session_id = ? AND item_key = ? AND event_type != 'undo'
+                      AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at, id
+                    """,
+                    (session_id, item_key, target_created_at, target_created_at, target_id),
+                ).fetchall()
+                later_library_rows = connection.execute(
+                    """
+                    SELECT id, event_type, undone_by, created_at
+                    FROM feedback_events
+                    WHERE item_key = ? AND event_type IN ('watched', 'want')
+                      AND COALESCE(session_id, '') != ''
+                      AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at, id
+                    """,
+                    (item_key, target_created_at, target_created_at, target_id),
+                ).fetchall()
+                active_later_session_types = {
+                    str(candidate["event_type"])
+                    for candidate in later_session_rows
+                    if not str(candidate["undone_by"] or "") and str(candidate["id"]) not in undone_ids
+                }
+                has_later_library_update = any(
+                    not str(candidate["undone_by"] or "") and str(candidate["id"]) not in undone_ids
+                    for candidate in later_library_rows
+                )
+
+                payload = _json_object(row["payload_json"])
+                metadata = payload.get(_UNDO_METADATA_KEY)
+                metadata = metadata if isinstance(metadata, dict) else {}
+                channels = session.channels
+                if (
+                    event_type in _FEEDBACK_EXCLUSION_EVENTS
+                    and not (active_later_session_types & _FEEDBACK_EXCLUSION_EVENTS)
+                    and "prior_excluded_channels" in metadata
+                ):
+                    prior_channels = {str(channel) for channel in metadata.get("prior_excluded_channels", [])}
+                    for channel, state in channels.items():
+                        excluded = [str(key) for key in state.get("excluded_keys", []) if str(key)]
+                        excluded = [key for key in excluded if key != item_key]
+                        if channel in prior_channels:
+                            excluded.append(item_key)
+                        state["excluded_keys"] = list(dict.fromkeys(excluded))
+                    self._save_channels(connection, session_id, channels)
+
+                if event_type in _FEEDBACK_LIBRARY_STATES and not has_later_library_update:
+                    prior_library = metadata.get("prior_library")
+                    if isinstance(prior_library, dict) and prior_library.get("exists") is True:
+                        connection.execute(
+                            """
+                            INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                            VALUES(?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(item_key) DO UPDATE SET
+                                payload_json = excluded.payload_json,
+                                state = excluded.state,
+                                source = excluded.source,
+                                created_at = excluded.created_at,
+                                updated_at = excluded.updated_at
+                            """,
+                            (
+                                item_key,
+                                _json_dumps(_scrub_dict(prior_library.get("payload") or {})),
+                                str(prior_library.get("state") or "candidate"),
+                                str(prior_library.get("source") or ""),
+                                float(prior_library.get("created_at") or 0),
+                                float(prior_library.get("updated_at") or 0),
+                            ),
+                        )
+                    elif isinstance(prior_library, dict) and prior_library.get("exists") is False:
+                        connection.execute("DELETE FROM library_items WHERE item_key = ?", (item_key,))
+
+                undo_id = uuid.uuid4().hex
+                connection.execute(
+                    """
+                    INSERT INTO feedback_events(
+                        id, profile_key, session_id, item_key, event_type,
+                        payload_json, undone_by, created_at
+                    ) VALUES(?, ?, ?, ?, 'undo', ?, NULL, ?)
+                    """,
+                    (
+                        undo_id,
+                        str(row["profile_key"]),
+                        session_id,
+                        item_key,
+                        _json_dumps({"target_event_id": target_id}),
+                        _next_feedback_timestamp(connection),
+                    ),
+                )
+                connection.execute("UPDATE feedback_events SET undone_by = ? WHERE id = ?", (undo_id, target_id))
+                return undo_id
 
     def next_batch(self, session_id: str, channel: str, reason: str = "") -> RecommendationBatch:
         with self._lock:

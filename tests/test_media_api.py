@@ -58,6 +58,7 @@ class MediaApiRouteTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         web_module.MEDIA_API = self.original_media_api
+        self.thread.join(timeout=5)
         self.temp.cleanup()
 
     def request(self, path, method="GET", payload=None):
@@ -76,7 +77,10 @@ class MediaApiRouteTests(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, dict(response.headers.items()), response.read()
         except urllib.error.HTTPError as error:
-            return error.code, dict(error.headers.items()), error.read()
+            try:
+                return error.code, dict(error.headers.items()), error.read()
+            finally:
+                error.close()
 
     def test_local_media_route_returns_immutable_asset(self):
         asset = self.store.put(

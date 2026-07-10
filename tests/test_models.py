@@ -1,4 +1,5 @@
 import unittest
+import re
 
 from douban_recommender.models import MediaItem, canonical_media_type, recommendation_item_key
 
@@ -34,6 +35,22 @@ class MediaModelCanonicalizationTests(unittest.TestCase):
         self.assertEqual(second.identity, recommendation_item_key(second))
         self.assertNotEqual(first.identity, second.identity)
         self.assertNotEqual(first.identity, without_year.identity)
+
+    def test_non_numeric_external_identifier_uses_stable_url_safe_opaque_key(self):
+        unsafe = "provider/..\\title?token=secret#fragment%2F"
+        first = MediaItem(title="Unsafe external", year=2024, media_type="movie", douban_id=unsafe)
+        second = MediaItem(title="Renamed external", year=1999, media_type="series", douban_id=unsafe)
+
+        first_key = recommendation_item_key(first)
+        second_key = recommendation_item_key(second)
+
+        self.assertEqual(first_key, second_key)
+        self.assertRegex(first_key, r"^external:[0-9a-f]{24}$")
+        self.assertFalse(re.search(r"[/\\?#%]", first_key))
+        self.assertEqual(
+            recommendation_item_key(MediaItem(title="Numeric", douban_id="35280649")),
+            "douban:35280649",
+        )
 
 
 if __name__ == "__main__":

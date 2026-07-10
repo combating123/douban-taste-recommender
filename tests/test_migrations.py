@@ -106,6 +106,22 @@ class LegacyRecommendationMigrationTests(unittest.TestCase):
         )
         self.assertTrue(all(not key.startswith("legacy:") for key in keys))
 
+    def test_legacy_unsafe_external_identifier_uses_url_safe_canonical_key(self):
+        row = {
+            "title": "Unsafe migrated title",
+            "media_type": "movie",
+            "year": 2024,
+            "douban_id": "provider/..\\title?token=secret#fragment%2F",
+        }
+
+        report = migrate_legacy_recommendations([row], self.database)
+
+        self.assertEqual(report.imported, 1)
+        with self.database.connection() as connection:
+            stored_key = connection.execute("SELECT item_key FROM library_items").fetchone()["item_key"]
+        self.assertEqual(stored_key, recommendation_item_key(row))
+        self.assertRegex(stored_key, r"^external:[0-9a-f]{24}$")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -202,6 +202,72 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         forward = self.service.next_batch(session.id, "电影")
         self.assertEqual(forward.id, second.id)
 
+    def test_undo_not_tonight_restores_exclusion_and_reapply_creates_new_event(self):
+        session = self.create()
+        channel = next(iter(pools()))
+        key = recommendation_item_key(pools()[channel]["items"][3])
+        first = self.service.apply_feedback(session.id, "not-tonight", key)
+        self.assertIn(key, self.service.restore_session(session.id).channels[channel]["excluded_keys"])
+
+        undo_id = self.service.undo_feedback(first["event_id"])
+        restored = self.service.restore_session(session.id)
+        second = self.service.apply_feedback(session.id, "not-tonight", key)
+
+        self.assertTrue(undo_id)
+        self.assertNotIn(key, restored.channels[channel]["excluded_keys"])
+        self.assertNotEqual(second["event_id"], first["event_id"])
+
+    def test_undo_library_feedback_restores_candidate_missing_and_existing_states(self):
+        channel = list(pools())[2]
+        for prior in ("candidate", "missing", "wanted"):
+            with self.subTest(prior=prior):
+                session = self.create()
+                batch = self.service.next_batch(session.id, channel)
+                key = batch.item_keys[0]
+                if prior == "missing":
+                    with self.database.connection() as connection:
+                        connection.execute("DELETE FROM library_items WHERE item_key = ?", (key,))
+                    event_type = "want"
+                elif prior == "wanted":
+                    with self.database.connection() as connection:
+                        connection.execute(
+                            "UPDATE library_items SET state = 'wanted', source = 'fixture-prior' WHERE item_key = ?",
+                            (key,),
+                        )
+                    event_type = "watched"
+                else:
+                    event_type = "watched"
+
+                applied = self.service.apply_feedback(session.id, event_type, key)
+                self.service.undo_feedback(applied["event_id"])
+                row = self._library_row(key)
+
+                if prior == "missing":
+                    self.assertIsNone(row)
+                else:
+                    self.assertEqual(row["state"], prior)
+                    if prior == "wanted":
+                        self.assertEqual(row["source"], "fixture-prior")
+
+    def test_undo_older_feedback_does_not_overwrite_later_active_event(self):
+        session = self.create()
+        channel = list(pools())[2]
+        batch = self.service.next_batch(session.id, channel)
+        key = batch.item_keys[0]
+        first = self.service.apply_feedback(session.id, "want", key)
+        time.sleep(0.002)
+        later_session = self.create()
+        later = self.service.apply_feedback(later_session.id, "watched", key)
+
+        self.service.undo_feedback(first["event_id"])
+        row = self._library_row(key)
+        reapplied = self.service.apply_feedback(session.id, "want", key)
+
+        self.assertEqual(row["state"], "watched")
+        self.assertIn(key, self.service.restore_session(later_session.id).channels[channel]["excluded_keys"])
+        self.assertNotEqual(reapplied["event_id"], first["event_id"])
+        self.assertNotEqual(reapplied["event_id"], later["event_id"])
+
     def test_watched_feedback_upserts_library_item_and_is_idempotent(self):
         session = self.create()
         batch = self.service.next_batch(session.id, "动漫")

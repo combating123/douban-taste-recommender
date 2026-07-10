@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import threading
@@ -8,9 +9,15 @@ from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from PIL import Image
+
 from douban_recommender.database import AppDatabase
 from douban_recommender.catalog_api import CatalogApi
 from douban_recommender.intent_parser import RecommendationIntent, parse_recommendation_intent
+from douban_recommender.media.orchestrator import MediaOrchestrator
+from douban_recommender.media.store import MediaStore
+from douban_recommender.media.validator import validate_image_bytes
+from douban_recommender.media_api import MediaApi
 from douban_recommender.models import MediaItem, recommendation_item_key
 from douban_recommender.web import Handler
 import douban_recommender.web as web_module
@@ -49,6 +56,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.original_api = getattr(web_module, "RECOMMENDATION_API", None)
         self.original_catalog_api = getattr(web_module, "CATALOG_API", None)
+        self.original_media_api = getattr(web_module, "MEDIA_API", None)
         try:
             from douban_recommender.recommendation_api import RecommendationApi
         except ImportError:
@@ -56,9 +64,11 @@ class RecommendationApiV2Tests(unittest.TestCase):
         else:
             database = AppDatabase(Path(self.temp.name) / "cinescope.db")
             database.initialize()
-            self.api = RecommendationApi(database)
+            self.media_store = MediaStore(Path(self.temp.name) / "media", database)
+            self.api = RecommendationApi(database, media_store=self.media_store)
             web_module.RECOMMENDATION_API = self.api
             web_module.CATALOG_API = CatalogApi(database, media_root=Path(self.temp.name) / "media")
+            web_module.MEDIA_API = MediaApi(self.media_store, MediaOrchestrator(self.media_store))
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -69,6 +79,8 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.server.server_close()
         web_module.RECOMMENDATION_API = self.original_api
         web_module.CATALOG_API = self.original_catalog_api
+        web_module.MEDIA_API = self.original_media_api
+        self.thread.join(timeout=5)
         self.temp.cleanup()
 
     def request(self, path, method="GET", payload=None, raw_json=None):
@@ -90,7 +102,10 @@ class RecommendationApiV2Tests(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read().decode("utf-8"))
+            try:
+                return error.code, json.loads(error.read().decode("utf-8"))
+            finally:
+                error.close()
 
     def post_json(self, path, payload):
         status, body = self.request(path, method="POST", payload=payload)
@@ -112,6 +127,12 @@ class RecommendationApiV2Tests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False)
         for secret in secrets:
             self.assertNotIn(secret, serialized)
+
+    def create_verified_media_asset(self):
+        output = io.BytesIO()
+        Image.new("RGB", (160, 240), "navy").save(output, format="PNG")
+        validated = validate_image_bytes(output.getvalue(), "image/png")
+        return self.media_store.put(validated, "https://source.example/poster.png", "poster")
 
     def first_nonempty_channel(self, response):
         for name, channel in response["channels"].items():
@@ -182,6 +203,22 @@ class RecommendationApiV2Tests(unittest.TestCase):
         status, body = self.post_json_status(path, payload)
         self.assertEqual(status, 400, body)
         self.assertIn(field, body["error"])
+
+    def test_request_helper_closes_http_error_response(self):
+        body = io.BytesIO(b'{"error":"bad request"}')
+        error = urllib.error.HTTPError(
+            "http://127.0.0.1/test",
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=body,
+        )
+
+        with mock.patch("urllib.request.urlopen", side_effect=error):
+            status, payload = self.request("/test")
+
+        self.assertEqual((status, payload), (400, {"error": "bad request"}))
+        self.assertTrue(body.closed)
 
     def test_create_session_rejects_malformed_known_fields(self):
         invalid_cases = [
@@ -481,6 +518,22 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertEqual(undone["schema_version"], 2)
         self.assertEqual(undone["undone_event_id"], recorded["id"])
         self.assertIn("restore", undone)
+        restored = self.api.session_service.restore_session(created["id"])
+        channel_name = next(
+            name
+            for name, state in restored.channels.items()
+            if any(recommendation_item_key(item) == movie_item_key for item in state["items"])
+        )
+        self.assertNotIn(movie_item_key, restored.channels[channel_name]["excluded_keys"])
+        rerecorded = self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "profile_key": "profile-1",
+            "session_id": created["id"],
+            "event_type": "not-tonight",
+            "scope": "session",
+            "item_key": movie_item_key,
+        })
+        self.assertNotEqual(rerecorded["id"], recorded["id"])
 
     def test_permanent_feedback_without_session_still_uses_feedback_service_contract(self):
         recorded = self.post_json("/api/v2/feedback", {
@@ -551,6 +604,40 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertEqual([record["item_key"] for record in watched_records], [watched_key])
         self.assertNotIn(watched_key, fresh_keys)
 
+    def test_watched_seen_semantics_merge_into_duplicate_caller_rated_item(self):
+        created = self.create_session(batch_size=4)
+        _, channel = self.first_nonempty_channel(created)
+        watched_item = channel["batch"]["items"][0]
+        watched_key = watched_item["item_key"]
+        self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "session_id": created["id"],
+            "event_type": "watched",
+            "scope": "permanent",
+            "item_key": watched_key,
+        })
+        caller_item = {
+            "title": watched_item["title"],
+            "media_type": watched_item["media_type"],
+            "douban_id": watched_item["douban_id"],
+            "summary": "caller richer summary",
+            "tags": ["caller-tag"],
+        }
+
+        merged = self.api._rated_items({"rated_items": [caller_item]})
+        fresh = self.create_session(rated_items=[caller_item], batch_size=4)
+        fresh_keys = {
+            item_key
+            for state in fresh["channels"].values()
+            for item_key in state["batch"]["item_keys"]
+        }
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].summary, "caller richer summary")
+        self.assertIn("caller-tag", merged[0].tags)
+        self.assertIn("看过", merged[0].tags)
+        self.assertNotIn(watched_key, fresh_keys)
+
     def test_want_feedback_updates_library_state_to_wanted(self):
         created = self.create_session()
         _, channel = self.first_nonempty_channel(created)
@@ -566,6 +653,31 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
         wanted_records = self.api.session_service.library_items(states=["wanted"])
         self.assertEqual([record["item_key"] for record in wanted_records], [wanted_key])
+
+    def test_undo_watched_and_want_restore_prior_candidate_library_state(self):
+        for event_type, expected_state in (("watched", "watched"), ("want", "wanted")):
+            with self.subTest(event_type=event_type):
+                created = self.create_session()
+                _, channel = self.first_nonempty_channel(created)
+                item_key = channel["batch"]["items"][0]["item_key"]
+                recorded = self.post_json("/api/v2/feedback", {
+                    "schema_version": 2,
+                    "session_id": created["id"],
+                    "event_type": event_type,
+                    "scope": "permanent",
+                    "item_key": item_key,
+                })
+                self.assertEqual(self.api.session_service.library_items(states=[expected_state])[0]["item_key"], item_key)
+
+                self.post_json(
+                    f"/api/v2/feedback/{recorded['id']}/undo",
+                    {"schema_version": 2},
+                )
+                restored = {
+                    row["item_key"]: row
+                    for row in self.api.session_service.library_items(states=["candidate"])
+                }
+                self.assertEqual(restored[item_key]["state"], "candidate")
 
     def test_every_recommendation_item_key_resolves_to_same_catalog_title_identity(self):
         channel_name = next(iter(self.create_session()["channels"]))
@@ -598,6 +710,31 @@ class RecommendationApiV2Tests(unittest.TestCase):
         for item in returned:
             title = self.get_json(f"/api/v2/titles/{item['item_key']}")
             self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
+
+    def test_unsafe_external_identifier_returns_single_segment_catalog_key(self):
+        channel_name = next(iter(self.create_session()["channels"]))
+        created = self.create_session(
+            rated_items=[],
+            candidates_csv="",
+            candidate_items=[
+                {
+                    "title": "Unsafe external identity",
+                    "year": 2024,
+                    "media_type": channel_name,
+                    "douban_id": "provider/..\\title?token=secret#fragment%2F",
+                    "douban_rating": 9.0,
+                    "vote_count": 1000,
+                }
+            ],
+            use_sample_candidates=False,
+            batch_size=1,
+        )
+        item = created["channels"][channel_name]["batch"]["items"][0]
+
+        self.assertRegex(item["item_key"], r"^external:[0-9a-f]{24}$")
+        self.assertFalse(any(marker in item["item_key"] for marker in ("/", "\\", "..", "?", "#", "%")))
+        title = self.get_json(f"/api/v2/titles/{item['item_key']}")
+        self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
 
     def test_create_session_rejects_malformed_language_configuration(self):
         cases = [
@@ -684,6 +821,32 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
         expected = json.loads(json.dumps(parse_recommendation_intent(text).to_dict(), ensure_ascii=False))
         self.assertEqual(created["intent"], expected)
+
+    def test_intent_user_text_secrets_are_scrubbed_from_response_and_sqlite(self):
+        intent_text = (
+            "悬疑电影 token=intent-token Authorization: Bearer intent-bearer "
+            "https://intent-user:intent-password@example.com/path?api_key=intent-url-secret#intent-fragment"
+        )
+
+        created = self.create_session(intent_text=intent_text)
+        with self.api.database.connection() as connection:
+            intent_json = connection.execute(
+                "SELECT intent_json FROM recommendation_sessions WHERE id = ?",
+                (created["id"],),
+            ).fetchone()["intent_json"]
+
+        self.assertTrue(created["id"])
+        self.assertIn("https://example.com/path", created["intent"]["free_text"])
+        for secret in (
+            "intent-token",
+            "intent-bearer",
+            "intent-user",
+            "intent-password",
+            "intent-url-secret",
+            "intent-fragment",
+        ):
+            self.assertNotIn(secret, json.dumps(created["intent"], ensure_ascii=False))
+            self.assertNotIn(secret, intent_json)
 
     def test_v2_routes_reject_unsupported_schema_version(self):
         status, payload = self.post_json_status(
@@ -835,11 +998,11 @@ class RecommendationApiV2Tests(unittest.TestCase):
                     },
                 },
                 {
-                    "title": "local media candidate",
+                    "title": "fake local media candidate",
                     "media_type": channel_name,
-                    "douban_id": "local-media-item",
-                    "cover": "/media/poster-ready.jpg",
-                    "raw": {"people_photos": {"Actor": "/media/person-ready.jpg"}},
+                    "douban_id": "fake-local-media-item",
+                    "cover": "/media/not-a-real-asset.png",
+                    "raw": {"people_photos": {"Actor": "/media/not-a-real-person.png"}},
                 },
             ],
             use_sample_candidates=False,
@@ -847,15 +1010,15 @@ class RecommendationApiV2Tests(unittest.TestCase):
         )
 
         external = self.find_item_by_id(response, "external-media-item")
-        local = self.find_item_by_id(response, "local-media-item")
+        fake_local = self.find_item_by_id(response, "fake-local-media-item")
         self.assertEqual(external["url"], "https://example.com/subject/42/")
         self.assertEqual(external["cover"], "")
         self.assertEqual(external["source"], "external_url")
         self.assertEqual(external["people_photos"], {})
         self.assertEqual(external["media_status"]["poster"], "designed-fallback")
-        self.assertEqual(local["cover"], "/media/poster-ready.jpg")
-        self.assertEqual(local["people_photos"], {"Actor": "/media/person-ready.jpg"})
-        self.assertEqual(local["media_status"]["poster"], "ready")
+        self.assertEqual(fake_local["cover"], "")
+        self.assertEqual(fake_local["people_photos"], {})
+        self.assertEqual(fake_local["media_status"]["poster"], "designed-fallback")
         self.assertTrue(response["id"])
 
         self.post_json("/api/v2/feedback", {
@@ -916,6 +1079,34 @@ class RecommendationApiV2Tests(unittest.TestCase):
             "db-fragment",
         ):
             self.assertNotIn(secret, serialized_db)
+
+    def test_create_session_retains_only_media_store_verified_local_assets(self):
+        stored = self.create_verified_media_asset()
+        channel_name = next(iter(self.create_session()["channels"]))
+
+        response = self.create_session(
+            rated_items=[],
+            candidates_csv="",
+            candidate_items=[
+                {
+                    "title": "verified local media candidate",
+                    "media_type": channel_name,
+                    "douban_id": "verified-local-media-item",
+                    "cover": stored.local_url,
+                    "raw": {"people_photos": {"Actor": stored.local_url}},
+                }
+            ],
+            use_sample_candidates=False,
+            batch_size=1,
+        )
+
+        item = self.find_item_by_id(response, "verified-local-media-item")
+        self.assertEqual(item["cover"], stored.local_url)
+        self.assertEqual(item["people_photos"], {"Actor": stored.local_url})
+        self.assertEqual(item["media_status"]["poster"], "ready")
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{stored.local_url}", timeout=5) as media_response:
+            self.assertEqual(media_response.status, 200)
+            self.assertEqual(media_response.read(), stored.path.read_bytes())
 
     def test_candidate_url_fetch_results_do_not_echo_input_secrets_in_session_or_batch(self):
         secret_input_url = "https://viewer:input-secret@example.com/list?token=input-token#input-fragment"

@@ -60,6 +60,7 @@ class CatalogApiV2Tests(unittest.TestCase):
         self.server.server_close()
         if hasattr(web_module, "CATALOG_API"):
             web_module.CATALOG_API = self.original_catalog_api
+        self.thread.join(timeout=5)
         self.temp.cleanup()
 
     def _insert_library(self, key, payload, state="watched", updated_offset=0):
@@ -233,7 +234,10 @@ class CatalogApiV2Tests(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=5) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read().decode("utf-8"))
+            try:
+                return error.code, json.loads(error.read().decode("utf-8"))
+            finally:
+                error.close()
 
     def assert_local_only_media(self, payload):
         serialized = json.dumps(payload, ensure_ascii=False)

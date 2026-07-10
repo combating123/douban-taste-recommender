@@ -14,12 +14,13 @@ from .feedback_service import FeedbackEvent, FeedbackService
 from .intent_parser import RecommendationIntent, parse_recommendation_intent
 from .io import load_media_csv, load_media_csv_from_text
 from .language_adapter import LanguageService, LocalRuleLanguageAdapter, OpenAICompatibleLanguageAdapter
+from .media.store import MediaStore
 from .models import MediaItem, recommendation_item_key
 from .profiler import build_taste_profile
 from .privacy import scrub_sensitive
 from .ranking import rank_candidates
 from .recommendation_service import RecommendationBatch, RecommendationSession, RecommendationSessionService
-from .runtime_paths import resolve_database_path
+from .runtime_paths import resolve_database_path, resolve_media_dir
 from .serialization import media_item_from_dict
 
 
@@ -225,6 +226,18 @@ def _merge_intents(base: RecommendationIntent | None, parsed: RecommendationInte
     return RecommendationIntent.from_dict(merged)
 
 
+def _scrub_intent(intent: RecommendationIntent) -> RecommendationIntent:
+    cleaned: dict[str, object] = {}
+    for field, value in intent.to_dict().items():
+        if isinstance(value, str):
+            cleaned[field] = scrub_sensitive(value)
+        elif isinstance(value, (list, tuple)):
+            cleaned[field] = [scrub_sensitive(item) if isinstance(item, str) else item for item in value]
+        else:
+            cleaned[field] = value
+    return RecommendationIntent.from_dict(cleaned)
+
+
 def _item_dicts(value: object) -> list[MediaItem]:
     if not isinstance(value, list):
         return []
@@ -267,14 +280,14 @@ def _conflicts(item: dict[str, object]) -> list[str]:
     return []
 
 
-def _normalize_batch_item(item: dict[str, object]) -> dict[str, object]:
+def _normalize_batch_item(item: dict[str, object], media_store: MediaStore) -> dict[str, object]:
     scrubbed = scrub_sensitive(dict(item))
     payload = scrubbed if isinstance(scrubbed, dict) else {}
     had_cover = bool(str(payload.get("cover") or "").strip())
     payload["url"] = _safe_url(payload.get("url"))
-    payload["cover"] = _safe_media_url(payload.get("cover"))
+    payload["cover"] = _safe_media_url(payload.get("cover"), media_store)
     payload["source"] = _safe_source(payload.get("source"))
-    payload["people_photos"] = _safe_people_photos(payload.get("people_photos"))
+    payload["people_photos"] = _safe_people_photos(payload.get("people_photos"), media_store)
     payload["item_key"] = recommendation_item_key(payload)
     payload["conflicts"] = _conflicts(payload)
     payload["media_status"] = _media_status(payload, had_cover=had_cover)
@@ -304,9 +317,12 @@ def _safe_url(value: object) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path or "", "", ""))
 
 
-def _safe_media_url(value: object) -> str:
+def _safe_media_url(value: object, media_store: MediaStore) -> str:
     text = str(value or "").strip()
-    return text if text.startswith("/media/") and "?" not in text and "#" not in text else ""
+    if not text.startswith("/media/") or "?" in text or "#" in text:
+        return ""
+    stored = media_store.lookup(text.removeprefix("/media/"))
+    return stored.local_url if stored is not None and stored.status == "ready" else ""
 
 
 def _safe_source(value: object) -> str:
@@ -327,13 +343,13 @@ def _safe_source(value: object) -> str:
     return text
 
 
-def _safe_people_photos(value: object) -> dict[str, str]:
+def _safe_people_photos(value: object, media_store: MediaStore) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     out: dict[str, str] = {}
     for name, url in value.items():
         clean_name = str(name or "").strip()
-        clean_url = _safe_media_url(url)
+        clean_url = _safe_media_url(url, media_store)
         if clean_name and clean_url:
             out[clean_name] = clean_url
     return out
@@ -348,6 +364,8 @@ class RecommendationApi:
         sample_ratings_path: Path | None = None,
         sample_candidates_path: Path | None = None,
         language_adapter_factory: Callable[..., object] | None = None,
+        media_store: MediaStore | None = None,
+        media_root: Path | str | None = None,
     ):
         self.database = database
         self.database.initialize()
@@ -356,6 +374,7 @@ class RecommendationApi:
         self.sample_ratings_path = sample_ratings_path or DEFAULT_SAMPLE_RATINGS
         self.sample_candidates_path = sample_candidates_path or DEFAULT_SAMPLE_CANDIDATES
         self.language_adapter_factory = language_adapter_factory or OpenAICompatibleLanguageAdapter
+        self.media_store = media_store or MediaStore(media_root or resolve_media_dir(), database)
 
     def create_session(self, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
@@ -473,7 +492,9 @@ class RecommendationApi:
     def undo_feedback(self, event_id: str, payload: dict[str, Any] | None = None) -> dict[str, object]:
         self._require_schema(payload or {})
         try:
-            undo_id = self.feedback_service.undo_feedback(event_id)
+            undo_id = self.session_service.undo_feedback(event_id)
+            if undo_id is None:
+                undo_id = self.feedback_service.undo_feedback(event_id)
         except ValueError as exc:
             raise RecommendationApiNotFound("feedback event not found") from exc
         return {
@@ -544,20 +565,22 @@ class RecommendationApi:
         base = RecommendationIntent.from_dict(payload.get("intent")) if isinstance(payload.get("intent"), dict) else None
         text = _base_text(payload.get("intent_text") or payload.get("text"))
         if not text:
-            return base or RecommendationIntent()
+            return _scrub_intent(base or RecommendationIntent())
+        text = _base_text(scrub_sensitive(text))
         language = payload.get("language") if isinstance(payload.get("language"), dict) else {}
         endpoint = _base_text(language.get("endpoint"))
         model = _base_text(language.get("model"))
         if not endpoint and not model:
             parsed = LocalRuleLanguageAdapter().parse(text, {})
-            return parse_recommendation_intent(text, base=base) if base is not None else parsed
+            merged = parse_recommendation_intent(text, base=base) if base is not None else parsed
+            return _scrub_intent(merged)
         primary = self.language_adapter_factory(
             endpoint=endpoint,
             model=model,
             api_key=_base_text(language.get("api_key")),
         )
         parsed = LanguageService(primary=primary, fallback=LocalRuleLanguageAdapter()).parse(text, {})
-        return _merge_intents(base, parsed)
+        return _scrub_intent(_merge_intents(base, parsed))
 
     def _rated_items(self, payload: dict[str, Any]) -> list[MediaItem]:
         rated_items = _item_dicts(payload.get("rated_items"))
@@ -577,10 +600,18 @@ class RecommendationApi:
                 item.tags.append("看过")
             watched_items.append(item)
         deduped: dict[str, MediaItem] = {}
-        for item in [*rated_items, *watched_items]:
+        for item in rated_items:
             key = recommendation_item_key(item)
             if key not in deduped:
                 deduped[key] = item
+        for item in watched_items:
+            key = recommendation_item_key(item)
+            existing = deduped.get(key)
+            if existing is None:
+                deduped[key] = item
+                continue
+            if "看过" not in existing.tags:
+                existing.tags.append("看过")
         return list(deduped.values())
 
     def _profile(self, profile_key: str, rated_items: list[MediaItem], payload: dict[str, Any]):
@@ -758,7 +789,7 @@ class RecommendationApi:
             "session_id": batch.session_id,
             "channel": batch.channel,
             "index": batch.index,
-            "items": [_normalize_batch_item(dict(item)) for item in batch.items],
+            "items": [_normalize_batch_item(dict(item), self.media_store) for item in batch.items],
             "item_keys": list(batch.item_keys),
             "pool_size": batch.pool_size,
             "matched_size": batch.matched_size,

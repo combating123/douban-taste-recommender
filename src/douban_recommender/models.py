@@ -121,7 +121,10 @@ def recommendation_item_key(item: MediaItem | dict[str, Any]) -> str:
         getter = lambda key, default="": getattr(item, key, default)
     identifier = str(getter("douban_id") or "").strip()
     if identifier:
-        return f"douban:{identifier}" if identifier.isdigit() else f"external:{identifier}"
+        if identifier.isdigit():
+            return f"douban:{identifier}"
+        opaque_identifier = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:24]
+        return f"external:{opaque_identifier}"
     basis = "|".join(
         [
             str(getter("title") or "").strip().casefold(),
