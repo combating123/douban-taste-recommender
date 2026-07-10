@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS sync_items (
     PRIMARY KEY(job_id, item_key)
 );
 
+CREATE TABLE IF NOT EXISTS library_items (
+    item_key TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'candidate',
+    source TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_batches_session_channel
     ON recommendation_batches(session_id, channel, batch_index);
 CREATE INDEX IF NOT EXISTS idx_feedback_profile_time
@@ -177,11 +186,13 @@ CREATE INDEX IF NOT EXISTS idx_resolution_state_priority
     ON resolution_jobs(state, priority DESC, created_at);
 CREATE INDEX IF NOT EXISTS idx_sync_jobs_user_time
     ON sync_jobs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_library_state_time
+    ON library_items(state, updated_at DESC);
 """
 
 
 class AppDatabase:
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, path: Path | str):
         self.path = Path(path)
