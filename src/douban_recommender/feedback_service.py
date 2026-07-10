@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .database import AppDatabase
+from .privacy import scrub_sensitive
 
 
 ALLOWED_EVENT_TYPES = {
@@ -20,20 +20,6 @@ ALLOWED_EVENT_TYPES = {
     "permanent-avoid",
     "data-error",
     "undo",
-}
-SENSITIVE_KEY_MARKERS = {
-    "cookie",
-    "authorization",
-    "subscription",
-    "apikey",
-    "accesstoken",
-    "refreshtoken",
-    "password",
-    "secret",
-    "credential",
-    "token",
-    "jwt",
-    "privatekey",
 }
 DRIFT_WEIGHTS = {
     "want": 0.4,
@@ -102,31 +88,8 @@ def _timestamp(value: datetime | float | None) -> float:
     if value is None:
         return time.time()
     return float(value)
-
-
-def _is_sensitive_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
-    if not normalized:
-        return False
-    if any(marker in normalized for marker in SENSITIVE_KEY_MARKERS):
-        return True
-    return normalized == "auth" or ("api" in normalized and "key" in normalized)
-
-
-def _scrub_value(value):
-    if isinstance(value, dict):
-        return {
-            str(key): _scrub_value(nested)
-            for key, nested in value.items()
-            if not _is_sensitive_key(key)
-        }
-    if isinstance(value, (list, tuple, set)):
-        return [_scrub_value(nested) for nested in value]
-    return value
-
-
 def _scrub_payload(payload: dict[str, object]) -> dict[str, object]:
-    scrubbed = _scrub_value(dict(payload or {}))
+    scrubbed = scrub_sensitive(dict(payload or {}))
     return scrubbed if isinstance(scrubbed, dict) else {}
 
 

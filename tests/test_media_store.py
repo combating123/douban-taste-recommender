@@ -75,6 +75,25 @@ class MediaStoreTests(unittest.TestCase):
         self.assertEqual(loaded.mime_type, "image/jpeg")
         self.assertEqual(loaded.path, self.store.path_for(stored.asset_id))
 
+    def test_put_sanitizes_source_url_before_persisting(self):
+        stored = self.store.put(
+            validate_image_bytes(image_bytes()),
+            "https://user:pass@img.example/poster.png?api_key=secret-token&width=200#frag",
+            "poster",
+        )
+
+        self.assertEqual(stored.source_url, "https://img.example/poster.png")
+        with self.database.connection() as connection:
+            source_url = connection.execute(
+                "SELECT source_url FROM asset_files WHERE asset_id = ?",
+                (stored.asset_id,),
+            ).fetchone()[0]
+        self.assertEqual(source_url, "https://img.example/poster.png")
+        self.assertNotIn("user:pass", source_url)
+        self.assertNotIn("secret-token", source_url)
+        self.assertNotIn("?", source_url)
+        self.assertNotIn("#", source_url)
+
     def test_unknown_or_unsafe_asset_id_returns_none(self):
         self.assertIsNone(self.store.lookup("../web.py"))
         self.assertIsNone(self.store.lookup("not-a-sha"))

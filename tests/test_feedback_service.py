@@ -133,6 +133,9 @@ class FeedbackServiceTests(unittest.TestCase):
                 payload={
                     "safe": {
                         "note": "keep-me",
+                        "summary": "A secret garden plot stays intact.",
+                        "context": "Cookie: bid=secret-cookie-value; ck=hidden-token",
+                        "source_link": "https://user:pass@img.example/poster.png?api_key=secret-key#frag",
                         "cookie": "dbcl2=secret-cookie",
                         "openai_api_key": "secret-key",
                         "token": "secret-token-value",
@@ -141,7 +144,15 @@ class FeedbackServiceTests(unittest.TestCase):
                     },
                     "subscription_url": "https://secret.invalid/subscription",
                     "items": [
-                        {"authorization": "Bearer secret-token", "genre": "mystery"}
+                        {
+                            "authorization": "Bearer secret-token",
+                            "genre": "mystery",
+                            "details": "Bearer secret-token via https://user:pass@cdn.example/poster.png?token=nested-secret#frag",
+                        },
+                        [
+                            "Cookie: dbcl2=list-secret-cookie",
+                            {"url": "https://cdn.example/ok.jpg?api_key=list-secret"},
+                        ],
                     ],
                 },
             )
@@ -156,9 +167,18 @@ class FeedbackServiceTests(unittest.TestCase):
         self.assertNotIn("secret-jwt", payload_json)
         self.assertNotIn("secret-private-key", payload_json)
         self.assertNotIn("subscription", payload_json)
+        self.assertNotIn("user:pass", payload_json)
+        self.assertNotIn("?api_key=", payload_json)
+        self.assertNotIn("?token=", payload_json)
+        self.assertNotIn("#frag", payload_json)
         payload = json.loads(payload_json)
         self.assertEqual(payload["safe"]["note"], "keep-me")
+        self.assertEqual(payload["safe"]["summary"], "A secret garden plot stays intact.")
+        self.assertEqual(payload["safe"]["source_link"], "https://img.example/poster.png")
+        self.assertIn("Cookie", payload["safe"]["context"])
         self.assertEqual(payload["items"][0]["genre"], "mystery")
+        self.assertIn("https://cdn.example/poster.png", payload["items"][0]["details"])
+        self.assertIn("https://cdn.example/ok.jpg", payload["items"][1][1]["url"])
 
     def test_corrupt_json_rows_do_not_break_feedback_or_undo(self):
         event_id = self.service.record_feedback(

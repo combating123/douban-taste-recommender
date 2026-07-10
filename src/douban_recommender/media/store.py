@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..database import AppDatabase
+from ..privacy import sanitize_source_url
 from .models import StoredAsset, ValidatedImage
 from .validator import validate_image_bytes
 
@@ -52,6 +53,7 @@ class MediaStore:
                     temporary_path.unlink(missing_ok=True)
 
         now = time.time()
+        safe_source_url = sanitize_source_url(source_url)
         with self.database.connection() as connection:
             connection.execute(
                 """
@@ -73,7 +75,7 @@ class MediaStore:
                     validated.width,
                     validated.height,
                     len(validated.data),
-                    str(source_url or ""),
+                    safe_source_url,
                     str(kind or "image"),
                     now,
                     now,
