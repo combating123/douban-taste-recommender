@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 from ..database import AppDatabase
 from .models import StoredAsset, ValidatedImage
 
 
-ASSET_ROUTE_RE = re.compile(r"^([0-9a-f]{64})(?:\.(?:jpg|jpeg|png|webp))?$", re.I)
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+ASSET_ROUTE_RE = re.compile(r"^([0-9a-f]{64})(\.(?:jpg|jpeg|png|webp))?$", re.I)
 
 
 class MediaStore:
@@ -85,6 +88,7 @@ class MediaStore:
         if not match:
             return None
         key = match.group(1).lower()
+        route_extension = (match.group(2) or "").lower()
         with self.database.connection() as connection:
             row = connection.execute(
                 """
@@ -97,16 +101,42 @@ class MediaStore:
             ).fetchone()
         if not row:
             return None
-        path = (self.root / str(row["relative_path"])).resolve()
-        if self.root not in path.parents or not path.is_file():
+        return self._validated_row(row, key, route_extension)
+
+    def _validated_row(self, row: Any, key: str, route_extension: str = "") -> StoredAsset | None:
+        row_asset_id = str(row["asset_id"] or "").strip()
+        row_sha256 = str(row["sha256"] or "").strip()
+        extension = str(row["extension"] or "").strip().lower()
+        relative_text = str(row["relative_path"] or "").strip()
+
+        if (
+            row_asset_id != key
+            or row_sha256 != key
+            or not re.fullmatch(r"[0-9a-f]{64}", row_asset_id)
+            or extension not in ALLOWED_EXTENSIONS
+            or (route_extension and route_extension != extension)
+        ):
             return None
+        expected_relative = f"{key[:2]}/{key}{extension}"
+        if relative_text != expected_relative or "\\" in relative_text:
+            return None
+        relative_path = PurePosixPath(relative_text)
+        if relative_path.is_absolute() or any(part in {"", ".", ".."} for part in relative_path.parts):
+            return None
+
+        path = (self.root / Path(*relative_path.parts)).resolve()
+        if not self._is_within_root(path) or not path.is_file():
+            return None
+        if self._sha256_file(path) != key:
+            return None
+
         return StoredAsset(
-            asset_id=str(row["asset_id"]),
-            sha256=str(row["sha256"]),
+            asset_id=key,
+            sha256=key,
             path=path,
-            local_url=f"/media/{row['asset_id']}{row['extension']}",
+            local_url=f"/media/{key}{extension}",
             mime_type=str(row["mime_type"]),
-            extension=str(row["extension"]),
+            extension=extension,
             width=int(row["width"]),
             height=int(row["height"]),
             byte_size=int(row["byte_size"]),
@@ -114,6 +144,16 @@ class MediaStore:
             kind=str(row["kind"]),
             status=str(row["status"]),
         )
+
+    def _is_within_root(self, path: Path) -> bool:
+        return path == self.root or self.root in path.parents
+
+    def _sha256_file(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def path_for(self, asset_id: str) -> Path | None:
         stored = self.lookup(asset_id)

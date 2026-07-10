@@ -1,4 +1,5 @@
 ﻿import base64
+import hashlib
 import inspect
 import json
 import tempfile
@@ -69,12 +70,14 @@ class CatalogApiV2Tests(unittest.TestCase):
             )
 
     def _insert_asset(self, asset_id, kind="poster", present=True, status="ready", relative=None):
-        relative = relative or (Path(asset_id[:2]) / f"{asset_id}.png")
+        data = f"catalog fixture asset:{asset_id}:{kind}:{status}".encode("utf-8")
+        actual_asset_id = hashlib.sha256(data).hexdigest()
+        relative = relative or (Path(actual_asset_id[:2]) / f"{actual_asset_id}.png")
         relative = Path(relative)
         path = self.media_root / relative
         if present:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(PNG_BYTES)
+            path.write_bytes(data)
         with self.database.connection() as connection:
             connection.execute(
                 """
@@ -83,14 +86,16 @@ class CatalogApiV2Tests(unittest.TestCase):
                     byte_size, source_url, kind, status, created_at, last_verified_at
                 ) VALUES(?, ?, ?, 'image/png', '.png', 1, 1, ?, 'https://secret.example/source.png', ?, ?, ?, ?)
                 """,
-                (asset_id, asset_id, relative.as_posix(), len(PNG_BYTES), kind, status, self.now, self.now),
+                (actual_asset_id, actual_asset_id, relative.as_posix(), len(data), kind, status, self.now, self.now),
             )
-        return asset_id
+        return actual_asset_id
 
     def _seed_catalog(self):
         poster_asset = self._insert_asset("a" * 64, "poster", present=True)
         portrait_asset = self._insert_asset("b" * 64, "portrait", present=True)
         missing_asset = self._insert_asset("c" * 64, "backdrop", present=False)
+        self.poster_asset = poster_asset
+        self.portrait_asset = portrait_asset
         alpha = {
             "title": "Local Poster Film",
             "media_type": "movie",
@@ -114,6 +119,7 @@ class CatalogApiV2Tests(unittest.TestCase):
                     {
                         "name": "Actor External",
                         "photo": "Headshot http://cdn.example/actor.jpg?api_key=secret should disappear",
+                        "bearer": "abc123",
                         "api_key": "stripe-test-key-placeholder",
                         "nested": {"authorization": "Bearer tokenvalue"},
                     }
@@ -280,14 +286,14 @@ class CatalogApiV2Tests(unittest.TestCase):
         status, payload = self.request("/api/v2/titles/douban:1001")
         self.assertEqual(status, 200, payload)
         self.assertEqual(payload["item_key"], item_key("1001"))
-        self.assertEqual(payload["poster"]["url"], f"/media/{'a' * 64}.png")
+        self.assertEqual(payload["poster"]["url"], f"/media/{self.poster_asset}.png")
         self.assertEqual(payload["poster"]["media_status"], "ready")
         self.assertEqual(payload["backdrop"]["url"], "")
         self.assertIn(payload["backdrop"]["media_status"], {"missing", "designed-fallback"})
         people = {person["name"]: person for person in payload["people"]}
         self.assertEqual(people["Director A"]["role"], "director")
         self.assertEqual(people["Director A"]["media_status"], "ready")
-        self.assertEqual(people["Director A"]["portrait"]["url"], f"/media/{'b' * 64}.png")
+        self.assertEqual(people["Director A"]["portrait"]["url"], f"/media/{self.portrait_asset}.png")
         self.assertEqual(people["Actor External"]["portrait"]["url"], "")
         self.assertIn(people["Actor External"]["media_status"], {"missing", "designed-fallback"})
         self.assertEqual(people["Actor External"]["evidence_title_ids"], [item_key("1001")])
@@ -299,7 +305,7 @@ class CatalogApiV2Tests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["name"], "Director A")
         self.assertEqual(payload["bio"], "Known seeded director")
-        self.assertEqual(payload["portrait"]["url"], f"/media/{'b' * 64}.png")
+        self.assertEqual(payload["portrait"]["url"], f"/media/{self.portrait_asset}.png")
         self.assertEqual(payload["portrait"]["media_status"], "ready")
         self.assertTrue({item_key("1001"), item_key("1002")}.issubset(set(payload["evidence_title_ids"])))
         self.assertTrue(payload["known_for"])
@@ -374,6 +380,15 @@ class CatalogApiV2Tests(unittest.TestCase):
                 self.assertEqual(payload["schema_version"], 2)
                 self.assert_catalog_payload_sanitized(payload)
 
+    def test_catalog_sanitizer_removes_bearer_keys_from_raw_people_without_dropping_actor_names(self):
+        status, payload = self.request("/api/v2/titles/douban:1001")
+        self.assertEqual(status, 200, payload)
+        raw_people = payload["item"]["raw"]["people"]
+        serialized = json.dumps(raw_people, ensure_ascii=False).lower()
+        self.assertIn("actor external", serialized)
+        self.assertNotIn("bearer", serialized)
+        self.assertNotIn("abc123", serialized)
+
     def test_session_only_feedback_is_excluded_from_all_taste_profile_groups(self):
         status, payload = self.request("/api/v2/taste")
         self.assertEqual(status, 200, payload)
@@ -410,6 +425,19 @@ class CatalogApiV2Tests(unittest.TestCase):
         rejected_asset = self._insert_asset("f" * 64, "poster", present=True)
         pending_asset = self._insert_asset("1" * 64, "poster", present=True, status="pending")
         outside_asset = self._insert_asset("2" * 64, "poster", present=False, relative="../outside.png")
+        corrupt_asset = self._insert_asset("3" * 64, "poster", present=True)
+        (self.media_root / corrupt_asset[:2] / f"{corrupt_asset}.png").write_bytes(b"corrupt replacement")
+        self._insert_library(
+            item_key("1006"),
+            {
+                "title": "Corrupt Legacy Poster",
+                "media_type": "movie",
+                "douban_id": "1006",
+                "cover": f"/media/{corrupt_asset}.png",
+            },
+            "candidate",
+            6,
+        )
         with self.database.connection() as connection:
             connection.execute(
                 """
@@ -473,6 +501,7 @@ class CatalogApiV2Tests(unittest.TestCase):
             ("/api/v2/titles/douban:1003", "poster", ""),
             ("/api/v2/titles/douban:1004", "poster", ""),
             ("/api/v2/titles/douban:1005", "poster", ""),
+            ("/api/v2/titles/douban:1006", "poster", ""),
         ]
         for path, field, expected_url in expectations:
             with self.subTest(path=path):

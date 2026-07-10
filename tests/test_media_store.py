@@ -1,4 +1,5 @@
 import io
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +78,70 @@ class MediaStoreTests(unittest.TestCase):
     def test_unknown_or_unsafe_asset_id_returns_none(self):
         self.assertIsNone(self.store.lookup("../web.py"))
         self.assertIsNone(self.store.lookup("not-a-sha"))
+
+    def test_lookup_rejects_manifest_pointing_at_another_asset_file(self):
+        first = self.store.put(validate_image_bytes(image_bytes(color="navy")), "https://img.example/a.png", "poster")
+        second_validated = validate_image_bytes(image_bytes(color="green"))
+        second_relative = Path(second_validated.sha256[:2]) / f"{second_validated.sha256}{second_validated.extension}"
+        second_path = self.store.root / second_relative
+        second_path.parent.mkdir(parents=True, exist_ok=True)
+        second_path.write_bytes(second_validated.data)
+
+        with self.database.connection() as connection:
+            connection.execute(
+                "UPDATE asset_files SET relative_path = ? WHERE asset_id = ?",
+                (second_relative.as_posix(), first.asset_id),
+            )
+
+        self.assertIsNone(self.store.lookup(first.asset_id))
+
+    def test_lookup_rejects_sha256_column_that_does_not_match_asset_id(self):
+        stored = self.store.put(validate_image_bytes(image_bytes(color="navy")), "https://img.example/a.png", "poster")
+        wrong_hash = hashlib.sha256(b"not the stored image").hexdigest()
+
+        with self.database.connection() as connection:
+            connection.execute("UPDATE asset_files SET sha256 = ? WHERE asset_id = ?", (wrong_hash, stored.asset_id))
+
+        self.assertIsNone(self.store.lookup(stored.asset_id))
+
+    def test_lookup_rejects_relative_path_name_that_does_not_match_manifest(self):
+        validated = validate_image_bytes(image_bytes(color="navy"))
+        stored = self.store.put(validated, "https://img.example/a.png", "poster")
+        wrong_relative = Path(stored.asset_id[:2]) / f"copy-{stored.asset_id}.png"
+        wrong_path = self.store.root / wrong_relative
+        wrong_path.parent.mkdir(parents=True, exist_ok=True)
+        wrong_path.write_bytes(validated.data)
+
+        with self.database.connection() as connection:
+            connection.execute(
+                "UPDATE asset_files SET relative_path = ? WHERE asset_id = ?",
+                (wrong_relative.as_posix(), stored.asset_id),
+            )
+
+        self.assertIsNone(self.store.lookup(stored.asset_id))
+
+    def test_lookup_rejects_file_content_replaced_after_manifest_write(self):
+        stored = self.store.put(validate_image_bytes(image_bytes(color="navy")), "https://img.example/a.png", "poster")
+        replacement = validate_image_bytes(image_bytes(color="green"))
+        stored.path.write_bytes(replacement.data)
+
+        self.assertIsNone(self.store.lookup(stored.asset_id))
+
+    def test_lookup_rejects_disallowed_manifest_extension(self):
+        validated = validate_image_bytes(image_bytes(color="navy"))
+        stored = self.store.put(validated, "https://img.example/a.png", "poster")
+        gif_relative = Path(stored.asset_id[:2]) / f"{stored.asset_id}.gif"
+        gif_path = self.store.root / gif_relative
+        gif_path.parent.mkdir(parents=True, exist_ok=True)
+        gif_path.write_bytes(validated.data)
+
+        with self.database.connection() as connection:
+            connection.execute(
+                "UPDATE asset_files SET extension = '.gif', relative_path = ? WHERE asset_id = ?",
+                (gif_relative.as_posix(), stored.asset_id),
+            )
+
+        self.assertIsNone(self.store.lookup(stored.asset_id))
 
 
 if __name__ == "__main__":

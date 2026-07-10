@@ -11,6 +11,7 @@ from typing import Any
 
 from .database import AppDatabase
 from .feedback_service import FeedbackService
+from .media.store import MediaStore
 from .models import MediaItem, recommendation_item_key
 from .profiler import build_taste_profile
 from .runtime_paths import resolve_database_path, resolve_media_dir
@@ -22,13 +23,17 @@ ALLOWED_LIBRARY_STATES = {"candidate", "watched", "wish", "wanted", "rated", "co
 SESSION_ONLY_EVENT_TYPES = {"not-tonight", "tonight-candidate"}
 APPROVED_ASSET_DECISIONS = {"selected", "approved", "accepted", "chosen"}
 SENSITIVE_KEY_MARKERS = {
+    "auth",
+    "authtoken",
+    "bearer",
     "cookie",
     "token",
+    "accesstoken",
+    "refreshtoken",
+    "sessiontoken",
     "apikey",
-    "api_key",
     "jwt",
     "privatekey",
-    "private_key",
     "subscription",
     "password",
     "authorization",
@@ -37,7 +42,7 @@ SENSITIVE_KEY_MARKERS = {
 URL_RE = re.compile(r"https?://[^\s<>'\")\]]+", re.I)
 JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
 SECRET_VALUE_RE = re.compile(
-    r"(?i)\b(?:bearer|cookie|token|api[_-]?key|jwt|private[_-]?key|subscription|password|authorization|secret)\b\s*[:=]?\s*\S*"
+    r"(?i)\b(?:bearer|auth(?:orization)?|access[_-]?token|refresh[_-]?token|session[_-]?token|cookie|token|api[_-]?key|jwt|private[_-]?key|subscription|password|secret)\b\s*[:=]?\s*\S*"
 )
 TOKEN_LIKE_RE = re.compile(r"\b(?:sk|pk|rk)_(?:live|test|prod)_[A-Za-z0-9_-]{10,}\b", re.I)
 RELATION_FIELDS = ("director", "cast", "genre", "country", "media_type", "year_bucket")
@@ -234,6 +239,7 @@ class ExplorationService:
         self.media_root = Path(media_root or resolve_media_dir()).resolve()
         self.repository = ExplorationRepository(database)
         self.feedback_service = FeedbackService(database)
+        self.media_store = MediaStore(self.media_root, database)
 
     def title(self, lookup_id: str) -> dict[str, object]:
         record = self.find_title(lookup_id)
@@ -429,15 +435,12 @@ class ExplorationService:
         if (
             not re.fullmatch(r"[0-9a-f]{64}", asset_id)
             or decision not in APPROVED_ASSET_DECISIONS
-            or str(row.get("status") or "") != "ready"
-            or str(row.get("kind") or "") != kind
-            or not relative_path
         ):
             return ""
-        path = (self.media_root / relative_path).resolve()
-        if self.media_root not in path.parents or not path.is_file() or extension.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        stored = self.media_store.lookup(f"{asset_id}{extension}")
+        if stored is None or stored.kind != kind or stored.status != "ready":
             return ""
-        return f"/media/{asset_id}{extension}"
+        return stored.local_url
 
     def _safe_raw(self, payload: dict[str, Any]) -> dict[str, object]:
         allowed: dict[str, object] = {}
@@ -625,9 +628,12 @@ def _raw_value(payload: dict[str, Any], key: str) -> object:
 
 
 def _is_sensitive_key(key: object) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
     raw = str(key or "").lower()
-    return any(marker in normalized or marker in raw for marker in SENSITIVE_KEY_MARKERS)
+    normalized = re.sub(r"[^a-z0-9]", "", raw)
+    terms = {term for term in re.split(r"[^a-z0-9]+", raw) if term}
+    if terms & {"auth", "bearer", "cookie", "token", "jwt", "secret", "password", "subscription"}:
+        return True
+    return any(marker == normalized or marker in normalized for marker in SENSITIVE_KEY_MARKERS if len(marker) > 4)
 
 
 def _sanitize_string(value: str) -> str:
