@@ -146,6 +146,41 @@ class LanguageAdapterTests(unittest.TestCase):
         self.assertNotIn("phone", call["body"])
         self.assertNotIn("super-secret-key", call["body"])
 
+    def test_openai_adapter_responses_endpoint_with_trailing_slash_uses_responses_envelope(self):
+        transport = RecordingTransport(
+            payload=json.dumps(
+                {
+                    "output": [
+                        {
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": '{"text":"\u63a8\u8350\u300a\u771f\u5b9e\u6807\u9898\u300b","citations":["ev1"]}',
+                                }
+                            ]
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/responses/",
+            model="demo",
+            transport=transport,
+        )
+
+        result = adapter.explain("请解释为什么推荐它", {"ev1": {"title": "真实标题"}})
+
+        self.assertEqual(result, "推荐《真实标题》")
+        self.assertEqual(len(transport.calls), 1)
+        call = transport.calls[0]
+        self.assertEqual(call["url"], "http://127.0.0.1:11434/v1/responses")
+        payload = json.loads(call["body"])
+        self.assertNotIn("messages", payload)
+        self.assertIn("input", payload)
+        self.assertEqual(payload["text"], {"format": {"type": "json_object"}})
+
     def test_openai_adapter_responses_endpoint_uses_responses_envelope(self):
         transport = RecordingTransport(
             payload=json.dumps(

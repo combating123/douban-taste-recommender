@@ -198,15 +198,22 @@ def _validated_endpoint(endpoint: str) -> str:
         netloc = f"[{host}]"
     if port:
         netloc = f"{netloc}:{port}"
-    path = parsed.path or ""
-    if not path or path == "/":
+    path = _normalized_endpoint_path(parsed.path)
+    if path == "/":
         path = "/v1/chat/completions"
     return urlunsplit((parsed.scheme, netloc, path, "", ""))
 
 
 def _endpoint_protocol(endpoint: str) -> str:
     parsed = urlsplit(endpoint)
-    return "responses" if parsed.path == "/v1/responses" else "chat"
+    return "responses" if _normalized_endpoint_path(parsed.path) == "/v1/responses" else "chat"
+
+
+def _normalized_endpoint_path(path: str) -> str:
+    text = str(path or "").strip()
+    if not text or text == "/":
+        return "/"
+    return text.rstrip("/") or "/"
 
 
 def _system_prompt(task: str) -> str:
