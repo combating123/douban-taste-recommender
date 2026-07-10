@@ -50,6 +50,7 @@ RECOMMENDATION_API: RecommendationApi | None = None
 RECOMMENDATION_API_LOCK = threading.Lock()
 CATALOG_API: CatalogApi | None = None
 CATALOG_API_LOCK = threading.Lock()
+CATALOG_SCHEMA_VERSION = 2
 PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "黑泽明": "Akira Kurosawa",
     "三船敏郎": "Toshiro Mifune",
@@ -126,6 +127,10 @@ def get_catalog_api() -> CatalogApi:
         if CATALOG_API is None:
             CATALOG_API = build_default_catalog_api()
     return CATALOG_API
+
+
+def catalog_error_payload(message: str) -> dict[str, object]:
+    return {"schema_version": CATALOG_SCHEMA_VERSION, "error": str(message or "error")}
 
 
 def anime_subsection_name(countries: list[str]) -> str:
@@ -695,13 +700,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/v2/titles/"):
                 title_id = path.removeprefix("/api/v2/titles/").strip("/")
                 if not title_id or "/" in title_id or "\\" in title_id or ".." in title_id:
-                    self.send_json({"error": "not found"}, status=404)
+                    self.send_json(catalog_error_payload("not found"), status=404)
                     return
                 self.send_json(get_catalog_api().get_title(title_id))
             elif path.startswith("/api/v2/people/"):
                 person_id = path.removeprefix("/api/v2/people/").strip("/")
                 if not person_id or "/" in person_id or "\\" in person_id or ".." in person_id:
-                    self.send_json({"error": "not found"}, status=404)
+                    self.send_json(catalog_error_payload("not found"), status=404)
                     return
                 self.send_json(get_catalog_api().get_person(person_id))
             elif path == "/api/v2/library":
@@ -728,7 +733,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(self.handle_poster_job_get(job_id))
             else:
                 self.send_json({"error": "not found"}, status=404)
-        except (RecommendationApiError, CatalogApiError) as exc:
+        except CatalogApiError as exc:
+            self.send_json(catalog_error_payload(str(exc)), status=exc.status_code)
+        except RecommendationApiError as exc:
             self.send_json({"error": str(exc)}, status=exc.status_code)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from .database import AppDatabase
 from .feedback_service import FeedbackService
@@ -18,8 +18,28 @@ from .serialization import media_item_from_dict, media_item_to_dict
 
 SCHEMA_VERSION = 2
 SAFE_STATE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-ALLOWED_LIBRARY_STATES = {"candidate", "watched", "wish", "rated", "collect", "ready", "hidden", "archived", "all"}
+ALLOWED_LIBRARY_STATES = {"candidate", "watched", "wish", "wanted", "rated", "collect", "ready", "hidden", "archived", "all"}
 SESSION_ONLY_EVENT_TYPES = {"not-tonight", "tonight-candidate"}
+APPROVED_ASSET_DECISIONS = {"selected", "approved", "accepted", "chosen"}
+SENSITIVE_KEY_MARKERS = {
+    "cookie",
+    "token",
+    "apikey",
+    "api_key",
+    "jwt",
+    "privatekey",
+    "private_key",
+    "subscription",
+    "password",
+    "authorization",
+    "secret",
+}
+URL_RE = re.compile(r"https?://[^\s<>'\")\]]+", re.I)
+JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(?:bearer|cookie|token|api[_-]?key|jwt|private[_-]?key|subscription|password|authorization|secret)\b\s*[:=]?\s*\S*"
+)
+TOKEN_LIKE_RE = re.compile(r"\b(?:sk|pk|rk)_(?:live|test|prod)_[A-Za-z0-9_-]{10,}\b", re.I)
 RELATION_FIELDS = ("director", "cast", "genre", "country", "media_type", "year_bucket")
 RELATION_WEIGHTS = {"director": 4.0, "cast": 2.5, "genre": 1.8, "country": 1.0, "media_type": 0.6, "year_bucket": 0.8}
 
@@ -174,6 +194,26 @@ class ExplorationRepository:
             ).fetchone()
         return dict(row) if row else None
 
+    def asset_for_route(self, asset_id: str, extension: str) -> dict[str, Any] | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT asset_id, relative_path, mime_type, extension, kind, status
+                FROM asset_files
+                WHERE asset_id = ? AND lower(extension) = lower(?)
+                """,
+                (asset_id, extension),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def person_id_by_name(self, name: str) -> str | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT id FROM person_identities WHERE name = ? ORDER BY updated_at DESC, id LIMIT 1",
+                (name,),
+            ).fetchone()
+        return str(row["id"]) if row else None
+
     def feedback_rows(self, profile_key: str) -> list[dict[str, Any]]:
         with self.database.connection() as connection:
             rows = connection.execute(
@@ -208,7 +248,7 @@ class ExplorationService:
             raise ExplorationNotFound("person not found")
         person_id, name, aliases, metadata, evidence = derived
         portrait = self._person_asset(person_id, name)
-        return {
+        return _sanitize_catalog_payload({
             "schema_version": SCHEMA_VERSION,
             "id": person_id,
             "name": name,
@@ -219,27 +259,27 @@ class ExplorationService:
             "known_for": [self._node_payload(record) for record in evidence[:8]],
             "evidence_title_ids": [record.item_key for record in evidence],
             "evidence": [{"title_id": record.item_key, "title": record.item.title, "roles": self._roles_for_person(record, name)} for record in evidence],
-        }
+        })
 
     def library(self, state: str = "all", cursor: str = "", limit: int = 24) -> dict[str, object]:
         clean_state = self._validate_state(state)
         clean_limit = self._validate_limit(limit, 1, 100, field="limit")
         parsed_cursor = self._decode_cursor(cursor) if cursor else None
         records, has_more = self.repository.paged_library(clean_state, clean_limit, parsed_cursor)
-        return {
+        return _sanitize_catalog_payload({
             "schema_version": SCHEMA_VERSION,
             "state": clean_state,
             "limit": clean_limit,
             "items": [self.serialize_title(record, include_schema=False) for record in records],
             "next_cursor": self._encode_cursor(records[-1]) if has_more and records else "",
-        }
+        })
 
     def taste(self, profile_key: str = "default") -> dict[str, object]:
         profile_key = str(profile_key or "default").strip() or "default"
         records = self.repository.library_records()
         rated_items = [record.item for record in records if record.item.my_rating is not None]
         profile = build_taste_profile(rated_items, feedback_signals=self.feedback_service.feedback_signals(profile_key, time.time()))
-        return {"schema_version": SCHEMA_VERSION, "profile_key": profile_key, "summary": profile.summary(), "groups": self._taste_groups(records, self.repository.feedback_rows(profile_key))}
+        return _sanitize_catalog_payload({"schema_version": SCHEMA_VERSION, "profile_key": profile_key, "summary": profile.summary(), "groups": self._taste_groups(records, self.repository.feedback_rows(profile_key))})
 
     def build_universe_graph(self, focus_id: str, limit: int = 9) -> dict[str, object]:
         clean_limit = self._clamp_int(limit, 9, 3, 25)
@@ -260,13 +300,13 @@ class ExplorationService:
             scored.append((score, record.item_key, record, [f"{_reason_label(field)}: {value}" for field, value in shared]))
         scored.sort(key=lambda row: (-row[0], row[1]))
         selected = scored[: max(0, clean_limit - 1)]
-        return {
+        return _sanitize_catalog_payload({
             "schema_version": SCHEMA_VERSION,
             "focus_id": focus.item_key,
             "limit": clean_limit,
             "nodes": [self._node_payload(focus)] + [self._node_payload(row[2]) for row in selected],
             "edges": [{"source": focus.item_key, "target": row[2].item_key, "score": row[0], "reason": row[3][0], "reasons": row[3]} for row in selected],
-        }
+        })
 
     def find_title(self, lookup_id: str) -> LibraryRecord | None:
         lookup = str(lookup_id or "").strip()
@@ -312,7 +352,7 @@ class ExplorationService:
             "people": self._people_for_title(record),
             "updated_at": record.updated_at,
         }
-        return {"schema_version": SCHEMA_VERSION, **result} if include_schema else result
+        return _sanitize_catalog_payload({"schema_version": SCHEMA_VERSION, **result} if include_schema else result)
 
     def _safe_item_payload(self, record: LibraryRecord) -> dict[str, object]:
         payload = media_item_to_dict(record.item)
@@ -321,7 +361,7 @@ class ExplorationService:
         source = str(record.item.source or "").strip()
         payload["source"] = "" if "://" in source else source
         payload["raw"] = self._safe_raw(record.payload)
-        return payload
+        return _sanitize_catalog_payload(payload)
 
     def _people_for_title(self, record: LibraryRecord) -> list[dict[str, object]]:
         people: list[dict[str, object]] = []
@@ -353,10 +393,9 @@ class ExplorationService:
         return roles
 
     def _person_id_for_name(self, name: str) -> str:
-        with self.database.connection() as connection:
-            row = connection.execute("SELECT id FROM person_identities WHERE name = ? ORDER BY updated_at DESC, id LIMIT 1", (name,)).fetchone()
-        if row:
-            return str(row["id"])
+        existing_id = self.repository.person_id_by_name(name)
+        if existing_id:
+            return existing_id
         slug = base64.urlsafe_b64encode(str(name).encode("utf-8")).decode("ascii").rstrip("=")
         return f"derived:{slug}"
 
@@ -367,22 +406,33 @@ class ExplorationService:
         if entity_id:
             override = self.repository.asset_override(entity_kind, entity_id, kind)
             if override:
-                local = self._local_asset_url(override)
+                local = self._local_asset_url(override, kind)
                 return {"url": local, "media_status": "ready" if local else "missing"}
         legacy = str(legacy_value or "").strip()
-        if legacy.startswith("/media/") and _safe_media_route(legacy):
-            return {"url": legacy, "media_status": "ready"}
+        legacy_asset = _parse_media_route(legacy)
+        if legacy_asset:
+            asset_id, extension = legacy_asset
+            row = self.repository.asset_for_route(asset_id, extension)
+            local = self._local_asset_url(row or {}, kind)
+            return {"url": local, "media_status": "ready" if local else ("designed-fallback" if kind == "poster" else "missing")}
         if legacy.startswith("data:image/"):
             return {"url": "", "media_status": "designed-fallback"}
         if legacy:
             return {"url": "", "media_status": "designed-fallback" if kind == "poster" else "missing"}
         return {"url": "", "media_status": "missing"}
 
-    def _local_asset_url(self, row: dict[str, Any]) -> str:
+    def _local_asset_url(self, row: dict[str, Any], kind: str) -> str:
         asset_id = str(row.get("asset_id") or "").strip().lower()
         relative_path = str(row.get("relative_path") or "").strip()
         extension = str(row.get("extension") or "") or Path(relative_path).suffix
-        if not re.fullmatch(r"[0-9a-f]{64}", asset_id) or str(row.get("status") or "") != "ready" or not relative_path:
+        decision = str(row.get("decision") or "selected").strip().lower()
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", asset_id)
+            or decision not in APPROVED_ASSET_DECISIONS
+            or str(row.get("status") or "") != "ready"
+            or str(row.get("kind") or "") != kind
+            or not relative_path
+        ):
             return ""
         path = (self.media_root / relative_path).resolve()
         if self.media_root not in path.parents or not path.is_file() or extension.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
@@ -430,7 +480,7 @@ class ExplorationService:
                 for feature in features:
                     add(negative, feature, 3.0 - float(rating), record.item_key, "library-rating")
                     add(recent, feature, 3.0 - float(rating), record.item_key, "library-rating")
-            elif {tag.lower() for tag in record.item.tags} & {"wish", "想看", "鎯崇湅"} or record.state == "wish":
+            elif {tag.lower() for tag in record.item.tags} & {"wish", "wanted", "想看", "鎯崇湅"} or record.state in {"wish", "wanted"}:
                 for feature in features[:4]:
                     add(unexplored, feature, 1.0, record.item_key, "wishlist")
 
@@ -450,7 +500,7 @@ class ExplorationService:
                     add(negative, feature, 2.0, item_key, "feedback")
                     add(recent, feature, 2.0, item_key, "feedback")
                 elif event_type in SESSION_ONLY_EVENT_TYPES:
-                    add(recent, feature, 1.0, item_key, "session-feedback")
+                    continue
 
         conflicts: dict[str, dict[str, Any]] = {}
         for feature in sorted(set(positive) & set(negative)):
@@ -494,7 +544,13 @@ class ExplorationService:
         try:
             padded = str(value) + "=" * (-len(str(value)) % 4)
             decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-            return float(decoded["updated_at"]), str(decoded["item_key"])
+            if not isinstance(decoded, dict) or set(decoded) != {"updated_at", "item_key"}:
+                raise ValueError("invalid cursor shape")
+            updated_at = float(decoded["updated_at"])
+            item_key = str(decoded["item_key"] or "").strip()
+            if not math.isfinite(updated_at) or not item_key:
+                raise ValueError("invalid cursor value")
+            return updated_at, item_key
         except Exception as exc:
             raise ExplorationError("invalid cursor") from exc
 
@@ -549,22 +605,69 @@ def _safe_media_route(url: str) -> bool:
     return re.fullmatch(r"[0-9a-f]{64}(?:\.(?:jpg|jpeg|png|webp))?", route.removeprefix("/media/"), re.I) is not None
 
 
+def _parse_media_route(url: str) -> tuple[str, str] | None:
+    route = str(url or "")
+    if not _safe_media_route(route):
+        return None
+    filename = route.removeprefix("/media/")
+    if "." not in filename:
+        return None
+    asset_id, extension = filename.rsplit(".", 1)
+    extension = "." + extension.lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", asset_id, re.I) or extension not in {".jpg", ".jpeg", ".png", ".webp"}:
+        return None
+    return asset_id.lower(), extension
+
+
 def _raw_value(payload: dict[str, Any], key: str) -> object:
     raw = payload.get("raw")
     return raw.get(key) if isinstance(raw, dict) else ""
 
 
+def _is_sensitive_key(key: object) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+    raw = str(key or "").lower()
+    return any(marker in normalized or marker in raw for marker in SENSITIVE_KEY_MARKERS)
+
+
+def _sanitize_string(value: str) -> str:
+    text = str(value or "")
+    if text.startswith("/media/") and _safe_media_route(text):
+        return text
+    if text.startswith("data:image/"):
+        return ""
+    text = URL_RE.sub("", text)
+    text = JWT_RE.sub("", text)
+    text = TOKEN_LIKE_RE.sub("", text)
+    text = SECRET_VALUE_RE.sub("", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    if _is_sensitive_key(text):
+        return ""
+    return text
+
+
+def _sanitize_catalog_payload(value: object) -> object:
+    if isinstance(value, dict):
+        sanitized: dict[str, object] = {}
+        for key, nested in value.items():
+            if _is_sensitive_key(key):
+                continue
+            sanitized[str(key)] = _sanitize_catalog_payload(nested)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_catalog_payload(nested) for nested in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_catalog_payload(nested) for nested in value)
+    if isinstance(value, str):
+        return _sanitize_string(value)
+    return value
+
+
 def _strip_external(value: object) -> object:
     if isinstance(value, str):
-        text = value.strip()
-        if text.startswith("/media/") and _safe_media_route(text):
-            return text
-        if text.startswith("data:image/"):
-            return ""
-        parsed = urlsplit(text)
-        return "" if parsed.scheme in {"http", "https"} else text
+        return _sanitize_string(value)
     if isinstance(value, dict):
-        return {str(key): _strip_external(nested) for key, nested in value.items()}
+        return {str(key): _strip_external(nested) for key, nested in value.items() if not _is_sensitive_key(key)}
     if isinstance(value, list):
         return [_strip_external(nested) for nested in value]
     return value
