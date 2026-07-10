@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>CineScope · 本地 AI 影视体验</title>
+  <link rel="stylesheet" href="/assets/v3/styles/tokens.css" />
+</head>
+<body>
+  <a class="skip-link" href="#app-view">跳至主要内容</a>
+  <div class="cinescope-shell">
+    <aside class="app-rail" aria-label="CineScope 空间导航">
+      <a class="rail-mark" href="/tonight" aria-label="CineScope 今晚">CS</a>
+      <nav aria-label="主要空间">
+        <a href="/tonight">今晚</a>
+        <a href="/universe">宇宙</a>
+        <a href="/library">片库</a>
+        <a href="/taste">口味</a>
+        <a href="/health">健康</a>
+      </nav>
+    </aside>
+
+    <div class="shell-content">
+      <header class="top-bar">
+        <p class="eyebrow">CineScope / LOCAL AI CINEMA</p>
+        <p id="shell-status" class="shell-status" aria-live="polite">本地片库已准备就绪</p>
+      </header>
+
+      <div id="command-lens-root" aria-label="Command Lens"></div>
+      <main id="app-view" tabindex="-1">
+        <section class="shell-intro" aria-labelledby="shell-title">
+          <p class="eyebrow">五个空间，一条观看线索</p>
+          <h1 id="shell-title">从今晚开始，回到你的银幕宇宙。</h1>
+          <p>正在载入可恢复的 CineScope 工作台。你的片库、口味与本地媒体服务始终保持在本机边界内。</p>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div id="overlay-root" aria-live="polite" aria-relevant="additions"></div>
+  <noscript>
+    <p class="noscript-message">CineScope 需要启用 JavaScript 才能打开互动影视工作台；本地服务与已有数据不会因此离开设备。</p>
+  </noscript>
+  <script type="module" src="/assets/v3/js/app.js"></script>
+</body>
+</html>

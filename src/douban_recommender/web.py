@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import os
 import threading
 import time
 import uuid
@@ -29,6 +30,7 @@ from .serialization import media_item_from_dict, media_item_to_dict
 from .storage import CacheStore, default_cache_dir
 from .sync_api import SyncApi, build_default_sync_api
 from .web_ui import INDEX_HTML
+from .web_ui_v3 import asset_response, is_v3_frontend_route, load_index_html, selected_ui_version
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_RATINGS = ROOT / "sample_data" / "ratings_sample.csv"
@@ -694,7 +696,16 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         try:
             if path in {"/", "/index.html"}:
-                self.send_text(INDEX_HTML, content_type="text/html; charset=utf-8")
+                html = load_index_html() if selected_ui_version(os.environ) == "v3" else INDEX_HTML
+                self.send_text(html, content_type="text/html; charset=utf-8")
+            elif path.startswith("/assets/v3/"):
+                relative_path = path.removeprefix("/assets/v3/")
+                try:
+                    data, content_type = asset_response(relative_path)
+                except FileNotFoundError:
+                    self.send_json({"error": "asset not found"}, status=404)
+                    return
+                self.send_bytes(data, content_type=content_type, cache_control="public, max-age=31536000, immutable")
             elif path == "/sample/ratings":
                 self.send_text(read_text_file(SAMPLE_RATINGS), content_type="text/plain; charset=utf-8")
             elif path == "/sample/candidates":
@@ -757,6 +768,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/poster-jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 self.send_json(self.handle_poster_job_get(job_id))
+            elif selected_ui_version(os.environ) == "v3" and is_v3_frontend_route(path):
+                self.send_text(load_index_html(), content_type="text/html; charset=utf-8")
             else:
                 self.send_json({"error": "not found"}, status=404)
         except CatalogApiError as exc:
