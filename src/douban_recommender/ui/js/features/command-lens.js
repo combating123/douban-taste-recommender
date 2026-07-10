@@ -226,7 +226,7 @@ export function openCommandLens(initialText = "") {
   if (!root) return null;
   dependencies.root = root;
 
-  lens = element("section", "command-lens motion-enter");
+  lens = element("section", "command-lens command-lens--enter");
   lens.setAttribute("role", "dialog");
   lens.setAttribute("aria-modal", "true");
   lens.setAttribute("aria-labelledby", "command-lens-title");

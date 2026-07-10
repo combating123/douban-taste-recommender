@@ -1299,6 +1299,36 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn("movie-session", result["calls"][0])
         self.assertIn("series-session", result["calls"][3])
 
+    def test_command_lens_entrance_animation_preserves_centering_transform(self):
+        source = (UI_ROOT / "js" / "features" / "command-lens.js").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "tonight.css").read_text(encoding="utf-8")
+
+        self.assertIn('element("section", "command-lens command-lens--enter")', source)
+        self.assertNotIn("motion-enter", source)
+        self.assertRegex(
+            css,
+            r"\.command-lens--enter\s*\{\s*animation:\s*command-lens-enter\s+var\(--motion-standard\)\s+[^;]+;\s*\}",
+        )
+        for phase in ("from", "to"):
+            with self.subTest(phase=phase):
+                self.assertRegex(
+                    css,
+                    re.compile(
+                        rf"@keyframes\s+command-lens-enter\s*\{{.*?\b{phase}\s*\{{[^}}]*transform:\s*translateX\(-50%\)[^;]*;",
+                        re.DOTALL,
+                    ),
+                )
+
+        reduced_motion = re.search(
+            r"@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(?P<body>.*?)\n\}",
+            css,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(reduced_motion)
+        reduced_css = reduced_motion.group("body")
+        self.assertIn(".command-lens--enter { animation-duration: 1ms; }", reduced_css)
+        self.assertIn(".command-lens { transform: translateX(-50%); }", reduced_css)
+
     def test_tonight_stylesheet_is_static_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
         css = (UI_ROOT / "styles" / "tonight.css").read_text(encoding="utf-8")

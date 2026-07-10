@@ -182,6 +182,19 @@
   box-shadow: 0 2rem 8rem rgba(0, 0, 0, 0.72);
   transform: translateX(-50%);
 }
+.command-lens--enter {
+  animation: command-lens-enter var(--motion-standard) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes command-lens-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.75rem) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
 .command-lens::before {
   position: fixed;
   z-index: -1;
@@ -297,5 +310,6 @@
   .command-lens__close,
   .command-lens__submit,
   .intent-chip button { transition-duration: 1ms; }
+  .command-lens--enter { animation-duration: 1ms; }
   .command-lens { transform: translateX(-50%); }
 }
