@@ -87,6 +87,77 @@ class CineScopeRecommendationTests(unittest.TestCase):
         self.assertTrue(recs[0].is_wishlist)
         self.assertIn("想看", recs[0].badges)
 
+
+    def test_recommendation_rerank_reduces_country_and_media_type_monotony(self):
+        candidates = [
+            MediaItem(
+                title=f"日本动画{i}",
+                douban_id=f"jp{i}",
+                media_type="动漫",
+                douban_rating=9.2,
+                countries=["日本"],
+                genres=["动画", "剧情"],
+            )
+            for i in range(8)
+        ] + [
+            MediaItem(
+                title="中国奇谭",
+                douban_id="cn1",
+                media_type="动漫",
+                douban_rating=8.9,
+                countries=["中国大陆"],
+                genres=["动画", "剧情"],
+            ),
+            MediaItem(
+                title="Arcane",
+                douban_id="us1",
+                media_type="动漫",
+                douban_rating=9.0,
+                countries=["美国"],
+                genres=["动画", "剧情"],
+            ),
+        ]
+        profile = build_taste_profile([], like_terms="评分高，剧情好", dislike_terms="")
+
+        recs = recommend([], candidates, profile, limit=6, include_anime=True)
+        countries = [rec.item.countries[0] for rec in recs if rec.item.countries]
+
+        self.assertIn("中国大陆", countries)
+        self.assertIn("美国", countries)
+
+    def test_recommendation_ranking_prefers_complete_real_metadata_over_placeholder_premium(self):
+        candidates = [
+            MediaItem(
+                title="占位高分片",
+                douban_id="premium-电影-999",
+                media_type="电影",
+                douban_rating=9.2,
+                directors=["镜头语言专家"],
+                casts=["戏剧张力担当"],
+                cover="data:image/svg+xml;charset=utf-8,%3Csvg%3E%3C/svg%3E",
+                summary="高分但资料待绑定",
+                source="premium_expansion",
+            ),
+            MediaItem(
+                title="真实资料片",
+                douban_id="real1",
+                media_type="电影",
+                douban_rating=8.9,
+                directors=["导演甲"],
+                casts=["演员乙"],
+                cover="https://img.example/poster.jpg",
+                summary="剧情完整，人物塑造扎实",
+                raw={"people_photos": {"导演甲": "https://img.example/director.jpg", "演员乙": "https://img.example/cast.jpg"}},
+            ),
+        ]
+        profile = build_taste_profile([], like_terms="评分高，剧情好", dislike_terms="")
+
+        recs = recommend([], candidates, profile, limit=2)
+
+        self.assertEqual(recs[0].item.title, "真实资料片")
+        self.assertIn("资料完整", recs[0].reasons)
+        self.assertTrue(any("资料待绑定" in warning for warning in recs[1].warnings))
+
     def test_recommendation_dict_exposes_public_people_photo_map(self):
         rated = []
         candidates = [

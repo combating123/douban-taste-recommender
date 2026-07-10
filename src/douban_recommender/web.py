@@ -3,19 +3,23 @@ from __future__ import annotations
 import json
 import inspect
 import threading
+import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 import urllib.error
 import urllib.request
 
 from .candidate_planner import build_candidate_plan
 from .crawler import crawl_user_collections, normalize_douban_user_id, redact_cookie_from_message
 from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
-from .douban_sources import enrich_media_items, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
+from .douban_sources import enrich_media_items, enrich_missing_posters_from_subject_suggest, enrich_missing_posters_from_web_sources, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
+from .douban_sources import needs_external_poster_rescue, poster_source_config_from_dict
 from .douban_sources import build_url_opener
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
+from .models import MediaItem
 from .profiler import build_taste_profile
 from .recommender import recommend
 from .serialization import media_item_from_dict, media_item_to_dict
@@ -26,14 +30,85 @@ ROOT = Path(__file__).resolve().parents[2]
 SAMPLE_RATINGS = ROOT / "sample_data" / "ratings_sample.csv"
 SAMPLE_CANDIDATES = ROOT / "sample_data" / "candidates_sample.csv"
 CACHE = CacheStore(default_cache_dir(ROOT))
+POSTER_JOBS: dict[str, dict[str, object]] = {}
+POSTER_JOBS_LOCK = threading.Lock()
+MAX_POSTER_JOB_EVENTS = 80
+IMAGE_PROXY_CACHE: dict[str, tuple[bytes, str]] = {}
+MAX_IMAGE_PROXY_CACHE_ITEMS = 512
+CINESCOPE_SYNC_ENRICH_LIMIT = 40
+PUBLIC_PEOPLE_PHOTO_CACHE: dict[str, str] = {}
+PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE: set[str] = set()
+PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
+    "黑泽明": "Akira Kurosawa",
+    "三船敏郎": "Toshiro Mifune",
+    "志村乔": "Takashi Shimura",
+    "李安": "Ang Lee",
+    "郎雄": "Sihung Lung",
+    "杨贵媚": "Yang Kuei-mei",
+    "金元锡": "Kim Won-seok",
+    "李帝勋": "Lee Je-hoon",
+    "金惠秀": "Kim Hye-soo",
+    "申元浩": "Shin Won-ho (director)",
+    "曹政奚": "Cho Jung-seok",
+    "柳演锡": "Yoo Yeon-seok",
+    "米歇尔·金": "Michelle King",
+    "罗伯特·金": "Robert King (writer)",
+    "朱丽安娜·玛格丽丝": "Julianna Margulies",
+    "诺亚·霍利": "Noah Hawley",
+    "马丁·弗瑞曼": "Martin Freeman",
+    "比利·鲍伯·松顿": "Billy Bob Thornton",
+    "尼克·皮佐拉托": "Nic Pizzolatto",
+    "马修·麦康纳": "Matthew McConaughey",
+    "伍迪·哈里森": "Woody Harrelson",
+    "蒂姆·米勒": "Tim Miller (director)",
+    "大卫·芬奇": "David Fincher",
+    "迈克尔·丹特·迪马蒂诺": "Michael Dante DiMartino",
+    "渡边信一郎": "Shinichirou Watanabe",
+    "山寺宏一": "Kouichi Yamadera",
+    "石冢运升": "Unshou Ishizuka",
+    "林原惠美": "Megumi Hayashibara",
+    "中井和哉": "Kazuya Nakai",
+    "川澄绫子": "Ayako Kawasumi",
+    "佐藤银平": "Ginpei Sato",
+    "长滨博史": "Hiroshi Nagahama",
+    "中野裕斗": "Yuuto Nakano",
+    "土井美加": "Mika Doi",
+}
+
+
+def anime_subsection_name(countries: list[str]) -> str:
+    country_set = set(countries or [])
+    if country_set & {"中国大陆", "中国", "中国香港", "中国台湾"}:
+        return "动漫 · 国创动画"
+    if country_set & {"美国", "英国", "法国", "加拿大", "爱尔兰", "西班牙"}:
+        return "动漫 · 欧美动画"
+    if "日本" in country_set:
+        return "动漫 · 日漫精品"
+    return ""
 
 
 def build_recommendation_sections(recs) -> list[dict[str, object]]:
-    order = ["必看 Top Picks", "高分剧情", "电影", "电视剧", "动漫", "想看优先", "冷门惊喜"]
+    order = [
+        "必看 Top Picks",
+        "高分剧情",
+        "电影",
+        "电视剧",
+        "动漫",
+        "动漫 · 国创动画",
+        "动漫 · 欧美动画",
+        "动漫 · 日漫精品",
+        "想看优先",
+        "冷门惊喜",
+    ]
     grouped: dict[str, list[dict[str, object]]] = {}
     for rec in recs:
         name = rec.section or rec.item.media_type or "全部"
-        grouped.setdefault(name, []).append(rec.to_dict())
+        row = rec.to_dict()
+        grouped.setdefault(name, []).append(row)
+        if rec.item.media_type == "动漫":
+            subchannel = anime_subsection_name(rec.item.countries)
+            if subchannel:
+                grouped.setdefault(subchannel, []).append(row)
 
     sections: list[dict[str, object]] = []
     for name in order:
@@ -43,6 +118,31 @@ def build_recommendation_sections(recs) -> list[dict[str, object]]:
     for name, rows in grouped.items():
         sections.append({"name": name, "count": len(rows), "items": rows})
     return sections
+
+
+def diversify_recommendation_mix(recs, target_limit: int, requested_types: list[str]) -> list:
+    if target_limit < 120 or len(requested_types) < 2:
+        return recs[:target_limit]
+    floor = min(50, max(1, target_limit // len(requested_types)))
+    by_type = {media_type: [rec for rec in recs if rec.item.media_type == media_type] for media_type in requested_types}
+    selected = []
+    seen: set[str] = set()
+
+    def add(rec) -> None:
+        key = rec.item.identity
+        if key not in seen:
+            selected.append(rec)
+            seen.add(key)
+
+    for media_type in requested_types:
+        for rec in by_type.get(media_type, [])[:floor]:
+            add(rec)
+    for rec in recs:
+        if len(selected) >= target_limit:
+            break
+        add(rec)
+    selected.sort(key=lambda rec: rec.score, reverse=True)
+    return selected[:target_limit]
 
 
 def call_crawl_user_collections(**kwargs):
@@ -81,17 +181,162 @@ def analyze_sync_input(user_id_or_url: str, cookie: str = "") -> dict[str, objec
     return analysis
 
 
+def poster_config_from_payload(payload: dict):
+    return poster_source_config_from_dict(payload.get("poster_sources") or payload.get("posterSources") or {})
+
+
+def poster_config_public_summary(config) -> dict[str, object]:
+    return {
+        "tmdb_api_enabled": bool(config.enable_tmdb_api and config.tmdb_api_key),
+        "omdb_enabled": bool(config.enable_omdb and config.omdb_api_key),
+        "tvmaze_enabled": bool(config.enable_tvmaze),
+        "anilist_enabled": bool(config.enable_anilist),
+        "jikan_enabled": bool(config.enable_jikan),
+        "tmdb_html_enabled": bool(config.enable_tmdb_html),
+        "douban_enabled": bool(config.enable_douban),
+        "wikipedia_enabled": bool(config.enable_wikipedia),
+        "prefer_external_over_douban": bool(config.prefer_external_over_douban),
+    }
+
+
+def is_low_confidence_public_candidate(item: MediaItem) -> bool:
+    source = str(getattr(item, "source", "") or "")
+    if not (source.startswith("douban_plan:") or source.startswith("douban_explore:")):
+        return False
+    if getattr(item, "douban_rating", None) is not None:
+        return False
+    tags = set(getattr(item, "tags", []) or [])
+    if "想看" in tags or "看过" in tags:
+        return False
+    return True
+
+
+def filter_low_confidence_public_candidates(items: list[MediaItem]) -> tuple[list[MediaItem], int]:
+    filtered = [item for item in items if not is_low_confidence_public_candidate(item)]
+    return filtered, max(0, len(items) - len(filtered))
+
+
+def call_poster_enricher(items, **kwargs) -> int:
+    """Call the poster enrichment function while staying compatible with monkeypatched tests."""
+
+    signature = inspect.signature(enrich_missing_posters_from_web_sources)
+    filtered = {key: value for key, value in kwargs.items() if key in signature.parameters}
+    return enrich_missing_posters_from_web_sources(items, **filtered)
+
+
+def call_detail_enricher(items, **kwargs) -> list[MediaItem]:
+    """Call detail enrichment while staying compatible with monkeypatched tests."""
+
+    signature = inspect.signature(enrich_media_items)
+    filtered = {key: value for key, value in kwargs.items() if key in signature.parameters}
+    return enrich_media_items(items, **filtered)
+
+
+def serialize_poster_job(job: dict[str, object]) -> dict[str, object]:
+    out = dict(job)
+    out["events"] = list(job.get("events", []))
+    out["items"] = list(job.get("items", []))
+    return out
+
+
+def update_poster_job(job_id: str, **updates) -> None:
+    with POSTER_JOBS_LOCK:
+        job = POSTER_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+
+
+def append_poster_job_event(job_id: str, event: dict[str, object], items: list[MediaItem]) -> None:
+    with POSTER_JOBS_LOCK:
+        job = POSTER_JOBS.get(job_id)
+        if not job:
+            return
+        events = list(job.get("events", []))
+        clean_event = {
+            "title": str(event.get("title") or ""),
+            "source": str(event.get("source") or ""),
+            "status": str(event.get("status") or ""),
+            "cover": str(event.get("cover") or ""),
+            "time": time.time(),
+        }
+        events.append(clean_event)
+        if len(events) > MAX_POSTER_JOB_EVENTS:
+            events = events[-MAX_POSTER_JOB_EVENTS:]
+        done = min(int(job.get("total") or 0), int(job.get("done") or 0) + 1)
+        found = int(job.get("found") or 0) + (1 if clean_event["status"] == "found" else 0)
+        missed = int(job.get("missed") or 0) + (1 if clean_event["status"] != "found" else 0)
+        job.update({
+            "done": done,
+            "found": found,
+            "missed": missed,
+            "current_title": clean_event["title"],
+            "current_source": clean_event["source"],
+            "events": events,
+            "items": [media_item_to_dict(item) for item in items],
+            "updated_at": time.time(),
+        })
+
+
+def run_poster_job(job_id: str, items: list[MediaItem], limit: int, source_config) -> None:
+    update_poster_job(job_id, state="running", started_at=time.time())
+
+    def progress(event: dict[str, object]) -> None:
+        append_poster_job_event(job_id, event, items)
+
+    try:
+        enriched = call_poster_enricher(
+            items,
+            limit=limit,
+            sleep_seconds=0.01,
+            max_seconds=90.0,
+            source_config=source_config,
+            progress_callback=progress,
+        )
+        with POSTER_JOBS_LOCK:
+            job = POSTER_JOBS.get(job_id)
+            if job:
+                job["state"] = "done"
+                job["done"] = int(job.get("total") or len(items))
+                job["found"] = max(int(job.get("found") or 0), int(enriched or 0))
+                job["items"] = [media_item_to_dict(item) for item in items]
+                job["finished_at"] = time.time()
+                job["updated_at"] = time.time()
+    except Exception as exc:
+        with POSTER_JOBS_LOCK:
+            job = POSTER_JOBS.get(job_id)
+            if job:
+                job["state"] = "error"
+                job["error"] = str(exc)
+                job["items"] = [media_item_to_dict(item) for item in items]
+                job["updated_at"] = time.time()
+
+
 def build_sync_recovery(result, collect_count: int, wish_count: int) -> dict[str, object]:
     diagnostics = [diagnostic_to_dict(diag) for diag in getattr(result, "diagnostics", [])]
     classifications = {str(diag.get("classification") or "") for diag in diagnostics}
     http_statuses = {diag.get("http_status") for diag in diagnostics}
     has_items = (collect_count + wish_count) > 0
+    stopped_reason = str(getattr(result, "stopped_reason", "") or "")
+    pages_failed = int(getattr(result, "pages_failed", 0) or 0)
+    blank_page_stop = "空白" in stopped_reason or "blank" in stopped_reason.lower()
     if has_items:
+        if pages_failed == 0:
+            return {
+                "status": "complete",
+                "headline": "同步完成：已拿到可用数据",
+                "can_continue_without_sync": False,
+                "actions": [
+                    f"空白分页是豆瓣列表的正常结束信号：已抓到 {collect_count} 部看过 / {wish_count} 部想看",
+                    "继续确认口味",
+                    "生成推荐",
+                ] if blank_page_stop else ["继续确认口味", "生成推荐"],
+            }
         return {
             "status": "ok",
-            "headline": "同步已拿到可用数据",
+            "headline": "同步已拿到可用数据，部分分页可稍后重试",
             "can_continue_without_sync": False,
-            "actions": ["继续确认口味", "生成推荐"],
+            "actions": ["继续确认口味", "生成推荐", "稍后重试失败页"],
         }
     if "login_required" in classifications or 401 in http_statuses or 403 in http_statuses:
         return {
@@ -111,7 +356,7 @@ def build_sync_recovery(result, collect_count: int, wish_count: int) -> dict[str
             "can_continue_without_sync": True,
             "actions": ["稍后重试", "减少页数后同步", "继续用高质量片库生成推荐"],
         }
-    if getattr(result, "pages_failed", 0):
+    if pages_failed:
         return {
             "status": "partial_failure",
             "headline": "部分分页抓取失败，可以继续使用已有数据",
@@ -137,21 +382,222 @@ def build_image_request(url: str) -> urllib.request.Request:
     })
 
 
+def image_url_candidates(url: str) -> list[str]:
+    clean_url = str(url or "").strip()
+    candidates = [clean_url] if clean_url else []
+    parsed = urlparse(clean_url)
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc.endswith("upload.wikimedia.org")
+        and "/wikipedia/commons/" in parsed.path
+        and "/wikipedia/commons/thumb/" not in parsed.path
+    ):
+        filename = parsed.path.rsplit("/", 1)[-1]
+        if filename:
+            thumb_path = parsed.path.replace("/wikipedia/commons/", "/wikipedia/commons/thumb/", 1)
+            thumb_url = parsed._replace(path=f"{thumb_path}/330px-{filename}").geturl()
+            if thumb_url not in candidates:
+                candidates.append(thumb_url)
+    return candidates
+
+
 def fetch_proxy_image(url: str) -> tuple[bytes, str]:
-    request = build_image_request(url)
-    opener = build_url_opener()
-    try:
+    def validate_image_payload(data: bytes, content_type: str) -> tuple[bytes, str]:
+        clean_type = (content_type or "image/jpeg").split(";")[0].strip().lower()
+        head = (data or b"")[:80].lstrip().lower()
+        if not clean_type.startswith("image/") or head.startswith((b"<script", b"<!doctype", b"<html")):
+            raise ValueError("remote image returned non-image content")
+        return data, clean_type
+
+    def read_with_opener(opener, image_url: str) -> tuple[bytes, str]:
+        request = build_image_request(image_url)
         with opener.open(request, timeout=12) as response:
             content_type = response.headers.get("Content-Type") or "image/jpeg"
-            return response.read(), content_type.split(";")[0]
-    except urllib.error.HTTPError:
-        raise
-    except urllib.error.URLError:
-        request = build_image_request(url)
-        direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with direct_opener.open(request, timeout=12) as response:
-            content_type = response.headers.get("Content-Type") or "image/jpeg"
-            return response.read(), content_type.split(";")[0]
+            return validate_image_payload(response.read(), content_type)
+
+    cache_key = str(url or "").strip()
+    cached = IMAGE_PROXY_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    last_error: Exception | None = None
+    result: tuple[bytes, str] | None = None
+    for candidate_url in image_url_candidates(cache_key):
+        try:
+            result = read_with_opener(build_url_opener(), candidate_url)
+            break
+        except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+            last_error = exc
+            try:
+                direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                result = read_with_opener(direct_opener, candidate_url)
+                break
+            except (urllib.error.HTTPError, urllib.error.URLError) as direct_exc:
+                last_error = direct_exc
+                continue
+    if result is None:
+        if last_error:
+            raise last_error
+        raise ValueError("invalid image url")
+    if len(IMAGE_PROXY_CACHE) >= MAX_IMAGE_PROXY_CACHE_ITEMS:
+        IMAGE_PROXY_CACHE.pop(next(iter(IMAGE_PROXY_CACHE)), None)
+    IMAGE_PROXY_CACHE[cache_key] = result
+    return result
+
+
+def visible_people_names_for_item(item: MediaItem) -> set[str]:
+    return {
+        str(name).strip()
+        for name in [*(item.directors or []), *(item.casts or [])]
+        if str(name).strip()
+    }
+
+
+def filtered_people_photos_for_item(item: MediaItem) -> dict[str, str]:
+    photos = item.raw.get("people_photos") if isinstance(item.raw, dict) else {}
+    if not isinstance(photos, dict) or not photos:
+        return {}
+    visible_names = visible_people_names_for_item(item)
+    if not visible_names:
+        return {}
+    filtered: dict[str, str] = {}
+    for name in visible_names:
+        for key in (name, f"导演:{name}", f"主演:{name}"):
+            url = photos.get(key)
+            if url:
+                filtered[name] = str(url)
+                break
+    return filtered
+
+
+def build_douban_detail_request(url: str, cookie: str = "") -> urllib.request.Request:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://movie.douban.com/",
+    }
+    clean_cookie = str(cookie or "").strip()
+    if clean_cookie:
+        headers["Cookie"] = clean_cookie
+    return urllib.request.Request(url, headers=headers)
+
+
+def fetch_douban_detail_html(url: str, cookie: str = "") -> bytes:
+    request = build_douban_detail_request(url, cookie)
+    opener = build_url_opener()
+    with opener.open(request, timeout=12) as response:
+        return response.read()
+
+
+def _public_people_query_candidates(name: str) -> list[str]:
+    clean = str(name or "").strip()
+    if not clean:
+        return []
+    candidates = [PUBLIC_PEOPLE_QUERY_ALIASES.get(clean, ""), clean]
+    out: list[str] = []
+    for candidate in candidates:
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def _resolve_jikan_people_photo(query: str, opener) -> str:
+    safe_query = str(query or "").strip()
+    if not safe_query:
+        return ""
+    api_url = "https://api.jikan.moe/v4/people?" + urlencode({"q": safe_query, "limit": "1"})
+    request = urllib.request.Request(
+        api_url,
+        headers={
+            "User-Agent": "CineScopeLocalPersonalRecommender/1.0",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with opener.open(request, timeout=4) as response:
+            data = json.loads(response.read().decode("utf-8", "ignore"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        return ""
+    rows = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        images = row.get("images")
+        jpg = images.get("jpg") if isinstance(images, dict) else None
+        image = str(jpg.get("image_url") or "").strip() if isinstance(jpg, dict) else ""
+        if image.startswith("https://") and "cdn.myanimelist.net" in image:
+            return image
+    return ""
+
+
+def resolve_public_people_photos(names: list[str] | tuple[str, ...] | set[str]) -> dict[str, str]:
+    """Resolve visible cast/director portraits from public encyclopedia thumbnails.
+
+    This is a no-key fallback for the detail drawer's "立即补图" button when
+    Douban detail pages do not expose public person thumbnails. It first tries
+    public encyclopedia thumbnails, then uses Jikan/MyAnimeList for anime staff
+    and voice actors. Names are capped, requests are short-timeout, and failures
+    are cached as negative hits for the current server process.
+    """
+    resolved: dict[str, str] = {}
+    unique_names: list[str] = []
+    for raw_name in names or []:
+        name = str(raw_name or "").strip()
+        if name and name not in unique_names:
+            unique_names.append(name)
+    if not unique_names:
+        return resolved
+
+    opener = build_url_opener()
+    for name in unique_names[:8]:
+        if name in PUBLIC_PEOPLE_PHOTO_CACHE:
+            resolved[name] = PUBLIC_PEOPLE_PHOTO_CACHE[name]
+            continue
+        if name in PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE:
+            continue
+        found = ""
+        for query in _public_people_query_candidates(name):
+            languages = ["en", "zh", "ja", "ko"] if all(ord(ch) < 128 for ch in query) else ["zh", "en", "ja", "ko"]
+            for language in languages:
+                api_url = f"https://{language}.wikipedia.org/api/rest_v1/page/summary/{quote(query)}"
+                request = urllib.request.Request(
+                    api_url,
+                    headers={
+                        "User-Agent": "CineScopeLocalPersonalRecommender/1.0",
+                        "Accept": "application/json",
+                    },
+                )
+                try:
+                    with opener.open(request, timeout=3) as response:
+                        data = json.loads(response.read().decode("utf-8", "ignore"))
+                except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+                    continue
+                image = ""
+                thumbnail = data.get("thumbnail") if isinstance(data, dict) else None
+                original = data.get("originalimage") if isinstance(data, dict) else None
+                if isinstance(thumbnail, dict):
+                    image = str(thumbnail.get("source") or "")
+                if not image and isinstance(original, dict):
+                    image = str(original.get("source") or "")
+                if image.startswith("https://"):
+                    found = image
+                    break
+            if found:
+                break
+        if not found:
+            for query in _public_people_query_candidates(name):
+                found = _resolve_jikan_people_photo(query, opener)
+                if found:
+                    break
+        if found:
+            PUBLIC_PEOPLE_PHOTO_CACHE[name] = found
+            resolved[name] = found
+        else:
+            PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE.add(name)
+    return resolved
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -177,6 +623,9 @@ class Handler(BaseHTTPRequestHandler):
                 image_url = query.get("url", [""])[0]
                 data, content_type = fetch_proxy_image(image_url)
                 self.send_bytes(data, content_type=content_type)
+            elif path.startswith("/api/poster-jobs/"):
+                job_id = path.rsplit("/", 1)[-1]
+                self.send_json(self.handle_poster_job_get(job_id))
             else:
                 self.send_json({"error": "not found"}, status=404)
         except Exception as exc:
@@ -190,6 +639,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if path == "/api/recommend":
                 data = self.handle_recommend(payload)
+            elif path == "/api/enrich-posters":
+                data = self.handle_enrich_posters(payload)
+            elif path == "/api/enrich-people":
+                data = self.handle_enrich_people(payload)
+            elif path == "/api/poster-jobs":
+                data = self.handle_poster_job_create(payload)
             elif path in {"/api/crawl-douban", "/api/sync-douban"}:
                 data = self.handle_sync_douban(payload)
             else:
@@ -264,6 +719,9 @@ class Handler(BaseHTTPRequestHandler):
     handle_crawl_douban = handle_sync_douban
 
     def handle_recommend(self, payload: dict) -> dict:
+        target_limit = max(1, min(300, int(payload.get("limit") or 120)))
+        poster_source_config = poster_config_from_payload(payload)
+        target_candidate_total = max(90, target_limit + 30) if target_limit >= 120 else None
         rated_items_payload = payload.get("rated_items") or []
         if rated_items_payload:
             string_defaults = {
@@ -298,7 +756,9 @@ class Handler(BaseHTTPRequestHandler):
         if urls:
             candidates.extend(fetch_url_candidates(urls))
         include_anime = bool(payload.get("include_anime", True))
-        if payload.get("fetch_douban"):
+        filtered_low_confidence = 0
+        defer_live_douban_fetch = bool(payload.get("fetch_douban")) and target_limit > CINESCOPE_SYNC_ENRICH_LIMIT
+        if payload.get("fetch_douban") and not defer_live_douban_fetch:
             wishlist = [item for item in rated if "想看" in set(item.tags or [])]
             plan = build_candidate_plan(
                 profile,
@@ -316,6 +776,8 @@ class Handler(BaseHTTPRequestHandler):
                     include_series=bool(payload.get("include_series", True)),
                     per_query=max(5, min(50, int(payload.get("per_query") or 20))),
                 ))
+        if not has_custom_candidates:
+            candidates, filtered_low_confidence = filter_low_confidence_public_candidates(candidates)
         curated_before = len(candidates)
         if not has_custom_candidates:
             candidates = backfill_missing_media_types(
@@ -323,27 +785,204 @@ class Handler(BaseHTTPRequestHandler):
                 include_movies=bool(payload.get("include_movies", True)),
                 include_series=bool(payload.get("include_series", True)),
                 include_anime=include_anime,
+                target_total=target_candidate_total,
             )
         apply_curated_people_photos(apply_curated_posters(candidates))
         curated_added = max(0, len(candidates) - curated_before)
+        requested_types: list[str] = []
+        if bool(payload.get("include_movies", True)):
+            requested_types.append("电影")
+        if bool(payload.get("include_series", True)):
+            requested_types.append("电视剧")
+        if include_anime:
+            requested_types.append("动漫")
+        scored_limit = len(candidates) if target_candidate_total is not None else target_limit
         recs = recommend(
             rated,
             candidates,
             profile,
-            limit=max(1, min(300, int(payload.get("limit") or 120))),
+            limit=scored_limit,
             include_movies=bool(payload.get("include_movies", True)),
             include_series=bool(payload.get("include_series", True)),
             include_anime=include_anime,
         )
-        if bool(payload.get("enrich_details", True)) and recs:
-            enrich_limit = max(1, min(24, len(recs), int(payload.get("limit") or 120)))
+        recs = diversify_recommendation_mix(recs, target_limit, requested_types)
+        wants_enrichment = bool(payload.get("enrich_details", True)) and bool(recs)
+        defer_slow_enrichment = wants_enrichment and target_limit > CINESCOPE_SYNC_ENRICH_LIMIT
+        if wants_enrichment and not defer_slow_enrichment:
+            poster_enrich_limit = max(1, min(160, len(recs), target_limit))
+            call_poster_enricher(
+                [rec.item for rec in recs],
+                limit=poster_enrich_limit,
+                sleep_seconds=0.01,
+                max_seconds=90.0,
+                source_config=poster_source_config,
+            )
+            enrich_limit = max(1, min(24, len(recs), target_limit))
             enrich_media_items([rec.item for rec in recs[:enrich_limit]], limit=enrich_limit)
+        poster_rescue_pending = sum(1 for rec in recs if needs_external_poster_rescue(rec.item))
         return {
             "profile": profile.summary(),
-            "counts": {"rated": len(rated), "candidates": len(candidates), "curated_candidates": curated_added},
+            "counts": {
+                "rated": len(rated),
+                "candidates": len(candidates),
+                "curated_candidates": curated_added,
+                "filtered_low_confidence": filtered_low_confidence,
+                "target_limit": target_limit,
+                "returned": len(recs),
+                "candidate_target": target_candidate_total or len(candidates),
+                "deferred_douban_fetch": defer_live_douban_fetch,
+                "deferred_enrichment": defer_slow_enrichment,
+                "poster_rescue_pending": poster_rescue_pending,
+            },
+            "poster_sources": poster_config_public_summary(poster_source_config),
             "sections": build_recommendation_sections(recs),
             "results": [rec.to_dict() for rec in recs],
         }
+
+    def handle_enrich_posters(self, payload: dict) -> dict:
+        items_payload = payload.get("items") or payload.get("recommendations") or []
+        if not isinstance(items_payload, list):
+            items_payload = []
+        string_defaults = {
+            "title": "",
+            "media_type": "",
+            "url": "",
+            "douban_id": "",
+            "cover": "",
+            "summary": "",
+            "source": "",
+        }
+        items = [
+            media_item_from_dict({**string_defaults, **item})
+            for item in items_payload
+            if isinstance(item, dict)
+        ]
+        poster_source_config = poster_config_from_payload(payload)
+        limit = max(1, min(300, int(payload.get("limit") or len(items) or 120)))
+        before_designed = sum(1 for item in items if needs_external_poster_rescue(item))
+        enriched = call_poster_enricher(
+            items,
+            limit=limit,
+            sleep_seconds=0.01,
+            max_seconds=90.0,
+            source_config=poster_source_config,
+        )
+        after_designed = sum(1 for item in items if needs_external_poster_rescue(item))
+        return {
+            "items": [media_item_to_dict(item) for item in items],
+            "counts": {
+                "input": len(items),
+                "target": limit,
+                "rescue_before": before_designed,
+                "rescue_remaining": after_designed,
+                "designed_before": before_designed,
+                "designed_remaining": after_designed,
+                "enriched": enriched,
+            },
+            "poster_sources": poster_config_public_summary(poster_source_config),
+        }
+
+    def handle_enrich_people(self, payload: dict) -> dict:
+        item_payload = payload.get("item") or {}
+        if not isinstance(item_payload, dict):
+            item_payload = {}
+        string_defaults = {
+            "title": "",
+            "media_type": "",
+            "url": "",
+            "douban_id": "",
+            "cover": "",
+            "summary": "",
+            "source": "",
+        }
+        item = media_item_from_dict({**string_defaults, **item_payload})
+        if not isinstance(item.raw, dict):
+            item.raw = {}
+        incoming_photos = item_payload.get("people_photos") or item_payload.get("peoplePhotos") or {}
+        if isinstance(incoming_photos, dict) and incoming_photos:
+            item.raw["people_photos"] = {str(name): str(url) for name, url in incoming_photos.items() if name and url}
+        apply_curated_people_photos([item])
+        before = filtered_people_photos_for_item(item)
+        before_count = len(before)
+        cookie = str(payload.get("cookie") or "").strip()
+        fetcher = (lambda url: fetch_douban_detail_html(url, cookie)) if cookie else None
+        call_detail_enricher([item], fetcher=fetcher, limit=1, sleep_seconds=0.01, force_people_photos=True)
+        apply_curated_people_photos([item])
+        photos = filtered_people_photos_for_item(item)
+        visible_names = sorted(visible_people_names_for_item(item), key=lambda n: ([*(item.directors or []), *(item.casts or [])].index(n) if n in [*(item.directors or []), *(item.casts or [])] else 999))
+        missing_public_names = [name for name in visible_names if name not in photos]
+        allow_public_partial_fill = (item.media_type == "动漫")
+        if missing_public_names and (not photos or allow_public_partial_fill) and len(photos) < min(len(visible_names), 4):
+            public_photos = resolve_public_people_photos(missing_public_names)
+            if public_photos:
+                existing_photos = item.raw.get("people_photos") if isinstance(item.raw, dict) else {}
+                merged_public = dict(existing_photos) if isinstance(existing_photos, dict) else {}
+                merged_public.update(public_photos)
+                item.raw["people_photos"] = merged_public
+                photos = filtered_people_photos_for_item(item)
+        if isinstance(item.raw, dict):
+            item.raw["people_photos"] = photos
+        serialized = media_item_to_dict(item)
+        serialized["people_photos"] = photos
+        return {
+            "item": serialized,
+            "counts": {
+                "input": 1,
+                "before": before_count,
+                "people_photos": len(photos),
+                "added": max(0, len(photos) - before_count),
+            },
+        }
+
+    def handle_poster_job_create(self, payload: dict) -> dict:
+        items_payload = payload.get("items") or payload.get("recommendations") or []
+        if not isinstance(items_payload, list):
+            items_payload = []
+        string_defaults = {
+            "title": "",
+            "media_type": "",
+            "url": "",
+            "douban_id": "",
+            "cover": "",
+            "summary": "",
+            "source": "",
+        }
+        items = [
+            media_item_from_dict({**string_defaults, **item})
+            for item in items_payload
+            if isinstance(item, dict)
+        ]
+        limit = max(1, min(300, int(payload.get("limit") or len(items) or 120)))
+        source_config = poster_config_from_payload(payload)
+        job_id = uuid.uuid4().hex[:12]
+        job = {
+            "job_id": job_id,
+            "state": "queued",
+            "done": 0,
+            "total": min(limit, len([item for item in items if needs_external_poster_rescue(item)]) or len(items)),
+            "found": 0,
+            "missed": 0,
+            "current_title": "",
+            "current_source": "",
+            "events": [],
+            "items": [media_item_to_dict(item) for item in items],
+            "poster_sources": poster_config_public_summary(source_config),
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        with POSTER_JOBS_LOCK:
+            POSTER_JOBS[job_id] = job
+        thread = threading.Thread(target=run_poster_job, args=(job_id, items, limit, source_config), daemon=True)
+        thread.start()
+        return serialize_poster_job(job)
+
+    def handle_poster_job_get(self, job_id: str) -> dict:
+        with POSTER_JOBS_LOCK:
+            job = POSTER_JOBS.get(job_id)
+            if not job:
+                return {"error": "poster job not found", "job_id": job_id}
+            return serialize_poster_job(job)
 
     def send_text(self, text: str, content_type: str = "text/plain; charset=utf-8", status: int = 200) -> None:
         data = text.encode("utf-8")

@@ -124,7 +124,30 @@ https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m
 
 ## 海报加载、Clash / V2Ray 代理教程
 
-页面会优先通过本地 `/api/image-proxy` 代理加载海报；如果豆瓣或图片域名被网络拦截，仍会自动切换成本地 SVG 标题海报，避免破图。
+页面会优先通过本地 `/api/image-proxy` 代理加载海报；如果豆瓣 CDN 返回反爬 HTML 或图片域名被网络拦截，系统会把这些条目送进“海报修复现场”，逐部尝试多源换源，而不是只显示一条无聊进度条。
+
+当前海报源顺序：
+
+1. 内置精选海报映射（避免高频条目缺图）。
+2. TMDb API（可选，免费注册后填 v3 API Key）。
+3. OMDb / IMDb 海报（可选，免费申请 API Key）。
+4. TVMaze 免费剧集源（无需 Key，优先用于电视剧 / 欧美剧海报）。
+5. AniList 免费动漫源（无需 Key，优先用于动漫剧集）。
+6. Jikan / MyAnimeList 免费动漫源（无需 Key，动漫兜底）。
+7. TMDb 公共搜索页。
+8. 豆瓣精确搜索和实验性 Wikipedia 图源。
+
+免费 API 入口：
+
+- TMDb：<https://www.themoviedb.org/settings/api>
+- OMDb：<https://www.omdbapi.com/apikey.aspx>
+
+如果仍有设计封面，第三步页面会出现“缺图补救台”，可以：
+
+- 再次多源搜索；
+- 复制缺图标题；
+- 导出缺图 CSV；
+- 直接打开 TMDb / IMDb / TVMaze / AniList / MyAnimeList 搜索入口手动核对。
 
 如果你的网络需要 Clash、V2Ray 或 v2rayN，请只配置本机 HTTP 代理端口，不要粘贴订阅地址。订阅地址属于敏感配置，不需要也不应该写入项目、日志、缓存或页面输入框。
 

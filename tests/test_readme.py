@@ -78,6 +78,16 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("不要粘贴订阅地址", text)
         self.assertNotIn("liangxin.xyz/api/v1", text)
 
+    def test_readme_documents_no_key_tvmaze_and_free_api_fallbacks(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("TVMaze", text)
+        self.assertIn("无需 Key", text)
+        self.assertIn("TMDb API", text)
+        self.assertIn("OMDb / IMDb", text)
+        self.assertIn("AniList", text)
+        self.assertIn("Jikan / MyAnimeList", text)
+
 
 if __name__ == "__main__":
     unittest.main()

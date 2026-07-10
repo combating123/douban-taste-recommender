@@ -108,7 +108,123 @@ def recommend(
         rec.badges = unique_keep_order(rec.badges)
         recs.append(rec)
     recs.sort(key=lambda r: r.score, reverse=True)
-    return recs[:limit]
+    return diversify_recommendations(recs, limit)
+
+
+def diversify_recommendations(recs: list[Recommendation], limit: int) -> list[Recommendation]:
+    """Quality-preserving diversity rerank.
+
+    `score_item()` still owns the taste/quality score. This pass only changes
+    presentation order so a long list does not become one-country / one-format
+    monotony, especially in anime where high-score Japanese entries can crowd
+    out global animated series.
+    """
+    if limit <= 0 or not recs:
+        return []
+    remaining = list(recs)
+    selected: list[Recommendation] = []
+
+    def first(values: list[str]) -> str:
+        return values[0] if values else ""
+
+    while remaining and len(selected) < limit:
+        country_counts: dict[str, int] = {}
+        media_counts: dict[str, int] = {}
+        director_counts: dict[str, int] = {}
+        genre_counts: dict[str, int] = {}
+        anime_countries: dict[str, int] = {}
+        for rec in selected:
+            media_type = rec.item.media_type or ""
+            country = first(rec.item.countries)
+            media_counts[media_type] = media_counts.get(media_type, 0) + 1
+            if country:
+                country_counts[country] = country_counts.get(country, 0) + 1
+                if media_type == "动漫":
+                    anime_countries[country] = anime_countries.get(country, 0) + 1
+            for director in (rec.item.directors or [])[:2]:
+                director_counts[director] = director_counts.get(director, 0) + 1
+            for genre in (rec.item.genres or [])[:3]:
+                genre_counts[genre] = genre_counts.get(genre, 0) + 1
+
+        def effective(rec: Recommendation) -> float:
+            item = rec.item
+            media_type = item.media_type or ""
+            country = first(item.countries)
+            value = rec.score
+            value -= media_counts.get(media_type, 0) * 0.22
+            if country:
+                value -= country_counts.get(country, 0) * 1.25
+            for director in (item.directors or [])[:2]:
+                value -= director_counts.get(director, 0) * 1.1
+            for genre in (item.genres or [])[:3]:
+                value -= genre_counts.get(genre, 0) * 0.16
+            if media_type == "动漫":
+                japanese_count = anime_countries.get("日本", 0)
+                if country == "日本" and japanese_count >= 2:
+                    value -= 4.8 + (japanese_count - 2) * 1.4
+                if country in {"中国大陆", "中国", "美国", "英国", "法国", "加拿大"} and country not in anime_countries:
+                    value += 4.4 if japanese_count >= 2 else 1.6
+                if country in {"中国大陆", "中国"}:
+                    value += 0.45
+                elif country == "美国":
+                    value += 0.35
+            return value
+
+        best = max(remaining, key=lambda rec: (effective(rec), rec.score))
+        selected.append(best)
+        remaining.remove(best)
+
+    return selected
+
+PLACEHOLDER_PERSON_HINTS = (
+    "专家",
+    "担当",
+    "核心",
+    "剧集统筹",
+    "动画监督",
+    "声优A",
+    "声优B",
+)
+
+
+def _item_people_photos(item: MediaItem) -> dict[str, str]:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    photos = raw.get("people_photos")
+    return photos if isinstance(photos, dict) else {}
+
+
+def _has_placeholder_people(item: MediaItem) -> bool:
+    people = [*(item.directors or []), *(item.casts or [])]
+    return any(any(hint in str(name) for hint in PLACEHOLDER_PERSON_HINTS) for name in people)
+
+
+def _is_designed_cover(item: MediaItem) -> bool:
+    return str(item.cover or "").startswith("data:image/svg+xml")
+
+
+def _has_external_cover(item: MediaItem) -> bool:
+    return str(item.cover or "").startswith("https://")
+
+
+def metadata_quality_adjustment(item: MediaItem) -> tuple[float, list[str], list[str]]:
+    score_delta = 0.0
+    reasons: list[str] = []
+    warnings: list[str] = []
+    photo_count = len(_item_people_photos(item))
+    if photo_count >= 2:
+        score_delta += 2.4
+        reasons.append("资料完整")
+    elif photo_count == 1:
+        score_delta += 0.8
+    if _has_external_cover(item):
+        score_delta += 0.8
+    if _has_placeholder_people(item):
+        score_delta -= 4.0
+        warnings.append("演职员资料待绑定，已降低展示优先级")
+    if _is_designed_cover(item):
+        score_delta -= 1.0
+        warnings.append("海报仍为设计封面，等待真实图源")
+    return score_delta, reasons, warnings
 
 
 def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
@@ -180,6 +296,11 @@ def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
     if "douban_top250" in item.source:
         score += 2.0
         reasons.append("来自豆瓣 Top250 候选池")
+
+    metadata_delta, metadata_reasons, metadata_warnings = metadata_quality_adjustment(item)
+    score += metadata_delta
+    reasons.extend(metadata_reasons)
+    warnings.extend(metadata_warnings)
 
     pos_hits.sort(key=lambda x: x[1], reverse=True)
     neg_hits.sort(key=lambda x: x[1], reverse=True)
