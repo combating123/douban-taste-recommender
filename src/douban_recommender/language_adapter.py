@@ -199,8 +199,13 @@ def _request_body(protocol: str, model: str, task: str, content: dict[str, Any])
     if protocol == "responses":
         payload = {
             "model": model,
-            "input": {"task": task, **content},
-            "response_format": {"type": "json_object"},
+            "instructions": JSON_ONLY_SYSTEM_PROMPT,
+            "input": json.dumps(
+                {"task": task, **content},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            "text": {"format": {"type": "json_object"}},
         }
     else:
         payload = {

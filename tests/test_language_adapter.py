@@ -176,10 +176,16 @@ class LanguageAdapterTests(unittest.TestCase):
         self.assertEqual(call["url"], "http://127.0.0.1:11434/v1/responses")
         payload = json.loads(call["body"])
         self.assertEqual(payload["model"], "demo")
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertNotIn("response_format", payload)
+        self.assertEqual(payload["instructions"], "Return one strict JSON object only. Do not include markdown or extra text.")
+        self.assertEqual(payload["text"], {"format": {"type": "json_object"}})
         self.assertIn("input", payload)
         self.assertNotIn("messages", payload)
-        self.assertEqual(payload["input"]["task"], "explain")
+        self.assertIsInstance(payload["input"], str)
+        input_payload = json.loads(payload["input"])
+        self.assertEqual(input_payload["task"], "explain")
+        self.assertEqual(input_payload["request"], "\u8bf7\u89e3\u91ca\u4e3a\u4ec0\u4e48\u63a8\u8350\u5b83")
+        self.assertEqual(input_payload["evidence"], [{"id": "ev1", "title": "\u771f\u5b9e\u6807\u9898"}])
 
     def test_openai_adapter_accepts_direct_json_object_from_transport(self):
         adapter = OpenAICompatibleLanguageAdapter(
