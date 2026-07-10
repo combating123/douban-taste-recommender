@@ -1,9 +1,13 @@
+import json
+import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from douban_recommender.database import AppDatabase
 from douban_recommender.intent_parser import RecommendationIntent
+from douban_recommender.models import recommendation_item_key
 from douban_recommender.recommendation_service import RecommendationSessionService
 
 
@@ -122,6 +126,166 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         resumed = self.service.next_batch(session.id, channel)
         self.assertEqual(resumed.id, exhausted.id)
         self.assertEqual(resumed.reason, "exhausted")
+
+    def test_next_batch_rolls_back_batch_when_session_update_fails(self):
+        session = self.create()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER fail_recommendation_session_update
+                BEFORE UPDATE ON recommendation_sessions
+                BEGIN
+                    SELECT RAISE(FAIL, 'session update failed');
+                END
+                """
+            )
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "session update failed"):
+            self.service.next_batch(session.id, "电影")
+
+        with self.database.connection() as connection:
+            batch_count = connection.execute(
+                "SELECT COUNT(*) FROM recommendation_batches WHERE session_id = ?",
+                (session.id,),
+            ).fetchone()[0]
+            stored = connection.execute(
+                "SELECT channels_json FROM recommendation_sessions WHERE id = ?",
+                (session.id,),
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER fail_recommendation_session_update")
+
+        self.assertEqual(batch_count, 0)
+        self.assertEqual(json.loads(stored)["电影"]["active_batch"], 0)
+
+        retried = self.service.next_batch(session.id, "电影")
+        self.assertEqual(retried.index, 1)
+        with self.database.connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM recommendation_batches WHERE session_id = ?",
+                    (session.id,),
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_feedback_excludes_future_exact_key_and_still_fills_batch(self):
+        session = self.create()
+        first = self.service.next_batch(session.id, "电影")
+        future_item = pools()["电影"]["items"][3]
+        excluded_key = recommendation_item_key(future_item)
+
+        result = self.service.apply_feedback(session.id, "not-tonight", excluded_key)
+        self.assertEqual(result["item_key"], excluded_key)
+        self.assertEqual(result["event_type"], "not-tonight")
+
+        second = self.service.next_batch(session.id, "电影")
+        self.assertNotIn(excluded_key, second.item_keys)
+        self.assertEqual(second.visible_size, 3)
+        self.assertEqual([item["title"] for item in second.items], ["电影4", "电影5", "电影6"])
+        restored = self.service.restore_session(session.id)
+        self.assertEqual(restored.channels["电影"]["cursor"], 7)
+        self.assertEqual(restored.channels["电影"]["excluded_keys"], [excluded_key])
+
+        previous = self.service.previous_batch(session.id, "电影")
+        self.assertEqual(previous.id, first.id)
+        forward = self.service.next_batch(session.id, "电影")
+        self.assertEqual(forward.id, second.id)
+
+    def test_watched_feedback_upserts_library_item_and_is_idempotent(self):
+        session = self.create()
+        batch = self.service.next_batch(session.id, "动漫")
+        item = dict(batch.items[0])
+        key = batch.item_keys[0]
+
+        first = self.service.apply_feedback(session.id, "watched", key, {"source": "card"})
+        second = self.service.apply_feedback(session.id, "watched", key, {"source": "card"})
+
+        self.assertEqual(first["state"], "watched")
+        self.assertEqual(second["state"], "watched")
+        watched = self.service.library_items(states=["watched"])
+        self.assertEqual([row["item_key"] for row in watched], [key])
+        self.assertEqual(watched[0]["state"], "watched")
+        self.assertEqual(watched[0]["payload"]["title"], item["title"])
+        self.assertIn(key, self.service.restore_session(session.id).channels["动漫"]["excluded_keys"])
+
+    def test_want_feedback_upserts_wanted_library_item(self):
+        session = self.create()
+        batch = self.service.next_batch(session.id, "电视剧")
+        key = batch.item_keys[1]
+
+        result = self.service.apply_feedback(session.id, "want", key)
+
+        self.assertEqual(result["state"], "wanted")
+        wanted = self.service.library_items(states=["wanted"])
+        self.assertEqual(len(wanted), 1)
+        self.assertEqual(wanted[0]["item_key"], key)
+        self.assertEqual(wanted[0]["payload"]["title"], batch.items[1]["title"])
+
+    def test_create_session_registers_candidates_without_downgrading_watched(self):
+        watched_item = pools()["电影"]["items"][0]
+        watched_key = recommendation_item_key(watched_item)
+        now = 123.0
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES(?, ?, 'watched', 'fixture', ?, ?)
+                """,
+                (watched_key, json.dumps({"title": "already watched"}, ensure_ascii=False), now, now),
+            )
+
+        self.create()
+
+        movie_keys = [recommendation_item_key(item) for item in pools()["电影"]["items"]]
+        catalog = {row["item_key"]: row for row in self.service.library_items(states=["candidate", "watched"])}
+        self.assertTrue(set(movie_keys).issubset(catalog))
+        self.assertEqual(catalog[watched_key]["state"], "watched")
+        self.assertEqual(catalog[watched_key]["payload"]["title"], watched_item["title"])
+
+    def test_apply_feedback_unknown_session_and_key_raise_value_error(self):
+        session = self.create()
+
+        with self.assertRaisesRegex(ValueError, "recommendation session not found"):
+            self.service.apply_feedback("missing", "watched", "douban:missing")
+        with self.assertRaisesRegex(ValueError, "recommendation item not found"):
+            self.service.apply_feedback(session.id, "watched", "douban:missing")
+        with self.assertRaisesRegex(ValueError, "unsupported feedback event"):
+            self.service.apply_feedback(session.id, "unknown", recommendation_item_key(pools()["电影"]["items"][0]))
+
+    def test_concurrent_next_batch_keeps_unique_history_indexes(self):
+        session = self.create()
+        barrier = threading.Barrier(4)
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                results.append(self.service.next_batch(session.id, "动漫").index)
+            except Exception as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(results), [1, 2, 3, 4])
+        with self.database.connection() as connection:
+            stored_indexes = [
+                row[0]
+                for row in connection.execute(
+                    """
+                    SELECT batch_index FROM recommendation_batches
+                    WHERE session_id = ? AND channel = '动漫'
+                    ORDER BY batch_index
+                    """,
+                    (session.id,),
+                ).fetchall()
+            ]
+        self.assertEqual(stored_indexes, [1, 2, 3, 4])
 
 
 if __name__ == "__main__":
