@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -9,6 +8,7 @@ from dataclasses import dataclass
 
 from .database import AppDatabase
 from .intent_parser import RecommendationIntent
+from .models import recommendation_item_key
 
 
 @dataclass(frozen=True)
@@ -65,17 +65,7 @@ def _serialize_item(value) -> dict[str, object]:
 
 
 def _item_key(item: dict[str, object]) -> str:
-    identifier = str(item.get("douban_id") or "").strip()
-    if identifier:
-        return f"douban:{identifier}" if identifier.isdigit() else f"external:{identifier}"
-    basis = "|".join(
-        [
-            str(item.get("title") or "").strip().casefold(),
-            str(item.get("year") or ""),
-            str(item.get("media_type") or "").strip().casefold(),
-        ]
-    )
-    return "item:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
+    return recommendation_item_key(item)
 
 
 class RecommendationSessionService:

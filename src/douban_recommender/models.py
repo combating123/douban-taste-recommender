@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,6 +79,7 @@ class MediaItem:
         if self.year:
             year_bucket = [f"{self.year // 10 * 10}s"]
         return {
+            "item": [recommendation_item_key(self)],
             "media_type": [self.media_type] if self.media_type else [],
             "genre": self.genres,
             "country": self.countries,
@@ -87,6 +89,24 @@ class MediaItem:
             "tag": self.tags,
             "year_bucket": year_bucket,
         }
+
+
+def recommendation_item_key(item: MediaItem | dict[str, Any]) -> str:
+    if isinstance(item, dict):
+        getter = item.get
+    else:
+        getter = lambda key, default="": getattr(item, key, default)
+    identifier = str(getter("douban_id") or "").strip()
+    if identifier:
+        return f"douban:{identifier}" if identifier.isdigit() else f"external:{identifier}"
+    basis = "|".join(
+        [
+            str(getter("title") or "").strip().casefold(),
+            str(getter("year") or ""),
+            str(getter("media_type") or "").strip().casefold(),
+        ]
+    )
+    return "item:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
 
 
 def normalize_title(title: str) -> str:

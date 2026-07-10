@@ -23,6 +23,7 @@ FIELD_WEIGHTS = {
     "media_type": 0.6,
     "year_bucket": 0.35,
     "keyword": 2.0,
+    "item": 0.2,
 }
 
 
@@ -37,6 +38,8 @@ class TasteProfile:
     rated_count: int = 0
     liked_count: int = 0
     disliked_count: int = 0
+    recent_feedback_30: tuple[dict[str, object], ...] = ()
+    recent_feedback_90: tuple[dict[str, object], ...] = ()
 
     def top_positive(self, prefix: str | None = None, n: int = 10) -> list[tuple[str, float]]:
         return self._top(self.positive, prefix, n)
@@ -67,6 +70,10 @@ class TasteProfile:
             "top_countries": self.top_positive("country", 6),
             "manual_likes": self.manual_likes,
             "manual_dislikes": self.manual_dislikes,
+            "recent_feedback": {
+                "30d": list(self.recent_feedback_30),
+                "90d": list(self.recent_feedback_90),
+            },
         }
 
 
@@ -76,6 +83,7 @@ def build_taste_profile(
     dislike_terms: str | list[str] | None = None,
     like_threshold: float = 4.0,
     dislike_threshold: float = 2.5,
+    feedback_signals=None,
 ) -> TasteProfile:
     profile = TasteProfile()
     profile.manual_likes = normalize_terms(like_terms)
@@ -114,7 +122,40 @@ def build_taste_profile(
                 add_item_features(profile.positive, profile.positive_examples, item, 0.15, item.title)
             elif rating < 3.0:
                 add_item_features(profile.negative, profile.negative_examples, item, 0.15, item.title)
+    if feedback_signals is not None:
+        apply_feedback_signals(profile, feedback_signals)
     return profile
+
+
+def apply_feedback_signals(profile: TasteProfile, signals) -> TasteProfile:
+    def add(values, counter, examples, weight, label):
+        for feature in values or ():
+            field, _, value = str(feature).partition(":")
+            if not value:
+                continue
+            normalized_field = field if field in FIELD_WEIGHTS else "tag"
+            add_feature(counter, examples, normalized_field, value, weight, label)
+
+    add(getattr(signals, "positive", ()), profile.positive, profile.positive_examples, 1.8, "主动正反馈")
+    add(getattr(signals, "weak_negative", ()), profile.negative, profile.negative_examples, 1.2, "主动弱负反馈")
+    add(getattr(signals, "permanent_negative", ()), profile.negative, profile.negative_examples, 3.6, "永久避开")
+    profile.recent_feedback_30 = project_feedback_drift(getattr(signals, "drift_30", ()))
+    profile.recent_feedback_90 = project_feedback_drift(getattr(signals, "drift_90", ()))
+    return profile
+
+
+def project_feedback_drift(rows) -> tuple[dict[str, object], ...]:
+    projected: list[dict[str, object]] = []
+    for row in rows or ():
+        if hasattr(row, "as_dict"):
+            value = row.as_dict()
+        elif isinstance(row, dict):
+            value = dict(row)
+        else:
+            continue
+        if value.get("feature"):
+            projected.append(value)
+    return tuple(projected)
 
 
 def add_item_features(counter: Counter[str], examples: dict[str, list[str]], item: MediaItem, strength: float, example: str) -> None:
