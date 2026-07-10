@@ -120,6 +120,8 @@ class LanguageAdapterTests(unittest.TestCase):
         self.assertIn("messages", payload)
         self.assertNotIn("input", payload)
         self.assertGreaterEqual(len(payload["messages"]), 1)
+        self.assertIn("推荐《已引用标题》", payload["messages"][0]["content"])
+        self.assertIn("每个 citation 必须对应一个 segment", payload["messages"][0]["content"])
         message_body = json.loads(payload["messages"][-1]["content"])
         self.assertEqual(message_body["task"], "explain")
         self.assertEqual(message_body["request"], "\u8bf7\u89e3\u91ca\u4e3a\u4ec0\u4e48\u63a8\u8350\u5b83")
@@ -177,7 +179,9 @@ class LanguageAdapterTests(unittest.TestCase):
         payload = json.loads(call["body"])
         self.assertEqual(payload["model"], "demo")
         self.assertNotIn("response_format", payload)
-        self.assertEqual(payload["instructions"], "Return one strict JSON object only. Do not include markdown or extra text.")
+        self.assertIn("Return one strict JSON object only. Do not include markdown or extra text.", payload["instructions"])
+        self.assertIn("推荐《已引用标题》", payload["instructions"])
+        self.assertIn("每个 citation 必须对应一个 segment", payload["instructions"])
         self.assertEqual(payload["text"], {"format": {"type": "json_object"}})
         self.assertIn("input", payload)
         self.assertNotIn("messages", payload)
@@ -360,6 +364,105 @@ class LanguageAdapterTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(UngroundedResponseError, "grounded"):
                     adapter.explain("\u89e3\u91ca", evidence)
+
+    def test_explain_rejects_reviewer_case_with_unlabelled_country_genre_language(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload=json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '{"text":"推荐《真实标题》，这部法国喜剧法语片值得一看。","citations":["ev1"]}'
+                                }
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            ),
+        )
+
+        with self.assertRaisesRegex(UngroundedResponseError, "grounded"):
+            adapter.explain(
+                "解释",
+                {
+                    "ev1": {
+                        "title": "真实标题",
+                        "genres": ["科幻"],
+                        "countries": ["美国"],
+                        "languages": ["英语"],
+                    }
+                },
+            )
+
+    def test_explain_rejects_extra_freeform_sentence_after_valid_segment(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload='{"text":"推荐《真实标题》，豆瓣评分8.8。这部电影节奏很好。","citations":["ev1"]}'
+            ),
+        )
+
+        with self.assertRaisesRegex(UngroundedResponseError, "grounded"):
+            adapter.explain("解释", {"ev1": {"title": "真实标题", "douban_rating": 8.8}})
+
+    def test_explain_rejects_multiple_citations_missing_segment(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload='{"text":"推荐《真实标题》","citations":["ev1","ev2"]}'
+            ),
+        )
+
+        with self.assertRaisesRegex(UngroundedResponseError, "grounded"):
+            adapter.explain(
+                "解释",
+                {"ev1": {"title": "真实标题"}, "ev2": {"title": "第二部"}},
+            )
+
+    def test_explain_rejects_multiple_citations_with_unknown_extra_segment(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload='{"text":"推荐《真实标题》；推荐《不存在的标题》","citations":["ev1","ev2"]}'
+            ),
+        )
+
+        with self.assertRaisesRegex(UngroundedResponseError, "grounded"):
+            adapter.explain(
+                "解释",
+                {"ev1": {"title": "真实标题"}, "ev2": {"title": "第二部"}},
+            )
+
+    def test_explain_accepts_multiple_citation_segments_with_strict_template(self):
+        adapter = OpenAICompatibleLanguageAdapter(
+            endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            model="demo",
+            transport=RecordingTransport(
+                payload='{"text":"推荐《真实标题》；推荐《第二部》于2016年上映，类型：悬疑，国家/地区：韩国。","citations":["ev1","ev2"]}'
+            ),
+        )
+
+        result = adapter.explain(
+            "解释",
+            {
+                "ev1": {"title": "真实标题"},
+                "ev2": {
+                    "title": "第二部",
+                    "year": 2016,
+                    "genres": ["悬疑"],
+                    "countries": ["韩国"],
+                },
+            },
+        )
+
+        self.assertEqual(result, "推荐《真实标题》；推荐《第二部》于2016年上映，类型：悬疑，国家/地区：韩国。")
 
     def test_default_transport_reads_using_instance_response_limit(self):
         response = FakeUrlopenResponse(b'{"genres":["x"]}')

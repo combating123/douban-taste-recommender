@@ -35,12 +35,26 @@ INTEGER_FIELDS = {"runtime_max", "episode_runtime_max", "year_min", "year_max"}
 NUMBER_FIELDS = {"quality_floor", "exploration_level", "surprise_level"}
 KNOWN_INTENT_FIELDS = TUPLE_FIELDS | TEXT_FIELDS | INTEGER_FIELDS | NUMBER_FIELDS
 JSON_ONLY_SYSTEM_PROMPT = "Return one strict JSON object only. Do not include markdown or extra text."
-TITLE_PATTERN = re.compile(r"《([^》]+)》")
-YEAR_CLAIM_PATTERN = re.compile(r"于(?P<year>\d{4})年(?:上映|播出|开播)")
-RATING_CLAIM_PATTERN = re.compile(r"豆瓣评分\s*(?P<rating>\d+(?:\.\d+)?)")
-GENRES_CLAIM_PATTERN = re.compile(r"类型[:：]\s*(?P<genres>[^，。；]+)")
-COUNTRIES_CLAIM_PATTERN = re.compile(r"国家/地区[:：]\s*(?P<countries>[^，。；]+)")
-LANGUAGES_CLAIM_PATTERN = re.compile(r"语言[:：]\s*(?P<languages>[^，。；]+)")
+STRICT_EXPLANATION_TEMPLATE = (
+    "For task='explain', the JSON field 'text' must follow this strict template only: "
+    "one or more segments separated by '；' or ';'. "
+    "Each citation must correspond to one segment and every cited title must appear exactly once. "
+    "Each segment must be '推荐《已引用标题》' optionally followed, in this order, by "
+    "'于YYYY年上映/播出/开播', '，豆瓣评分X', '，类型：...', '，国家/地区：...', '，语言：...'. "
+    "Use only cited titles and cited fact values. No extra commentary, no unlabeled facts, "
+    "no unknown titles, and no extra segments. "
+    "每个 citation 必须对应一个 segment；segment 只能是 `推荐《已引用标题》`，"
+    "后面按固定语法追加可选字段：`于YYYY年上映/播出/开播`、`，豆瓣评分X`、`，类型：...`、"
+    "`，国家/地区：...`、`，语言：...`；不得输出任何额外自由描述。"
+)
+TITLE_PATTERN = re.compile(r"《(?P<title>[^》]+)》")
+SEGMENT_SPLIT_PATTERN = re.compile(r"\s*[；;]\s*")
+SEGMENT_TITLE_PATTERN = re.compile(r"^推荐《(?P<title>[^》]+)》")
+SEGMENT_YEAR_PATTERN = re.compile(r"^(?:\s*[，,]\s*)?于(?P<year>\d{4})年(?P<label>上映|播出|开播)")
+SEGMENT_RATING_PATTERN = re.compile(r"^\s*[，,]\s*豆瓣评分\s*(?P<rating>\d+(?:\.\d+)?)")
+SEGMENT_GENRES_PATTERN = re.compile(r"^\s*[，,]\s*类型\s*[:：]\s*(?P<genres>[^，。；;!！?？]+)")
+SEGMENT_COUNTRIES_PATTERN = re.compile(r"^\s*[，,]\s*国家/地区\s*[:：]\s*(?P<countries>[^，。；;!！?？]+)")
+SEGMENT_LANGUAGES_PATTERN = re.compile(r"^\s*[，,]\s*语言\s*[:：]\s*(?P<languages>[^，。；;!！?？]+)")
 LIST_SPLIT_PATTERN = re.compile(r"(?:\s*[、/,，]\s*)|(?:\s+and\s+)")
 
 
@@ -195,11 +209,16 @@ def _endpoint_protocol(endpoint: str) -> str:
     return "responses" if parsed.path == "/v1/responses" else "chat"
 
 
+def _system_prompt(task: str) -> str:
+    return f"{JSON_ONLY_SYSTEM_PROMPT} {STRICT_EXPLANATION_TEMPLATE}" if task == "explain" else JSON_ONLY_SYSTEM_PROMPT
+
+
 def _request_body(protocol: str, model: str, task: str, content: dict[str, Any]) -> bytes:
+    prompt = _system_prompt(task)
     if protocol == "responses":
         payload = {
             "model": model,
-            "instructions": JSON_ONLY_SYSTEM_PROMPT,
+            "instructions": prompt,
             "input": json.dumps(
                 {"task": task, **content},
                 ensure_ascii=False,
@@ -211,7 +230,7 @@ def _request_body(protocol: str, model: str, task: str, content: dict[str, Any])
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": JSON_ONLY_SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -381,82 +400,89 @@ def _grounded_text_from_payload(payload: dict[str, Any], evidence_items: dict[st
 
 
 def _validate_grounded_claims(text: str, citation_ids: list[str], evidence_items: dict[str, dict[str, Any]]) -> None:
-    claims = _extract_supported_claims(text)
-    _reject_unsafe_fact_markers(text, claims)
-    if not claims:
-        return
-    subject = _claim_subject(text, citation_ids, evidence_items)
-    if subject is None:
+    segments = _split_explanation_segments(text)
+    if len(segments) != len(citation_ids):
+        raise UngroundedResponseError("citation title is not grounded")
+    cited_titles = _cited_title_map(citation_ids, evidence_items)
+    seen_citations: set[str] = set()
+    for segment in segments:
+        citation_id, claims = _parse_explanation_segment(segment, cited_titles)
+        if citation_id in seen_citations:
+            raise UngroundedResponseError("citation title is not grounded")
+        _validate_segment_claims(claims, evidence_items[citation_id])
+        seen_citations.add(citation_id)
+    if seen_citations != set(citation_ids):
+        raise UngroundedResponseError("citation title is not grounded")
+
+
+def _split_explanation_segments(text: str) -> list[str]:
+    stripped = str(text or "").strip()
+    stripped = re.sub(r"[\s\u3002.!\uff01?\uff1f]+$", "", stripped)
+    if not stripped:
+        raise UngroundedResponseError("citation title is not grounded")
+    segments = [segment.strip() for segment in SEGMENT_SPLIT_PATTERN.split(stripped)]
+    if not segments or any(not segment for segment in segments):
+        raise UngroundedResponseError("citation title is not grounded")
+    return segments
+
+
+def _cited_title_map(citation_ids: list[str], evidence_items: dict[str, dict[str, Any]]) -> dict[str, str]:
+    title_to_citation: dict[str, str] = {}
+    for citation_id in citation_ids:
+        title = _title(evidence_items[citation_id])
+        if not title:
+            raise UngroundedResponseError("citation title is not grounded")
+        if title in title_to_citation and title_to_citation[title] != citation_id:
+            raise UngroundedResponseError("citation title is not grounded")
+        title_to_citation[title] = citation_id
+    return title_to_citation
+
+
+def _parse_explanation_segment(segment: str, cited_titles: dict[str, str]) -> tuple[str, dict[str, Any]]:
+    match = SEGMENT_TITLE_PATTERN.match(segment.strip())
+    if not match:
         raise UngroundedResponseError("explicit fact is not grounded")
-    if "year" in claims and claims["year"] != subject.get("year"):
+    title = match.group("title").strip()
+    citation_id = cited_titles.get(title)
+    if not citation_id:
+        raise UngroundedResponseError("citation title is not grounded")
+    cursor = match.end()
+    claims: dict[str, Any] = {}
+    for field, pattern, group_name, coerce in (
+        ("year", SEGMENT_YEAR_PATTERN, "year", lambda value: int(value)),
+        ("douban_rating", SEGMENT_RATING_PATTERN, "rating", lambda value: float(value)),
+        ("genres", SEGMENT_GENRES_PATTERN, "genres", _split_claim_values),
+        ("countries", SEGMENT_COUNTRIES_PATTERN, "countries", _split_claim_values),
+        ("languages", SEGMENT_LANGUAGES_PATTERN, "languages", _split_claim_values),
+    ):
+        value, cursor = _consume_segment_fact(segment, cursor, pattern, group_name, coerce)
+        if value in (None, []):
+            continue
+        claims[field] = value
+    if segment[cursor:].strip():
         raise UngroundedResponseError("explicit fact is not grounded")
-    if "douban_rating" in claims and _normalize_number(claims["douban_rating"]) != _normalize_number(subject.get("douban_rating")):
+    return citation_id, claims
+
+
+def _consume_segment_fact(segment: str, cursor: int, pattern: re.Pattern[str], group_name: str, coerce) -> tuple[Any, int]:
+    match = pattern.match(segment[cursor:])
+    if not match:
+        return None, cursor
+    value = coerce(match.group(group_name).strip())
+    return value, cursor + match.end()
+
+
+def _validate_segment_claims(claims: dict[str, Any], evidence_item: dict[str, Any]) -> None:
+    if "year" in claims and claims["year"] != evidence_item.get("year"):
+        raise UngroundedResponseError("explicit fact is not grounded")
+    if "douban_rating" in claims and _normalize_number(claims["douban_rating"]) != _normalize_number(evidence_item.get("douban_rating")):
         raise UngroundedResponseError("explicit fact is not grounded")
     for field in ("genres", "countries", "languages"):
         if field not in claims:
             continue
-        supported = set(_string_list(subject.get(field)))
+        supported = set(_string_list(evidence_item.get(field)))
         if not supported or any(value not in supported for value in claims[field]):
             raise UngroundedResponseError("explicit fact is not grounded")
-
-
-def _extract_supported_claims(text: str) -> dict[str, Any]:
-    claims: dict[str, Any] = {}
-    year_match = YEAR_CLAIM_PATTERN.search(text)
-    if year_match:
-        claims["year"] = int(year_match.group("year"))
-    rating_match = RATING_CLAIM_PATTERN.search(text)
-    if rating_match:
-        claims["douban_rating"] = float(rating_match.group("rating"))
-    genres_match = GENRES_CLAIM_PATTERN.search(text)
-    if genres_match:
-        genres = _split_claim_values(genres_match.group("genres"))
-        if genres:
-            claims["genres"] = genres
-    countries_match = COUNTRIES_CLAIM_PATTERN.search(text)
-    if countries_match:
-        countries = _split_claim_values(countries_match.group("countries"))
-        if countries:
-            claims["countries"] = countries
-    languages_match = LANGUAGES_CLAIM_PATTERN.search(text)
-    if languages_match:
-        languages = _split_claim_values(languages_match.group("languages"))
-        if languages:
-            claims["languages"] = languages
-    return claims
-
-
-def _reject_unsafe_fact_markers(text: str, claims: dict[str, Any]) -> None:
-    markers = (
-        (re.search(r"\d{4}年", text) is not None, "year"),
-        ("\u8c46\u74e3\u8bc4\u5206" in text, "douban_rating"),
-        ("\u7c7b\u578b" in text, "genres"),
-        ("\u56fd\u5bb6/\u5730\u533a" in text, "countries"),
-        ("\u8bed\u8a00" in text, "languages"),
-    )
-    for present, field in markers:
-        if present and field not in claims:
-            raise UngroundedResponseError("explicit fact is not grounded")
-
-
-def _claim_subject(text: str, citation_ids: list[str], evidence_items: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
-    if len(citation_ids) == 1:
-        return evidence_items[citation_ids[0]]
-    cited_titles = {
-        citation_id: _title(evidence_items[citation_id])
-        for citation_id in citation_ids
-        if _title(evidence_items[citation_id])
-    }
-    mentioned = [citation_id for citation_id, title in cited_titles.items() if title in text]
-    if len(mentioned) == 1:
-        return evidence_items[mentioned[0]]
-    mentioned_titles = {match.group(1) for match in TITLE_PATTERN.finditer(text)}
-    if len(mentioned_titles) == 1:
-        title = next(iter(mentioned_titles))
-        for citation_id in citation_ids:
-            if _title(evidence_items[citation_id]) == title:
-                return evidence_items[citation_id]
-    return None
 
 
 def _split_claim_values(value: str) -> list[str]:
