@@ -271,13 +271,19 @@ class RecommendationApi:
         if scope == "session" and event_type not in SESSION_ONLY_EVENT_TYPES:
             raise RecommendationApiError("session-only feedback must remain session-only")
 
+        feedback_payload = payload.get("payload")
+        if feedback_payload is None:
+            feedback_payload = {}
+        elif not isinstance(feedback_payload, dict):
+            raise RecommendationApiError("payload must be object")
+
         event_id = self.feedback_service.record_feedback(
             FeedbackEvent(
                 event_type=event_type,
                 item_key=item_key,
                 profile_key=profile_key,
                 session_id=session_id,
-                payload=dict(payload.get("payload") or {}),
+                payload=dict(feedback_payload),
                 created_at=time.time(),
             )
         )

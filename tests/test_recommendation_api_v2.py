@@ -163,6 +163,21 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("scope", payload["error"])
 
+    def test_feedback_api_rejects_non_object_payload(self):
+        invalid_payloads = ("oops", ["oops"], 123)
+        for value in invalid_payloads:
+            with self.subTest(payload_type=type(value).__name__):
+                status, payload = self.post_json_status("/api/v2/feedback", {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": "permanent",
+                    "item_key": "x",
+                    "payload": value,
+                })
+                self.assertEqual(status, 400)
+                self.assertIn("payload", payload["error"])
+                self.assertIn("object", payload["error"])
+
     def test_create_restore_next_and_previous_keep_three_channels_independent(self):
         created = self.create_session()
         self.assertEqual(created["schema_version"], 2)
