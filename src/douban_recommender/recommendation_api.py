@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from .candidate_planner import build_candidate_plan
@@ -13,8 +13,10 @@ from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates,
 from .feedback_service import FeedbackEvent, FeedbackService
 from .intent_parser import RecommendationIntent, parse_recommendation_intent
 from .io import load_media_csv, load_media_csv_from_text
+from .language_adapter import LanguageService, LocalRuleLanguageAdapter, OpenAICompatibleLanguageAdapter
 from .models import MediaItem, recommendation_item_key
 from .profiler import build_taste_profile
+from .privacy import scrub_sensitive
 from .ranking import rank_candidates
 from .recommendation_service import RecommendationBatch, RecommendationSession, RecommendationSessionService
 from .runtime_paths import resolve_database_path
@@ -42,6 +44,7 @@ EVENT_SCOPE_RULES = {
     "data-error": {"permanent"},
 }
 SESSION_ONLY_EVENT_TYPES = {"not-tonight", "tonight-candidate"}
+SESSION_STATE_EVENT_TYPES = {"not-tonight", "watched", "want"}
 ITEM_TEXT_FIELDS = {
     "title",
     "media_type",
@@ -85,6 +88,7 @@ CREATE_SESSION_BOOL_FIELDS = {
     "use_sample_candidates",
 }
 FEEDBACK_STRING_FIELDS = {"event_type", "scope", "item_key", "session_id", "profile_key"}
+LANGUAGE_STRING_FIELDS = {"endpoint", "model", "api_key"}
 
 
 class RecommendationApiError(ValueError):
@@ -210,6 +214,17 @@ def _strings(value: object) -> list[str]:
     return out
 
 
+def _merge_intents(base: RecommendationIntent | None, parsed: RecommendationIntent) -> RecommendationIntent:
+    if base is None:
+        return parsed
+    defaults = RecommendationIntent()
+    merged = base.to_dict()
+    for field, value in parsed.to_dict().items():
+        if value != getattr(defaults, field):
+            merged[field] = value
+    return RecommendationIntent.from_dict(merged)
+
+
 def _item_dicts(value: object) -> list[MediaItem]:
     if not isinstance(value, list):
         return []
@@ -229,14 +244,12 @@ def _item_dicts(value: object) -> list[MediaItem]:
     ]
 
 
-def _media_status(item: dict[str, object]) -> dict[str, str]:
+def _media_status(item: dict[str, object], *, had_cover: bool = False) -> dict[str, str]:
     cover = str(item.get("cover") or "").strip()
     if cover.startswith("/media/"):
         poster = "ready"
-    elif cover.startswith("data:image/svg+xml"):
-        poster = "designed"
-    elif cover:
-        poster = "external"
+    elif had_cover:
+        poster = "designed-fallback"
     else:
         poster = "missing"
     return {"poster": poster}
@@ -255,23 +268,23 @@ def _conflicts(item: dict[str, object]) -> list[str]:
 
 
 def _normalize_batch_item(item: dict[str, object]) -> dict[str, object]:
-    payload = dict(item)
+    scrubbed = scrub_sensitive(dict(item))
+    payload = scrubbed if isinstance(scrubbed, dict) else {}
+    had_cover = bool(str(payload.get("cover") or "").strip())
     payload["url"] = _safe_url(payload.get("url"))
-    payload["cover"] = _safe_url(payload.get("cover"), allow_data=True)
+    payload["cover"] = _safe_media_url(payload.get("cover"))
     payload["source"] = _safe_source(payload.get("source"))
     payload["people_photos"] = _safe_people_photos(payload.get("people_photos"))
     payload["item_key"] = recommendation_item_key(payload)
     payload["conflicts"] = _conflicts(payload)
-    payload["media_status"] = _media_status(payload)
+    payload["media_status"] = _media_status(payload, had_cover=had_cover)
     return payload
 
 
-def _safe_url(value: object, *, allow_data: bool = False) -> str:
+def _safe_url(value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    if allow_data and text.startswith("data:image/"):
-        return text
     try:
         parsed = urlsplit(text)
     except ValueError:
@@ -289,6 +302,11 @@ def _safe_url(value: object, *, allow_data: bool = False) -> str:
     if port:
         netloc = f"{netloc}:{port}"
     return urlunsplit((parsed.scheme, netloc, parsed.path or "", "", ""))
+
+
+def _safe_media_url(value: object) -> str:
+    text = str(value or "").strip()
+    return text if text.startswith("/media/") and "?" not in text and "#" not in text else ""
 
 
 def _safe_source(value: object) -> str:
@@ -315,7 +333,7 @@ def _safe_people_photos(value: object) -> dict[str, str]:
     out: dict[str, str] = {}
     for name, url in value.items():
         clean_name = str(name or "").strip()
-        clean_url = _safe_url(url)
+        clean_url = _safe_media_url(url)
         if clean_name and clean_url:
             out[clean_name] = clean_url
     return out
@@ -329,6 +347,7 @@ class RecommendationApi:
         feedback_service: FeedbackService | None = None,
         sample_ratings_path: Path | None = None,
         sample_candidates_path: Path | None = None,
+        language_adapter_factory: Callable[..., object] | None = None,
     ):
         self.database = database
         self.database.initialize()
@@ -336,6 +355,7 @@ class RecommendationApi:
         self.feedback_service = feedback_service or FeedbackService(database)
         self.sample_ratings_path = sample_ratings_path or DEFAULT_SAMPLE_RATINGS
         self.sample_candidates_path = sample_candidates_path or DEFAULT_SAMPLE_CANDIDATES
+        self.language_adapter_factory = language_adapter_factory or OpenAICompatibleLanguageAdapter
 
     def create_session(self, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
@@ -391,9 +411,13 @@ class RecommendationApi:
 
         session_id = _base_text(payload.get("session_id"))
         profile_key = _base_text(payload.get("profile_key")) or "default"
+        session = None
         if scope == "session":
             if not session_id:
                 raise RecommendationApiError("session_id is required for session scope")
+            session = self._restore_session(session_id)
+            profile_key = session.profile_key
+        elif session_id:
             session = self._restore_session(session_id)
             profile_key = session.profile_key
 
@@ -412,16 +436,26 @@ class RecommendationApi:
         elif not isinstance(feedback_payload, dict):
             raise RecommendationApiError("payload must be object")
 
-        event_id = self.feedback_service.record_feedback(
-            FeedbackEvent(
-                event_type=event_type,
-                item_key=item_key,
-                profile_key=profile_key,
-                session_id=session_id,
-                payload=dict(feedback_payload),
-                created_at=time.time(),
+        if session is not None and event_type in SESSION_STATE_EVENT_TYPES:
+            applied = self._service_call(
+                self.session_service.apply_feedback,
+                session.id,
+                event_type,
+                item_key,
+                dict(feedback_payload),
             )
-        )
+            event_id = str(applied["event_id"])
+        else:
+            event_id = self.feedback_service.record_feedback(
+                FeedbackEvent(
+                    event_type=event_type,
+                    item_key=item_key,
+                    profile_key=profile_key,
+                    session_id=session_id,
+                    payload=dict(feedback_payload),
+                    created_at=time.time(),
+                )
+            )
         return {
             "schema_version": SCHEMA_VERSION,
             "id": event_id,
@@ -473,6 +507,23 @@ class RecommendationApi:
             _validate_optional_integer_field(payload, field)
         for field in CREATE_SESSION_BOOL_FIELDS:
             _validate_optional_bool_field(payload, field)
+        self._validate_language_config(payload)
+
+    def _validate_language_config(self, payload: dict[str, Any]) -> None:
+        if "language" not in payload:
+            return
+        language = payload["language"]
+        if not isinstance(language, dict):
+            _raise_schema_error("language", "must be object")
+        for field in LANGUAGE_STRING_FIELDS:
+            if field in language and not isinstance(language[field], str):
+                _raise_schema_error(f"language.{field}", "must be string")
+        endpoint = _base_text(language.get("endpoint"))
+        model = _base_text(language.get("model"))
+        if endpoint and not model:
+            _raise_schema_error("language.model", "is required with language.endpoint")
+        if model and not endpoint:
+            _raise_schema_error("language.endpoint", "is required with language.model")
 
     def _validate_batch_payload(self, payload: dict[str, Any]) -> None:
         _validate_optional_string_field(payload, "channel")
@@ -492,18 +543,45 @@ class RecommendationApi:
     def _intent(self, payload: dict[str, Any]) -> RecommendationIntent:
         base = RecommendationIntent.from_dict(payload.get("intent")) if isinstance(payload.get("intent"), dict) else None
         text = _base_text(payload.get("intent_text") or payload.get("text"))
-        return parse_recommendation_intent(text, base=base) if text else (base or RecommendationIntent())
+        if not text:
+            return base or RecommendationIntent()
+        language = payload.get("language") if isinstance(payload.get("language"), dict) else {}
+        endpoint = _base_text(language.get("endpoint"))
+        model = _base_text(language.get("model"))
+        if not endpoint and not model:
+            parsed = LocalRuleLanguageAdapter().parse(text, {})
+            return parse_recommendation_intent(text, base=base) if base is not None else parsed
+        primary = self.language_adapter_factory(
+            endpoint=endpoint,
+            model=model,
+            api_key=_base_text(language.get("api_key")),
+        )
+        parsed = LanguageService(primary=primary, fallback=LocalRuleLanguageAdapter()).parse(text, {})
+        return _merge_intents(base, parsed)
 
     def _rated_items(self, payload: dict[str, Any]) -> list[MediaItem]:
         rated_items = _item_dicts(payload.get("rated_items"))
-        if rated_items:
-            return rated_items
-        ratings_csv = _base_text(payload.get("ratings_csv"))
-        if ratings_csv:
-            return load_media_csv_from_text(ratings_csv, kind="ratings")
-        if bool(payload.get("use_sample_ratings")):
-            return load_media_csv(self.sample_ratings_path, kind="ratings")
-        return []
+        if not rated_items:
+            ratings_csv = _base_text(payload.get("ratings_csv"))
+            if ratings_csv:
+                rated_items = load_media_csv_from_text(ratings_csv, kind="ratings")
+            elif bool(payload.get("use_sample_ratings")):
+                rated_items = load_media_csv(self.sample_ratings_path, kind="ratings")
+
+        watched_items: list[MediaItem] = []
+        for record in self.session_service.library_items(states=["watched"]):
+            if not isinstance(record.get("payload"), dict):
+                continue
+            item = media_item_from_dict(record["payload"])
+            if "看过" not in item.tags:
+                item.tags.append("看过")
+            watched_items.append(item)
+        deduped: dict[str, MediaItem] = {}
+        for item in [*rated_items, *watched_items]:
+            key = recommendation_item_key(item)
+            if key not in deduped:
+                deduped[key] = item
+        return list(deduped.values())
 
     def _profile(self, profile_key: str, rated_items: list[MediaItem], payload: dict[str, Any]):
         feedback_signals = self.feedback_service.feedback_signals(profile_key, time.time())

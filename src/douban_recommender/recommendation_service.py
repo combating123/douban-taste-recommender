@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from .database import AppDatabase
 from .intent_parser import RecommendationIntent
 from .models import recommendation_item_key
+from .privacy import scrub_sensitive
 
 _FEEDBACK_LIBRARY_STATES = {"watched": "watched", "want": "wanted"}
 _FEEDBACK_EXCLUSION_EVENTS = {"not-tonight", "watched"}
@@ -84,6 +85,11 @@ def _json_object(value: object) -> dict[str, object]:
     return decoded if isinstance(decoded, dict) else {}
 
 
+def _scrub_dict(value: object) -> dict[str, object]:
+    scrubbed = scrub_sensitive(value)
+    return scrubbed if isinstance(scrubbed, dict) else {}
+
+
 class RecommendationSessionService:
     def __init__(self, database: AppDatabase):
         self.database = database
@@ -109,7 +115,7 @@ class RecommendationSessionService:
                 raw_items = value or []
                 pool_size = len(raw_items)
                 matched_size = len(raw_items)
-            items = [item for raw in raw_items for item in [_serialize_item(raw)] if item]
+            items = [item for raw in raw_items for item in [_scrub_dict(_serialize_item(raw))] if item]
             channels[str(channel)] = {
                 "items": items,
                 "pool_size": max(pool_size, len(items)),
@@ -248,6 +254,14 @@ class RecommendationSessionService:
         reason: str,
         payload: dict[str, object],
     ) -> RecommendationBatch:
+        clean_payload = dict(payload)
+        clean_payload["items"] = [
+            clean_item
+            for item in payload.get("items", [])
+            if isinstance(item, dict)
+            for clean_item in [_scrub_dict(item)]
+            if clean_item
+        ]
         batch_id = uuid.uuid4().hex
         now = time.time()
         connection.execute(
@@ -264,7 +278,7 @@ class RecommendationSessionService:
                 index,
                 _json_dumps(item_keys),
                 str(reason or ""),
-                _json_dumps(payload),
+                _json_dumps(clean_payload),
                 now,
             ),
         )
@@ -273,13 +287,13 @@ class RecommendationSessionService:
             session_id=session_id,
             channel=channel,
             index=index,
-            items=tuple(dict(item) for item in payload.get("items", []) if isinstance(item, dict)),
+            items=tuple(dict(item) for item in clean_payload.get("items", []) if isinstance(item, dict)),
             item_keys=tuple(item_keys),
-            pool_size=int(payload.get("pool_size") or 0),
-            matched_size=int(payload.get("matched_size") or 0),
-            visible_size=int(payload.get("visible_size") or 0),
+            pool_size=int(clean_payload.get("pool_size") or 0),
+            matched_size=int(clean_payload.get("matched_size") or 0),
+            visible_size=int(clean_payload.get("visible_size") or 0),
             reason=str(reason or ""),
-            exhausted=bool(payload.get("exhausted", False)),
+            exhausted=bool(clean_payload.get("exhausted", False)),
             created_at=now,
         )
 
@@ -313,7 +327,7 @@ class RecommendationSessionService:
             """,
             (
                 str(item_key),
-                _json_dumps(dict(payload)),
+                _json_dumps(_scrub_dict(dict(payload))),
                 str(state),
                 str(source or ""),
                 timestamp,
@@ -420,7 +434,7 @@ class RecommendationSessionService:
                     if excluded and self._exclude_key(channels, clean_item_key):
                         self._save_channels(connection, session.id, channels)
 
-                    event_payload = dict(payload or {})
+                    event_payload = _scrub_dict(dict(payload or {}))
                     event_payload["item"] = item_payload
                     event_id = uuid.uuid4().hex
                     connection.execute(

@@ -9,7 +9,9 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from douban_recommender.database import AppDatabase
-from douban_recommender.models import MediaItem
+from douban_recommender.catalog_api import CatalogApi
+from douban_recommender.intent_parser import RecommendationIntent, parse_recommendation_intent
+from douban_recommender.models import MediaItem, recommendation_item_key
 from douban_recommender.web import Handler
 import douban_recommender.web as web_module
 
@@ -46,6 +48,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.original_api = getattr(web_module, "RECOMMENDATION_API", None)
+        self.original_catalog_api = getattr(web_module, "CATALOG_API", None)
         try:
             from douban_recommender.recommendation_api import RecommendationApi
         except ImportError:
@@ -55,6 +58,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
             database.initialize()
             self.api = RecommendationApi(database)
             web_module.RECOMMENDATION_API = self.api
+            web_module.CATALOG_API = CatalogApi(database, media_root=Path(self.temp.name) / "media")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -64,6 +68,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         web_module.RECOMMENDATION_API = self.original_api
+        web_module.CATALOG_API = self.original_catalog_api
         self.temp.cleanup()
 
     def request(self, path, method="GET", payload=None, raw_json=None):
@@ -477,6 +482,209 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertEqual(undone["undone_event_id"], recorded["id"])
         self.assertIn("restore", undone)
 
+    def test_permanent_feedback_without_session_still_uses_feedback_service_contract(self):
+        recorded = self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "profile_key": "profile-1",
+            "event_type": "more-like-this",
+            "scope": "permanent",
+            "item_key": "external:standalone-item",
+            "payload": {"feature": "genre:drama"},
+        })
+
+        self.assertEqual(recorded["event_type"], "more-like-this")
+        self.assertEqual(recorded["session_id"], "")
+        with self.api.database.connection() as connection:
+            row = connection.execute(
+                "SELECT event_type, item_key FROM feedback_events WHERE id = ?",
+                (recorded["id"],),
+            ).fetchone()
+        self.assertEqual((row["event_type"], row["item_key"]), ("more-like-this", "external:standalone-item"))
+
+    def test_not_tonight_feedback_skips_exact_future_item_and_preserves_history(self):
+        created = self.create_session(batch_size=1)
+        channel_name, channel = self.first_nonempty_channel(created)
+        first_batch = channel["batch"]
+        session = self.api.session_service.restore_session(created["id"])
+        future_item = session.channels[channel_name]["items"][1]
+        excluded_key = recommendation_item_key(future_item)
+
+        self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "session_id": created["id"],
+            "event_type": "not-tonight",
+            "scope": "session",
+            "item_key": excluded_key,
+        })
+        next_batch = self.post_json(
+            f"/api/v2/recommend/sessions/{created['id']}/batch",
+            {"schema_version": 2, "channel": channel_name},
+        )
+        restored_previous = self.post_json(
+            f"/api/v2/recommend/sessions/{created['id']}/previous",
+            {"schema_version": 2, "channel": channel_name},
+        )
+
+        self.assertNotIn(excluded_key, next_batch["batch"]["item_keys"])
+        self.assertEqual(restored_previous["batch"]["id"], first_batch["id"])
+
+    def test_watched_feedback_updates_library_and_seeds_new_session_seen_items(self):
+        created = self.create_session(batch_size=4)
+        _, channel = self.first_nonempty_channel(created)
+        watched_key = channel["batch"]["items"][0]["item_key"]
+
+        self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "session_id": created["id"],
+            "event_type": "watched",
+            "scope": "permanent",
+            "item_key": watched_key,
+        })
+        watched_records = self.api.session_service.library_items(states=["watched"])
+        fresh = self.create_session(rated_items=[], batch_size=4)
+        fresh_keys = {
+            item_key
+            for state in fresh["channels"].values()
+            for item_key in state["batch"]["item_keys"]
+        }
+
+        self.assertEqual([record["item_key"] for record in watched_records], [watched_key])
+        self.assertNotIn(watched_key, fresh_keys)
+
+    def test_want_feedback_updates_library_state_to_wanted(self):
+        created = self.create_session()
+        _, channel = self.first_nonempty_channel(created)
+        wanted_key = channel["batch"]["items"][0]["item_key"]
+
+        self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "session_id": created["id"],
+            "event_type": "want",
+            "scope": "permanent",
+            "item_key": wanted_key,
+        })
+
+        wanted_records = self.api.session_service.library_items(states=["wanted"])
+        self.assertEqual([record["item_key"] for record in wanted_records], [wanted_key])
+
+    def test_every_recommendation_item_key_resolves_to_same_catalog_title_identity(self):
+        channel_name = next(iter(self.create_session()["channels"]))
+        created = self.create_session(
+            rated_items=[],
+            candidates_csv="",
+            candidate_items=[
+                {
+                    "title": "Same title",
+                    "year": 2001,
+                    "media_type": channel_name,
+                    "douban_rating": 9.1,
+                    "vote_count": 1000,
+                },
+                {
+                    "title": "Same title",
+                    "year": 2024,
+                    "media_type": channel_name,
+                    "douban_rating": 9.0,
+                    "vote_count": 900,
+                },
+            ],
+            use_sample_candidates=False,
+            batch_size=2,
+        )
+        returned = created["channels"][channel_name]["batch"]["items"]
+
+        self.assertEqual(len(returned), 2)
+        self.assertEqual(len({item["item_key"] for item in returned}), 2)
+        for item in returned:
+            title = self.get_json(f"/api/v2/titles/{item['item_key']}")
+            self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))
+
+    def test_create_session_rejects_malformed_language_configuration(self):
+        cases = [
+            ("language", "not-an-object"),
+            ("language.endpoint", {"endpoint": 123, "model": "demo"}),
+            ("language.model", {"endpoint": "http://127.0.0.1:11434", "model": 123}),
+            ("language.api_key", {"endpoint": "http://127.0.0.1:11434", "model": "demo", "api_key": 123}),
+            ("language.model", {"endpoint": "http://127.0.0.1:11434"}),
+            ("language.endpoint", {"model": "demo"}),
+        ]
+        for field, language in cases:
+            with self.subTest(field=field, language=language):
+                self.assert_bad_request_field(
+                    "/api/v2/recommend/sessions",
+                    self.session_payload(language=language),
+                    field,
+                )
+
+    def test_omitted_language_config_parses_locally_without_building_remote_adapter(self):
+        def unexpected_factory(**_kwargs):
+            self.fail("remote language adapter must not be built")
+
+        self.api.language_adapter_factory = unexpected_factory
+        text = "悬疑电影"
+        expected = json.loads(json.dumps(parse_recommendation_intent(text).to_dict(), ensure_ascii=False))
+        for language in (None, {}):
+            with self.subTest(language=language):
+                overrides = {"intent_text": text}
+                if language is not None:
+                    overrides["language"] = language
+                created = self.create_session(**overrides)
+                self.assertEqual(created["intent"], expected)
+
+    def test_explicit_language_adapter_changes_intent_and_api_key_is_memory_only(self):
+        secret = "language-api-secret"
+        captured = {}
+
+        class FakeAdapter:
+            def parse(self, text, evidence_catalog):
+                captured["parse"] = (text, evidence_catalog)
+                return RecommendationIntent(genres=("remote-genre",), free_text=text)
+
+        def factory(**kwargs):
+            captured["config"] = kwargs
+            return FakeAdapter()
+
+        self.api.language_adapter_factory = factory
+        created = self.create_session(
+            intent_text="model-owned parsing",
+            language={
+                "endpoint": "http://127.0.0.1:11434/v1/chat/completions",
+                "model": "demo",
+                "api_key": secret,
+            },
+        )
+
+        self.assertEqual(created["intent"]["genres"], ["remote-genre"])
+        self.assertEqual(captured["config"]["api_key"], secret)
+        self.assertEqual(captured["parse"], ("model-owned parsing", {}))
+        self.assertNotIn(secret, json.dumps(created, ensure_ascii=False))
+        with self.api.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT intent_json AS payload FROM recommendation_sessions
+                UNION ALL SELECT channels_json FROM recommendation_sessions
+                UNION ALL SELECT payload_json FROM recommendation_batches
+                UNION ALL SELECT payload_json FROM library_items
+                UNION ALL SELECT payload_json FROM feedback_events
+                """
+            ).fetchall()
+        self.assertNotIn(secret, "\n".join(str(row["payload"] or "") for row in rows))
+
+    def test_explicit_language_failure_falls_back_to_local_parser(self):
+        class FailingAdapter:
+            def parse(self, text, evidence_catalog):
+                raise RuntimeError("model failed")
+
+        self.api.language_adapter_factory = lambda **_kwargs: FailingAdapter()
+        text = "悬疑电影"
+        created = self.create_session(
+            intent_text=text,
+            language={"endpoint": "http://127.0.0.1:11434", "model": "demo"},
+        )
+
+        expected = json.loads(json.dumps(parse_recommendation_intent(text).to_dict(), ensure_ascii=False))
+        self.assertEqual(created["intent"], expected)
+
     def test_v2_routes_reject_unsupported_schema_version(self):
         status, payload = self.post_json_status(
             "/api/v2/recommend/sessions",
@@ -499,6 +707,20 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
     def test_unknown_session_and_feedback_event_return_404(self):
         status, payload = self.request("/api/v2/recommend/sessions/missing-session", method="GET")
+        self.assertEqual(status, 404)
+        self.assertIn("not found", payload["error"])
+
+        created = self.create_session()
+        status, payload = self.post_json_status(
+            "/api/v2/feedback",
+            {
+                "schema_version": 2,
+                "session_id": created["id"],
+                "event_type": "not-tonight",
+                "scope": "session",
+                "item_key": "missing-item",
+            },
+        )
         self.assertEqual(status, 404)
         self.assertIn("not found", payload["error"])
 
@@ -589,34 +811,77 @@ class RecommendationApiV2Tests(unittest.TestCase):
         restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
         self.assertEqual(restored["schema_version"], 2)
 
-    def test_create_session_sanitizes_candidate_item_urls_cover_and_source(self):
+    def test_create_session_keeps_only_local_media_and_scrubs_response_and_database_secrets(self):
         channel_name, _ = self.first_nonempty_channel(self.create_session())
         secret_url = "https://viewer:session-secret@example.com/subject/42/?token=url-secret#frag-url"
         secret_cover = "https://cdn.example/poster.jpg?signature=cover-secret#frag-cover"
         secret_source = "https://source.example/list?token=source-secret#frag-source"
+        secret_photo = "https://photos.example/actor.jpg?token=photo-secret#frag-photo"
 
         response = self.create_session(
             candidates_csv="",
             candidate_items=[
                 {
-                    "title": "sanitized candidate",
+                    "title": "external media candidate",
                     "media_type": channel_name,
-                    "douban_id": "sanitized-item",
+                    "douban_id": "external-media-item",
                     "url": secret_url,
                     "cover": secret_cover,
                     "source": secret_source,
-                    "summary": "safe summary",
-                }
+                    "summary": "safe summary token=summary-secret",
+                    "raw": {
+                        "people_photos": {"Actor": secret_photo},
+                        "authorization": "Bearer nested-auth-secret",
+                    },
+                },
+                {
+                    "title": "local media candidate",
+                    "media_type": channel_name,
+                    "douban_id": "local-media-item",
+                    "cover": "/media/poster-ready.jpg",
+                    "raw": {"people_photos": {"Actor": "/media/person-ready.jpg"}},
+                },
             ],
             use_sample_candidates=False,
-            batch_size=1,
+            batch_size=2,
         )
 
-        _, channel = self.first_nonempty_channel(response)
-        item = channel["batch"]["items"][0]
-        self.assertEqual(item["url"], "https://example.com/subject/42/")
-        self.assertEqual(item["cover"], "https://cdn.example/poster.jpg")
-        self.assertEqual(item["source"], "external_url")
+        external = self.find_item_by_id(response, "external-media-item")
+        local = self.find_item_by_id(response, "local-media-item")
+        self.assertEqual(external["url"], "https://example.com/subject/42/")
+        self.assertEqual(external["cover"], "")
+        self.assertEqual(external["source"], "external_url")
+        self.assertEqual(external["people_photos"], {})
+        self.assertEqual(external["media_status"]["poster"], "designed-fallback")
+        self.assertEqual(local["cover"], "/media/poster-ready.jpg")
+        self.assertEqual(local["people_photos"], {"Actor": "/media/person-ready.jpg"})
+        self.assertEqual(local["media_status"]["poster"], "ready")
+        self.assertTrue(response["id"])
+
+        self.post_json("/api/v2/feedback", {
+            "schema_version": 2,
+            "session_id": response["id"],
+            "event_type": "watched",
+            "scope": "permanent",
+            "item_key": external["item_key"],
+            "payload": {
+                "cookie": "db-cookie-secret",
+                "nested": {
+                    "api_key": "db-api-secret",
+                    "url": "https://user:db-password@example.com/path?token=db-url-secret#db-fragment",
+                },
+            },
+        })
+        with self.api.database.connection() as connection:
+            stored = connection.execute(
+                """
+                SELECT channels_json AS payload FROM recommendation_sessions
+                UNION ALL SELECT payload_json FROM recommendation_batches
+                UNION ALL SELECT payload_json FROM library_items
+                UNION ALL SELECT payload_json FROM feedback_events
+                """
+            ).fetchall()
+
         self.assert_no_secret_echo(
             response,
             "session-secret",
@@ -626,7 +891,31 @@ class RecommendationApiV2Tests(unittest.TestCase):
             "frag-cover",
             "source-secret",
             "frag-source",
+            "summary-secret",
+            "photo-secret",
+            "frag-photo",
+            "nested-auth-secret",
         )
+        serialized_db = "\n".join(str(row["payload"] or "") for row in stored)
+        for secret in (
+            "session-secret",
+            "url-secret",
+            "frag-url",
+            "cover-secret",
+            "frag-cover",
+            "source-secret",
+            "frag-source",
+            "summary-secret",
+            "photo-secret",
+            "frag-photo",
+            "nested-auth-secret",
+            "db-cookie-secret",
+            "db-api-secret",
+            "db-password",
+            "db-url-secret",
+            "db-fragment",
+        ):
+            self.assertNotIn(secret, serialized_db)
 
     def test_candidate_url_fetch_results_do_not_echo_input_secrets_in_session_or_batch(self):
         secret_input_url = "https://viewer:input-secret@example.com/list?token=input-token#input-fragment"
@@ -672,9 +961,10 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
         first_item = self.find_item_by_id(created, "url-candidate-1")
         self.assertEqual(first_item["url"], "https://example.com/subject/200/")
-        self.assertEqual(first_item["cover"], "https://img.example/poster.jpg")
+        self.assertEqual(first_item["cover"], "")
         self.assertEqual(first_item["source"], "douban_page")
-        self.assertEqual(first_item["people_photos"]["Actor"], "https://photos.example/actor.jpg")
+        self.assertEqual(first_item["people_photos"], {})
+        self.assertEqual(first_item["media_status"]["poster"], "designed-fallback")
 
         next_batch = self.post_json(
             f"/api/v2/recommend/sessions/{created['id']}/batch",
