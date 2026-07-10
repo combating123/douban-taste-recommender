@@ -708,6 +708,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            if path.startswith("/api/v2/") and not isinstance(payload, dict):
+                self.send_json({"error": "JSON body must be an object"}, status=400)
+                return
             if path == "/api/recommend":
                 data = self.handle_recommend(payload)
             elif path == "/api/enrich-posters":

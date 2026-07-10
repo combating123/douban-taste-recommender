@@ -66,10 +66,13 @@ class RecommendationApiV2Tests(unittest.TestCase):
         web_module.RECOMMENDATION_API = self.original_api
         self.temp.cleanup()
 
-    def request(self, path, method="GET", payload=None):
+    def request(self, path, method="GET", payload=None, raw_json=None):
         data = None
         headers = {}
-        if payload is not None:
+        if raw_json is not None:
+            data = raw_json.encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        elif payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
@@ -91,6 +94,9 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
     def post_json_status(self, path, payload):
         return self.request(path, method="POST", payload=payload)
+
+    def post_raw_json_status(self, path, raw_json):
+        return self.request(path, method="POST", raw_json=raw_json)
 
     def get_json(self, path):
         status, body = self.request(path, method="GET")
@@ -177,6 +183,45 @@ class RecommendationApiV2Tests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertIn("payload", payload["error"])
                 self.assertIn("object", payload["error"])
+
+    def test_v2_post_routes_reject_top_level_non_object_json_bodies(self):
+        created = self.create_session()
+        channel_name, channel_state = self.first_nonempty_channel(created)
+        item_key = channel_state["batch"]["items"][0]["item_key"]
+
+        recorded = self.post_json(
+            "/api/v2/feedback",
+            {
+                "schema_version": 2,
+                "profile_key": "profile-1",
+                "session_id": created["id"],
+                "event_type": "not-tonight",
+                "scope": "session",
+                "item_key": item_key,
+            },
+        )
+
+        mutation_paths = [
+            "/api/v2/recommend/sessions",
+            f"/api/v2/recommend/sessions/{created['id']}/batch",
+            f"/api/v2/recommend/sessions/{created['id']}/previous",
+            "/api/v2/feedback",
+            f"/api/v2/feedback/{recorded['id']}/undo",
+        ]
+        invalid_payloads = [
+            ("int", 123, self.post_json_status),
+            ("list", ["oops"], self.post_json_status),
+            ("bool", True, self.post_json_status),
+            ("null", "null", self.post_raw_json_status),
+        ]
+
+        for path in mutation_paths:
+            for label, value, sender in invalid_payloads:
+                with self.subTest(path=path, payload_type=label):
+                    status, payload = sender(path, value)
+                    self.assertEqual(status, 400)
+                    self.assertIn("JSON body", payload["error"])
+                    self.assertIn("object", payload["error"])
 
     def test_create_restore_next_and_previous_keep_three_channels_independent(self):
         created = self.create_session()
