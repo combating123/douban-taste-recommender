@@ -34,6 +34,26 @@ class AnimatedSeriesEligibilityTests(unittest.TestCase):
         self.assertFalse(is_animated_series(single))
         self.assertTrue(is_animated_series(series))
 
+    def test_anime_channel_accepts_alias_animation_when_raw_format_is_series(self):
+        item = MediaItem(title="TV 动画", media_type="动画", raw={"format": "TV", "episodes": 12})
+
+        decision = evaluate_eligibility(item, set(), RecommendationIntent(media_types=("动漫",)))
+
+        self.assertTrue(decision.eligible)
+
+    def test_anime_channel_rejects_movie_format_even_with_animation_alias(self):
+        item = MediaItem(title="动画电影", media_type="动画", raw={"format": "MOVIE", "episodes": 1})
+
+        decision = evaluate_eligibility(item, set(), RecommendationIntent(media_types=("动漫",)))
+
+        self.assertFalse(decision.eligible)
+        self.assertIn("not-animated-series", decision.reasons)
+
+    def test_anime_channel_accepts_series_format_and_positive_episode_count(self):
+        for raw in ({"format": "ONA"}, {"format": "SERIES"}, {"episodes": 1}):
+            with self.subTest(raw=raw):
+                self.assertTrue(is_animated_series(MediaItem(title="动画剧集", media_type="动漫", raw=raw)))
+
 
 class GeneralEligibilityTests(unittest.TestCase):
     def test_seen_item_is_rejected_by_identity_or_title(self):
@@ -67,6 +87,17 @@ class GeneralEligibilityTests(unittest.TestCase):
         self.assertTrue(
             any(signal.code == "costume-series" and signal.value < 0 for signal in decision.penalties)
         )
+
+    def test_costume_series_penalty_is_removed_when_intent_opts_in(self):
+        item = MediaItem(title="古装测试", media_type="电视剧", genres=["古装"])
+        decision = evaluate_eligibility(
+            item,
+            set(),
+            RecommendationIntent(media_types=("电视剧",), genres=("古装",), free_text="想看古装权谋"),
+        )
+
+        self.assertTrue(decision.eligible)
+        self.assertFalse(any(signal.code == "costume-series" for signal in decision.penalties))
 
     def test_explicit_permanent_avoid_is_a_hard_gate(self):
         item = MediaItem(title="古装测试", media_type="电视剧", genres=["古装"])

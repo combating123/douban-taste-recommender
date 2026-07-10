@@ -5,6 +5,7 @@ from pathlib import Path
 
 from douban_recommender.database import AppDatabase
 from douban_recommender.migrations import migrate_legacy_recommendations
+from douban_recommender.models import recommendation_item_key
 
 
 class LegacyRecommendationMigrationTests(unittest.TestCase):
@@ -84,6 +85,26 @@ class LegacyRecommendationMigrationTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["item_key"], "douban:35280649")
         self.assertEqual(json.loads(row["payload_json"])["title"], "奇巧计程车")
+
+    def test_legacy_rows_use_canonical_recommendation_item_key_not_legacy_prefix(self):
+        rows = [
+            {"title": "同名作品", "media_type": "movie", "year": 1999},
+            {"title": "同名作品", "media_type": "电影", "year": 2024},
+        ]
+
+        report = migrate_legacy_recommendations(rows, self.database)
+
+        self.assertEqual(report.imported, 2)
+        with self.database.connection() as connection:
+            keys = [
+                row["item_key"]
+                for row in connection.execute("SELECT item_key FROM library_items ORDER BY item_key").fetchall()
+            ]
+        self.assertEqual(
+            sorted(keys),
+            sorted(recommendation_item_key(row) for row in rows),
+        )
+        self.assertTrue(all(not key.startswith("legacy:") for key in keys))
 
 
 if __name__ == "__main__":

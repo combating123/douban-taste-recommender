@@ -1,6 +1,7 @@
 ﻿import unittest
 
 from douban_recommender.models import MediaItem
+from douban_recommender.eligibility import is_animated_series
 from douban_recommender.serialization import media_item_from_dict, media_item_to_dict, redact_cookie
 
 
@@ -33,6 +34,33 @@ class SerializationTests(unittest.TestCase):
         self.assertEqual(restored.genres, ["剧情", "悬疑", "犯罪"])
         self.assertEqual(restored.tags, ["看过", "现实主义"])
         self.assertEqual(restored.douban_id, "33404425")
+
+    def test_round_trip_preserves_internal_raw_metadata(self):
+        item = MediaItem(
+            title="资料快照",
+            media_type="电影",
+            raw={"format": "MOVIE", "episodes": 1, "runtime": 124},
+        )
+
+        payload = media_item_to_dict(item)
+        restored = media_item_from_dict(payload)
+
+        self.assertEqual(payload["raw"], {"format": "MOVIE", "episodes": 1, "runtime": 124})
+        self.assertEqual(restored.raw["format"], "MOVIE")
+        self.assertEqual(restored.raw["episodes"], 1)
+        self.assertFalse(is_animated_series(restored))
+
+    def test_raw_tv_format_with_animation_alias_is_eligible_as_anime_series(self):
+        restored = media_item_from_dict(
+            {
+                "title": "动画别名剧集",
+                "media_type": "动画",
+                "raw": {"format": "TV", "episodes": 12},
+            }
+        )
+
+        self.assertEqual(restored.media_type, "动漫")
+        self.assertTrue(is_animated_series(restored))
 
     def test_redact_cookie_removes_sensitive_values(self):
         raw = "bid=abc123; dbcl2=\"999:user\"; ck=secret; push_noty_num=0"

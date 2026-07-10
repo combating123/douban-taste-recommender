@@ -87,6 +87,25 @@ class CineScopeRecommendationTests(unittest.TestCase):
         self.assertTrue(recs[0].is_wishlist)
         self.assertIn("想看", recs[0].badges)
 
+    def test_seen_and_wishlist_matching_use_canonical_item_key(self):
+        rated = [
+            MediaItem(title="同名作品", year=1999, media_type="电影", tags=["看过"]),
+            MediaItem(title="想看的同名作品", year=2024, media_type="电影", tags=["想看"]),
+        ]
+        candidates = [
+            MediaItem(title="同名作品", year=1999, media_type="movie", douban_rating=9.0),
+            MediaItem(title="同名作品", year=2024, media_type="电影", douban_rating=8.8),
+            MediaItem(title="想看的同名作品", year=2024, media_type="film", douban_rating=8.7),
+        ]
+        profile = build_taste_profile(rated, like_terms="电影", dislike_terms="")
+
+        recs = recommend(rated, candidates, profile, limit=5)
+        by_title_year = {(rec.item.title, rec.item.year): rec for rec in recs}
+
+        self.assertNotIn(("同名作品", 1999), by_title_year)
+        self.assertIn(("同名作品", 2024), by_title_year)
+        self.assertTrue(by_title_year[("想看的同名作品", 2024)].is_wishlist)
+
 
     def test_recommendation_rerank_reduces_country_and_media_type_monotony(self):
         candidates = [

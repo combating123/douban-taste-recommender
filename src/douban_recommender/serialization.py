@@ -23,6 +23,7 @@ MEDIA_ITEM_FIELDS = [
     "cover",
     "summary",
     "source",
+    "raw",
 ]
 
 
@@ -40,6 +41,8 @@ def media_item_from_dict(data: dict[str, Any]) -> MediaItem:
             clean[list_field] = [value.strip()]
         else:
             clean[list_field] = []
+    raw = clean.get("raw")
+    clean["raw"] = dict(raw) if isinstance(raw, dict) else {}
     return MediaItem(**clean)
 
 

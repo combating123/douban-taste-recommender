@@ -87,6 +87,35 @@ class ExplainableRankingTests(unittest.TestCase):
         self.assertTrue(any(signal["code"] == "costume-series" for signal in breakdown["signals"]))
         self.assertTrue(breakdown["conflicts"])
 
+    def test_costume_default_penalty_opt_in_removes_penalty_and_avoid_penalizes(self):
+        costume = media("古装长剧", rating=9.0, media_type="电视剧", country="中国大陆", genres=["剧情", "古装"])
+        modern = media("现代剧", rating=8.8, media_type="电视剧", country="中国大陆", genres=["剧情", "悬疑"])
+
+        default_ranked = rank_candidates(
+            [],
+            [costume, modern],
+            TasteProfile(),
+            RecommendationIntent(media_types=("电视剧",)),
+        )
+        opt_in_ranked = rank_candidates(
+            [],
+            [costume, modern],
+            TasteProfile(),
+            RecommendationIntent(media_types=("电视剧",), genres=("古装",), free_text="想看古装剧"),
+        )
+        avoid_ranked = rank_candidates(
+            [],
+            [costume, modern],
+            TasteProfile(),
+            RecommendationIntent(media_types=("电视剧",), avoid=("古装",), free_text="不要古装"),
+        )
+
+        self.assertEqual(default_ranked[0].item.title, "现代剧")
+        self.assertTrue(any("古装" in warning for warning in default_ranked[1].warnings))
+        self.assertEqual(opt_in_ranked[0].item.title, "古装长剧")
+        self.assertFalse(any("古装" in warning for warning in opt_in_ranked[0].warnings))
+        self.assertEqual([row.item.title for row in avoid_ranked], ["现代剧"])
+
     def test_animated_movie_is_removed_before_scoring(self):
         film = media(
             "动画电影",

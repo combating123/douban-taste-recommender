@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import log10
 
-from .models import MediaItem, normalize_title
+from .models import MediaItem, canonical_media_type, normalize_title, recommendation_item_key
 from .profiler import TasteProfile
 
 
@@ -74,34 +74,38 @@ def recommend(
         item for item in rated_items
         if "想看" in set(item.tags or []) or item.source.endswith(":wish")
     ]
-    seen_titles = {normalize_title(item.title) for item in watched_items if item.title}
-    seen_ids = {item.douban_id for item in watched_items if item.douban_id}
-    wish_ids = {item.douban_id for item in wish_items if item.douban_id}
-    wish_titles = {normalize_title(item.title) for item in wish_items if item.title}
+    seen_keys = {recommendation_item_key(item) for item in watched_items if item.title or item.douban_id}
+    seen_title_fallbacks = {normalize_title(item.title) for item in watched_items if item.title and item.year is None}
+    wish_keys = {recommendation_item_key(item) for item in wish_items if item.title or item.douban_id}
+    wish_title_fallbacks = {normalize_title(item.title) for item in wish_items if item.title and item.year is None}
 
     deduped: dict[str, MediaItem] = {}
     for item in candidates:
         if not item.title:
             continue
-        if item.douban_id and item.douban_id in seen_ids:
+        item_key = recommendation_item_key(item)
+        title_key = normalize_title(item.title)
+        if item_key in seen_keys:
             continue
-        if normalize_title(item.title) in seen_titles:
+        if item.year is None and title_key in seen_title_fallbacks:
             continue
-        if item.media_type == "电影" and not include_movies:
+        media_type = canonical_media_type(item.media_type)
+        if media_type == "电影" and not include_movies:
             continue
-        if item.media_type == "电视剧" and not include_series:
+        if media_type == "电视剧" and not include_series:
             continue
-        if item.media_type == "动漫" and not include_anime:
+        if media_type == "动漫" and not include_anime:
             continue
-        key = item.douban_id or normalize_title(item.title)
-        existing = deduped.get(key)
+        existing = deduped.get(item_key)
         if existing is None or item_quality(item) > item_quality(existing):
-            deduped[key] = item
+            deduped[item_key] = item
 
     recs = []
     for item in deduped.values():
         rec = score_item(item, profile)
-        if (item.douban_id and item.douban_id in wish_ids) or normalize_title(item.title) in wish_titles:
+        item_key = recommendation_item_key(item)
+        title_key = normalize_title(item.title)
+        if item_key in wish_keys or (item.year is None and title_key in wish_title_fallbacks):
             rec.is_wishlist = True
             rec.badges.append("想看")
             rec.score += 2.5
@@ -229,7 +233,7 @@ def metadata_quality_adjustment(item: MediaItem) -> tuple[float, list[str], list
     return score_delta, reasons, warnings
 
 
-def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
+def score_item(item: MediaItem, profile: TasteProfile, apply_costume_penalty: bool = True) -> Recommendation:
     score = 50.0
     reasons: list[str] = []
     warnings: list[str] = []
@@ -277,7 +281,7 @@ def score_item(item: MediaItem, profile: TasteProfile) -> Recommendation:
     if any(term in blob for term in quality_terms):
         score += 4.0
     costume_terms = ["古装", "武侠", "仙侠", "宫廷", "历史", "朝代", "权谋"]
-    if item.media_type == "电视剧" and any(term in blob for term in costume_terms):
+    if apply_costume_penalty and canonical_media_type(item.media_type) == "电视剧" and any(term in blob for term in costume_terms):
         score -= 18.0
         warnings.append("电视剧古装 / 宫廷 / 历史向内容，与你的避雷设置冲突")
 

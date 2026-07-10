@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 from .database import AppDatabase
+from .models import recommendation_item_key
 
 
 SENSITIVE_KEY_PARTS = ("cookie", "api_key", "apikey", "authorization", "subscription", "proxy_url")
@@ -88,19 +89,7 @@ def _clear_stale_cover(payload: dict) -> bool:
 
 
 def _item_key(payload: dict) -> str:
-    identifier = str(payload.get("douban_id") or "").strip()
-    if identifier:
-        if identifier.isdigit():
-            return f"douban:{identifier}"
-        return f"external:{identifier}"
-    basis = "|".join(
-        [
-            str(payload.get("title") or "").strip().casefold(),
-            str(payload.get("year") or ""),
-            str(payload.get("media_type") or "").strip().casefold(),
-        ]
-    )
-    return "legacy:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
+    return recommendation_item_key(payload)
 
 
 def _library_state(payload: dict) -> str:

@@ -20,6 +20,29 @@ def _clean_list(values: list[str] | None) -> list[str]:
     return out
 
 
+def canonical_media_type(value: object) -> str:
+    text = str(value or "").strip()
+    normalized = text.casefold().replace(" ", "").replace("_", "").replace("-", "")
+    aliases = {
+        "movie": "电影",
+        "film": "电影",
+        "电影": "电影",
+        "tv": "电视剧",
+        "series": "电视剧",
+        "tvseries": "电视剧",
+        "show": "电视剧",
+        "电视剧": "电视剧",
+        "剧集": "电视剧",
+        "anime": "动漫",
+        "animation": "动漫",
+        "animatedseries": "动漫",
+        "动画": "动漫",
+        "动漫": "动漫",
+        "动画剧集": "动漫",
+    }
+    return aliases.get(normalized, text)
+
+
 @dataclass
 class MediaItem:
     title: str
@@ -43,7 +66,7 @@ class MediaItem:
 
     def __post_init__(self) -> None:
         self.title = str(self.title or "").strip()
-        self.media_type = str(self.media_type or "").strip()
+        self.media_type = canonical_media_type(self.media_type)
         self.genres = _clean_list(self.genres)
         self.countries = _clean_list(self.countries)
         self.languages = _clean_list(self.languages)
@@ -51,13 +74,13 @@ class MediaItem:
         self.casts = _clean_list(self.casts)
         self.tags = _clean_list(self.tags)
         if not self.media_type:
-            self.media_type = guess_media_type(self)
+            self.media_type = canonical_media_type(guess_media_type(self))
+        if not isinstance(self.raw, dict):
+            self.raw = {}
 
     @property
     def identity(self) -> str:
-        if self.douban_id:
-            return f"douban:{self.douban_id}"
-        return normalize_title(self.title)
+        return recommendation_item_key(self)
 
     def search_blob(self) -> str:
         parts: list[str] = [
@@ -103,7 +126,7 @@ def recommendation_item_key(item: MediaItem | dict[str, Any]) -> str:
         [
             str(getter("title") or "").strip().casefold(),
             str(getter("year") or ""),
-            str(getter("media_type") or "").strip().casefold(),
+            canonical_media_type(getter("media_type") or "").casefold(),
         ]
     )
     return "item:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]

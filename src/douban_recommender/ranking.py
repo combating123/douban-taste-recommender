@@ -5,7 +5,7 @@ from math import log10
 
 from .eligibility import ScoreSignal, evaluate_eligibility
 from .intent_parser import RecommendationIntent
-from .models import MediaItem, normalize_title
+from .models import MediaItem, normalize_title, recommendation_item_key
 from .profiler import TasteProfile
 from .recommender import Recommendation, item_quality, score_item
 
@@ -169,8 +169,8 @@ def _seen_keys(rated_items: list[MediaItem]) -> set[str]:
         tags = set(item.tags or [])
         if item.my_rating is None and "看过" not in tags and not str(item.source or "").endswith(":collect"):
             continue
-        seen.add(item.identity)
-        if item.title:
+        seen.add(recommendation_item_key(item))
+        if item.title and item.year is None:
             seen.add(normalize_title(item.title))
             seen.add(item.title)
     return seen
@@ -229,17 +229,18 @@ def rank_candidates(
     seen = _seen_keys(rated_items)
     deduped: dict[str, MediaItem] = {}
     for item in candidates:
-        key = item.identity or normalize_title(item.title)
+        key = recommendation_item_key(item)
         existing = deduped.get(key)
         if existing is None or item_quality(item) > item_quality(existing):
             deduped[key] = item
 
     recommendations: list[Recommendation] = []
+    costume_opt_in = "古装" in intent.genres or ("古装" in intent.free_text and "古装" not in intent.avoid)
     for item in deduped.values():
         eligibility = evaluate_eligibility(item, seen, intent)
         if not eligibility.eligible:
             continue
-        baseline = score_item(item, profile)
+        baseline = score_item(item, profile, apply_costume_penalty=not costume_opt_in)
         quality, quality_signals = calibrated_quality(item)
         taste = _clamp(baseline.score)
         context, context_signals = context_score(item, intent)

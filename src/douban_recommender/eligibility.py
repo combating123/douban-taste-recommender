@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 
 from .intent_parser import RecommendationIntent
-from .models import MediaItem, normalize_title
+from .models import MediaItem, canonical_media_type, normalize_title, recommendation_item_key
 
 
 @dataclass(frozen=True)
@@ -23,20 +23,8 @@ class EligibilityDecision:
 
 
 PLACEHOLDER_TITLE_RE = re.compile(r"^(?:电影|电视剧|动漫|动画|影视|作品)?候选\s*#?\s*\d+$", re.I)
-ANIME_TYPES = {"动漫", "动画", "anime", "animation"}
-MOVIE_FORMATS = {"MOVIE", "FILM", "FEATURE", "THEATRICAL"}
+MOVIE_FORMATS = {"MOVIE", "FILM", "FEATURE", "THEATRICAL", "ANIME_MOVIE", "ANIMATION_MOVIE", "动画电影"}
 SERIES_FORMATS = {"TV", "TV_SERIES", "SERIES", "ONA", "WEB", "MINISERIES"}
-
-
-def _canonical_media_type(value: str) -> str:
-    text = str(value or "").strip().casefold()
-    if text in {"电影", "movie", "film"}:
-        return "电影"
-    if text in {"电视剧", "剧集", "series", "tv", "tvseries", "show"}:
-        return "电视剧"
-    if text in {"动漫", "动画", "anime", "animation", "animatedseries"}:
-        return "动漫"
-    return str(value or "").strip()
 
 
 def _raw_int(raw: dict, *keys: str) -> int | None:
@@ -52,7 +40,7 @@ def _raw_int(raw: dict, *keys: str) -> int | None:
 
 def is_animated_series(item: MediaItem) -> bool:
     raw = item.raw if isinstance(item.raw, dict) else {}
-    if _canonical_media_type(item.media_type) != "动漫":
+    if canonical_media_type(item.media_type) != "动漫":
         return False
     raw_format = str(
         raw.get("format")
@@ -61,7 +49,7 @@ def is_animated_series(item: MediaItem) -> bool:
         or raw.get("mediaType")
         or ""
     ).strip().upper().replace(" ", "_")
-    if raw.get("is_movie") is True or raw_format in MOVIE_FORMATS:
+    if raw.get("is_movie") is True or raw_format in MOVIE_FORMATS or "动画电影" in item.search_blob():
         return False
     episodes = _raw_int(raw, "episodes", "episode_count", "num_episodes", "episodeCount")
     if raw_format in {"OVA", "OAD", "SPECIAL"}:
@@ -69,7 +57,7 @@ def is_animated_series(item: MediaItem) -> bool:
     if raw_format in SERIES_FORMATS:
         return True
     if episodes is not None:
-        return episodes > 1
+        return episodes > 0
     # Curated anime rows and Douban/Jikan/AniList adapters are already series-only
     # upstream. Unknown format remains eligible unless a movie signal is explicit.
     return True
@@ -126,11 +114,13 @@ def evaluate_eligibility(
         return EligibilityDecision(False, ("placeholder-title",))
 
     normalized_seen = {str(key).strip() for key in seen_keys if str(key).strip()}
-    if item.identity in normalized_seen or normalize_title(title) in normalized_seen or title in normalized_seen:
+    if item.identity in normalized_seen or recommendation_item_key(item) in normalized_seen:
+        return EligibilityDecision(False, ("already-seen",))
+    if item.year is None and (normalize_title(title) in normalized_seen or title in normalized_seen):
         return EligibilityDecision(False, ("already-seen",))
 
-    item_type = _canonical_media_type(item.media_type)
-    requested_types = {_canonical_media_type(value) for value in intent.media_types if value}
+    item_type = canonical_media_type(item.media_type)
+    requested_types = {canonical_media_type(value) for value in intent.media_types if value}
     if requested_types and item_type not in requested_types:
         return EligibilityDecision(False, ("media-type-mismatch",))
     if "动漫" in requested_types and not is_animated_series(item):
