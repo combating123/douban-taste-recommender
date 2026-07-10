@@ -150,6 +150,200 @@ class RecommendationApiV2Tests(unittest.TestCase):
     def create_session(self, **overrides):
         return self.post_json("/api/v2/recommend/sessions", self.session_payload(**overrides))
 
+    def item_payload(self, **overrides):
+        payload = {
+            "title": "合法条目",
+            "my_rating": 4.5,
+            "douban_rating": 8.8,
+            "vote_count": 12345,
+            "year": 2024,
+            "media_type": "电影",
+            "genres": ["剧情"],
+            "countries": ["中国大陆"],
+            "languages": ["汉语普通话"],
+            "directors": ["导演甲"],
+            "casts": ["演员甲"],
+            "tags": ["想看"],
+            "url": "https://example.invalid/items/1",
+            "douban_id": "valid-item",
+            "cover": "https://example.invalid/items/1.jpg",
+            "summary": "一条合法的测试条目",
+            "source": "manual",
+        }
+        payload.update(overrides)
+        return payload
+
+    def assert_bad_request_field(self, path, payload, field):
+        status, body = self.post_json_status(path, payload)
+        self.assertEqual(status, 400, body)
+        self.assertIn(field, body["error"])
+
+    def test_create_session_rejects_malformed_known_fields(self):
+        invalid_cases = [
+            ("intent must be object", self.session_payload(intent=[]), "intent"),
+            ("intent list field must be string or string array", self.session_payload(intent={"genres": [123]}), "intent.genres[0]"),
+            ("intent text field must be string", self.session_payload(intent={"pace": 123}), "intent.pace"),
+            ("intent number field rejects bool", self.session_payload(intent={"runtime_max": True}), "intent.runtime_max"),
+            ("rated_items must be array of objects", self.session_payload(rated_items={}), "rated_items"),
+            ("rated_items entry must be object", self.session_payload(rated_items=[self.item_payload(), "oops"]), "rated_items[1]"),
+            ("rated_items text field must be string", self.session_payload(rated_items=[self.item_payload(title=123)]), "rated_items[0].title"),
+            ("rated_items numeric field must be number", self.session_payload(rated_items=[self.item_payload(my_rating=True)]), "rated_items[0].my_rating"),
+            ("rated_items list field must be string or string array", self.session_payload(rated_items=[self.item_payload(genres=[1])]), "rated_items[0].genres[0]"),
+            ("candidate_items must be array of objects", self.session_payload(candidate_items="x", candidates_csv=""), "candidate_items"),
+            ("candidate_items entry must be object", self.session_payload(candidate_items=[self.item_payload(), "oops"], candidates_csv=""), "candidate_items[1]"),
+            ("candidate_items text field must be string", self.session_payload(candidate_items=[self.item_payload(summary=123)], candidates_csv=""), "candidate_items[0].summary"),
+            ("candidate_urls must be string or string array", self.session_payload(candidate_urls=123), "candidate_urls"),
+            ("candidate_urls entries must be strings", self.session_payload(candidate_urls=["https://example.invalid/list", 123]), "candidate_urls[1]"),
+            ("batch_size_by_channel must be object", self.session_payload(batch_size_by_channel=[]), "batch_size_by_channel"),
+            ("batch_size_by_channel limits channel names", self.session_payload(batch_size_by_channel={"纪录片": 2}), "batch_size_by_channel.纪录片"),
+            ("batch_size_by_channel values must be integers", self.session_payload(batch_size_by_channel={"电影": True}), "batch_size_by_channel.电影"),
+            ("batch_size must be integer", self.session_payload(batch_size="oops"), "batch_size"),
+            ("visible_size must be integer", self.session_payload(visible_size="oops"), "visible_size"),
+            ("limit must be integer", self.session_payload(limit=1.5), "limit"),
+            ("per_query must be integer", self.session_payload(per_query=True), "per_query"),
+            ("include_movies must be bool", self.session_payload(include_movies="yes"), "include_movies"),
+            ("include_series must be bool", self.session_payload(include_series="yes"), "include_series"),
+            ("include_anime must be bool", self.session_payload(include_anime="yes"), "include_anime"),
+            ("fetch_douban must be bool", self.session_payload(fetch_douban="yes"), "fetch_douban"),
+            ("use_sample_ratings must be bool", self.session_payload(use_sample_ratings="yes"), "use_sample_ratings"),
+            ("use_sample_candidates must be bool", self.session_payload(use_sample_candidates="yes"), "use_sample_candidates"),
+            ("ratings_csv must be string", self.session_payload(ratings_csv=123), "ratings_csv"),
+            ("candidates_csv must be string", self.session_payload(candidates_csv=123), "candidates_csv"),
+            ("profile_key null is invalid", self.session_payload(profile_key=None), "profile_key"),
+            ("intent_text must be string", self.session_payload(intent_text=123), "intent_text"),
+            ("text must be string", self.session_payload(text=123), "text"),
+            ("like_terms must be string or string array", self.session_payload(like_terms=123), "like_terms"),
+            ("dislike_terms entries must be strings", self.session_payload(dislike_terms=["注水", 123]), "dislike_terms[1]"),
+        ]
+
+        for label, payload, field in invalid_cases:
+            with self.subTest(case=label):
+                self.assert_bad_request_field("/api/v2/recommend/sessions", payload, field)
+
+    def test_batch_and_previous_routes_reject_malformed_fields(self):
+        created = self.create_session()
+        cases = [
+            (
+                "batch channel must be string",
+                f"/api/v2/recommend/sessions/{created['id']}/batch",
+                {"schema_version": 2, "channel": ["电影"]},
+                "channel",
+            ),
+            (
+                "batch reason must be string",
+                f"/api/v2/recommend/sessions/{created['id']}/batch",
+                {"schema_version": 2, "channel": "电影", "reason": 123},
+                "reason",
+            ),
+            (
+                "previous channel must be string",
+                f"/api/v2/recommend/sessions/{created['id']}/previous",
+                {"schema_version": 2, "channel": False},
+                "channel",
+            ),
+            (
+                "previous reason must be string when provided",
+                f"/api/v2/recommend/sessions/{created['id']}/previous",
+                {"schema_version": 2, "channel": "电影", "reason": ["retry"]},
+                "reason",
+            ),
+        ]
+
+        for label, path, payload, field in cases:
+            with self.subTest(case=label):
+                self.assert_bad_request_field(path, payload, field)
+
+    def test_feedback_route_rejects_malformed_known_fields(self):
+        feedback_cases = [
+            (
+                "event_type must be string",
+                {
+                    "schema_version": 2,
+                    "event_type": [],
+                    "scope": "permanent",
+                    "item_key": "item-1",
+                },
+                "event_type",
+            ),
+            (
+                "scope must be string",
+                {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": [],
+                    "item_key": "item-1",
+                },
+                "scope",
+            ),
+            (
+                "item_key must be string",
+                {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": "permanent",
+                    "item_key": 123,
+                },
+                "item_key",
+            ),
+            (
+                "session_id must be string",
+                {
+                    "schema_version": 2,
+                    "event_type": "not-tonight",
+                    "scope": "session",
+                    "session_id": 123,
+                    "item_key": "item-1",
+                },
+                "session_id",
+            ),
+            (
+                "profile_key must be string",
+                {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": "permanent",
+                    "profile_key": 123,
+                    "item_key": "item-1",
+                },
+                "profile_key",
+            ),
+            (
+                "feedback item must be object",
+                {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": "permanent",
+                    "item": "x",
+                },
+                "item",
+            ),
+            (
+                "feedback item obeys item schema",
+                {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": "permanent",
+                    "item": self.item_payload(title=123),
+                },
+                "item.title",
+            ),
+            (
+                "payload must be object",
+                {
+                    "schema_version": 2,
+                    "event_type": "more-like-this",
+                    "scope": "permanent",
+                    "item_key": "item-1",
+                    "payload": "oops",
+                },
+                "payload",
+            ),
+        ]
+
+        for label, payload, field in feedback_cases:
+            with self.subTest(case=label):
+                self.assert_bad_request_field("/api/v2/feedback", payload, field)
+
     def test_create_session_returns_three_distinct_counts(self):
         response = self.post_json("/api/v2/recommend/sessions", self.session_payload(limit=160))
         anime = response["channels"]["动漫"]

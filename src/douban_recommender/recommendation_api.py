@@ -42,6 +42,49 @@ EVENT_SCOPE_RULES = {
     "data-error": {"permanent"},
 }
 SESSION_ONLY_EVENT_TYPES = {"not-tonight", "tonight-candidate"}
+ITEM_TEXT_FIELDS = {
+    "title",
+    "media_type",
+    "url",
+    "douban_id",
+    "cover",
+    "summary",
+    "source",
+}
+ITEM_NUMBER_FIELDS = {"my_rating", "douban_rating", "vote_count", "year"}
+ITEM_STRING_LIST_FIELDS = {"genres", "countries", "languages", "directors", "casts", "tags"}
+INTENT_STRING_LIST_FIELDS = {
+    "media_types",
+    "genres",
+    "moods",
+    "countries",
+    "languages",
+    "avoid",
+    "session_only_adjustments",
+    "permanent_avoid",
+}
+INTENT_TEXT_FIELDS = {"pace", "complexity", "intensity_max", "free_text"}
+INTENT_NUMBER_FIELDS = {
+    "runtime_max",
+    "episode_runtime_max",
+    "year_min",
+    "year_max",
+    "quality_floor",
+    "exploration_level",
+    "surprise_level",
+}
+CREATE_SESSION_STRING_FIELDS = {"ratings_csv", "candidates_csv", "profile_key", "intent_text", "text"}
+CREATE_SESSION_STRING_LIST_FIELDS = {"candidate_urls", "like_terms", "dislike_terms"}
+CREATE_SESSION_INTEGER_FIELDS = {"batch_size", "visible_size", "limit", "per_query"}
+CREATE_SESSION_BOOL_FIELDS = {
+    "include_movies",
+    "include_series",
+    "include_anime",
+    "fetch_douban",
+    "use_sample_ratings",
+    "use_sample_candidates",
+}
+FEEDBACK_STRING_FIELDS = {"event_type", "scope", "item_key", "session_id", "profile_key"}
 
 
 class RecommendationApiError(ValueError):
@@ -50,6 +93,94 @@ class RecommendationApiError(ValueError):
 
 class RecommendationApiNotFound(RecommendationApiError):
     status_code = 404
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _raise_schema_error(path: str, message: str) -> None:
+    raise RecommendationApiError(f"{path} {message}")
+
+
+def _validate_optional_string_field(payload: dict[str, Any], field: str) -> None:
+    if field in payload and not isinstance(payload[field], str):
+        _raise_schema_error(field, "must be string")
+
+
+def _validate_optional_bool_field(payload: dict[str, Any], field: str) -> None:
+    if field in payload and type(payload[field]) is not bool:
+        _raise_schema_error(field, "must be bool")
+
+
+def _validate_optional_integer_field(payload: dict[str, Any], field: str) -> None:
+    if field in payload and type(payload[field]) is not int:
+        _raise_schema_error(field, "must be integer")
+
+
+def _validate_string_or_string_array(value: object, path: str) -> None:
+    if isinstance(value, str):
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                _raise_schema_error(f"{path}[{index}]", "must be string")
+        return
+    _raise_schema_error(path, "must be string or string array")
+
+
+def _validate_item_schema(item: dict[str, Any], path: str) -> None:
+    for field in ITEM_TEXT_FIELDS:
+        if field in item and not isinstance(item[field], str):
+            _raise_schema_error(f"{path}.{field}", "must be string")
+    for field in ITEM_NUMBER_FIELDS:
+        if field in item and not _is_number(item[field]):
+            _raise_schema_error(f"{path}.{field}", "must be number")
+    for field in ITEM_STRING_LIST_FIELDS:
+        if field in item:
+            _validate_string_or_string_array(item[field], f"{path}.{field}")
+
+
+def _validate_item_array(payload: dict[str, Any], field: str) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if not isinstance(value, list):
+        _raise_schema_error(field, "must be array<object>")
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            _raise_schema_error(f"{field}[{index}]", "must be object")
+        _validate_item_schema(item, f"{field}[{index}]")
+
+
+def _validate_intent_schema(payload: dict[str, Any]) -> None:
+    if "intent" not in payload:
+        return
+    intent = payload["intent"]
+    if not isinstance(intent, dict):
+        _raise_schema_error("intent", "must be object")
+    for field in INTENT_STRING_LIST_FIELDS:
+        if field in intent:
+            _validate_string_or_string_array(intent[field], f"intent.{field}")
+    for field in INTENT_TEXT_FIELDS:
+        if field in intent and not isinstance(intent[field], str):
+            _raise_schema_error(f"intent.{field}", "must be string")
+    for field in INTENT_NUMBER_FIELDS:
+        if field in intent and not _is_number(intent[field]):
+            _raise_schema_error(f"intent.{field}", "must be number")
+
+
+def _validate_batch_size_by_channel(payload: dict[str, Any]) -> None:
+    if "batch_size_by_channel" not in payload:
+        return
+    value = payload["batch_size_by_channel"]
+    if not isinstance(value, dict):
+        _raise_schema_error("batch_size_by_channel", "must be object")
+    for channel, size in value.items():
+        if channel not in CHANNEL_ORDER:
+            _raise_schema_error(f"batch_size_by_channel.{channel}", f"must use one of {', '.join(CHANNEL_ORDER)}")
+        if type(size) is not int:
+            _raise_schema_error(f"batch_size_by_channel.{channel}", "must be integer")
 
 
 def _to_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -208,6 +339,7 @@ class RecommendationApi:
 
     def create_session(self, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
+        self._validate_create_session_payload(payload)
         profile_key = _base_text(payload.get("profile_key")) or "default"
         intent = self._intent(payload)
         rated_items = self._rated_items(payload)
@@ -230,6 +362,7 @@ class RecommendationApi:
 
     def next_batch(self, session_id: str, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
+        self._validate_batch_payload(payload)
         session = self._restore_session(session_id)
         channel = self._channel(payload)
         batch = self._service_call(self.session_service.next_batch, session.id, channel, _base_text(payload.get("reason")))
@@ -237,6 +370,7 @@ class RecommendationApi:
 
     def previous_batch(self, session_id: str, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
+        self._validate_batch_payload(payload)
         session = self._restore_session(session_id)
         channel = self._channel(payload)
         batch = self._service_call(self.session_service.previous_batch, session.id, channel)
@@ -244,6 +378,7 @@ class RecommendationApi:
 
     def record_feedback(self, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
+        self._validate_feedback_payload(payload)
         event_type = _base_text(payload.get("event_type"))
         if event_type not in EVENT_SCOPE_RULES:
             raise RecommendationApiError("unsupported event_type")
@@ -323,6 +458,36 @@ class RecommendationApi:
         version = payload.get("schema_version")
         if type(version) is not int or version != SCHEMA_VERSION:
             raise RecommendationApiError("schema_version must be 2")
+
+    def _validate_create_session_payload(self, payload: dict[str, Any]) -> None:
+        _validate_intent_schema(payload)
+        _validate_item_array(payload, "rated_items")
+        _validate_item_array(payload, "candidate_items")
+        _validate_batch_size_by_channel(payload)
+        for field in CREATE_SESSION_STRING_FIELDS:
+            _validate_optional_string_field(payload, field)
+        for field in CREATE_SESSION_STRING_LIST_FIELDS:
+            if field in payload:
+                _validate_string_or_string_array(payload[field], field)
+        for field in CREATE_SESSION_INTEGER_FIELDS:
+            _validate_optional_integer_field(payload, field)
+        for field in CREATE_SESSION_BOOL_FIELDS:
+            _validate_optional_bool_field(payload, field)
+
+    def _validate_batch_payload(self, payload: dict[str, Any]) -> None:
+        _validate_optional_string_field(payload, "channel")
+        _validate_optional_string_field(payload, "reason")
+
+    def _validate_feedback_payload(self, payload: dict[str, Any]) -> None:
+        for field in FEEDBACK_STRING_FIELDS:
+            _validate_optional_string_field(payload, field)
+        if "item" in payload:
+            item = payload["item"]
+            if not isinstance(item, dict):
+                _raise_schema_error("item", "must be object")
+            _validate_item_schema(item, "item")
+        if "payload" in payload and not isinstance(payload["payload"], dict):
+            _raise_schema_error("payload", "must be object")
 
     def _intent(self, payload: dict[str, Any]) -> RecommendationIntent:
         base = RecommendationIntent.from_dict(payload.get("intent")) if isinstance(payload.get("intent"), dict) else None
