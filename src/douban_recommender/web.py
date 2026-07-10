@@ -25,6 +25,7 @@ from .profiler import build_taste_profile
 from .recommender import recommend
 from .serialization import media_item_from_dict, media_item_to_dict
 from .storage import CacheStore, default_cache_dir
+from .sync_api import SyncApi, build_default_sync_api
 from .web_ui import INDEX_HTML
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +42,8 @@ PUBLIC_PEOPLE_PHOTO_CACHE: dict[str, str] = {}
 PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE: set[str] = set()
 MEDIA_API: MediaApi | None = None
 MEDIA_API_LOCK = threading.Lock()
+SYNC_API: SyncApi | None = None
+SYNC_API_LOCK = threading.Lock()
 PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "黑泽明": "Akira Kurosawa",
     "三船敏郎": "Toshiro Mifune",
@@ -87,6 +90,16 @@ def get_media_api() -> MediaApi:
         if MEDIA_API is None:
             MEDIA_API = build_default_media_api()
     return MEDIA_API
+
+
+def get_sync_api() -> SyncApi:
+    global SYNC_API
+    if SYNC_API is not None:
+        return SYNC_API
+    with SYNC_API_LOCK:
+        if SYNC_API is None:
+            SYNC_API = build_default_sync_api()
+    return SYNC_API
 
 
 def anime_subsection_name(countries: list[str]) -> str:
@@ -653,6 +666,13 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = path.rsplit("/", 1)[-1]
                 data = get_media_api().get_job(job_id)
                 self.send_json(data, status=404 if data.get("error") else 200)
+            elif path.startswith("/api/v2/sync/jobs/"):
+                job_id = path.removeprefix("/api/v2/sync/jobs/").strip("/")
+                if not job_id or "/" in job_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                data = get_sync_api().get_job(job_id)
+                self.send_json(data, status=404 if data.get("error") else 200)
             elif path.startswith("/api/poster-jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 self.send_json(self.handle_poster_job_get(job_id))
@@ -677,6 +697,22 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.handle_poster_job_create(payload)
             elif path == "/api/v2/media/jobs":
                 data = get_media_api().create_job(payload)
+            elif path == "/api/v2/sync/jobs":
+                try:
+                    data = get_sync_api().create_job(payload)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                    return
+            elif path.startswith("/api/v2/sync/jobs/") and path.endswith("/resume"):
+                job_id = path.removeprefix("/api/v2/sync/jobs/")[: -len("/resume")].strip("/")
+                if not job_id or "/" in job_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                try:
+                    data = get_sync_api().resume_job(job_id, payload)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                    return
             elif path in {"/api/crawl-douban", "/api/sync-douban"}:
                 data = self.handle_sync_douban(payload)
             else:

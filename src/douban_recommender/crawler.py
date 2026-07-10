@@ -20,6 +20,8 @@ DEFAULT_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
 }
 
+MAX_CRAWL_PAGES = 250
+
 COUNTRY_WORDS = [
     "中国大陆",
     "中国香港",
@@ -341,20 +343,35 @@ def crawl_user_collections(
     page_size: int = 15,
     fetcher: Callable[..., str] | None = None,
     sleep_seconds: float = 0.15,
+    resume_starts: dict[str, int] | None = None,
+    seed_items: list[MediaItem] | None = None,
 ) -> CrawlResult:
     user_id = normalize_douban_user_id(user_id_or_url)
-    limited_pages = max(1, min(200, int(max_pages)))
+    limited_pages = max(1, min(MAX_CRAWL_PAGES, int(max_pages)))
     fetch = fetcher or fetch_user_collection_page
     statuses = ["collect"]
     if include_wish:
         statuses.append("wish")
     if include_do:
         statuses.append("do")
-    result = CrawlResult(expected_collect=expected_collect, expected_wish=expected_wish)
+    if resume_starts is not None:
+        statuses = [status for status in statuses if status in resume_starts]
+    result = CrawlResult(
+        items=list(seed_items or []),
+        expected_collect=expected_collect,
+        expected_wish=expected_wish,
+    )
     seen: set[str] = set()
+    for item in result.items:
+        source_status = str(item.source or "").rsplit(":", 1)[-1]
+        key_value = item.douban_id or item.title
+        key = f"{source_status}:{key_value}" if key_value else ""
+        if key:
+            seen.add(key)
     empty_page_seen = False
     for status in statuses:
-        for page_index in range(limited_pages):
+        start_page = max(0, int((resume_starts or {}).get(status, 0)) // max(1, page_size))
+        for page_index in range(start_page, limited_pages):
             start = page_index * page_size
             url = build_user_collection_url(user_id, status, start)
             try:

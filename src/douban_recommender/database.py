@@ -144,6 +144,27 @@ CREATE TABLE IF NOT EXISTS user_asset_overrides (
     UNIQUE(entity_kind, entity_id, kind)
 );
 
+CREATE TABLE IF NOT EXISTS sync_jobs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'queued',
+    request_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    resume_of TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_items (
+    job_id TEXT NOT NULL REFERENCES sync_jobs(id) ON DELETE CASCADE,
+    item_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'ready',
+    PRIMARY KEY(job_id, item_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_batches_session_channel
     ON recommendation_batches(session_id, channel, batch_index);
 CREATE INDEX IF NOT EXISTS idx_feedback_profile_time
@@ -154,11 +175,13 @@ CREATE INDEX IF NOT EXISTS idx_candidates_entity
     ON asset_candidates(entity_kind, entity_id, kind);
 CREATE INDEX IF NOT EXISTS idx_resolution_state_priority
     ON resolution_jobs(state, priority DESC, created_at);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_user_time
+    ON sync_jobs(user_id, created_at DESC);
 """
 
 
 class AppDatabase:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: Path | str):
         self.path = Path(path)

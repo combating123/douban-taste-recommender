@@ -328,7 +328,7 @@ class CrawlerScaleTests(unittest.TestCase):
         self.assertEqual(result.completeness["wish_percent"], 100)
         self.assertGreater(len(result.diagnostics), 0)
 
-    def test_crawl_clamps_max_pages_to_200(self):
+    def test_crawl_clamps_max_pages_to_250(self):
         from douban_recommender.crawler import crawl_user_collections
 
         calls = []
@@ -345,7 +345,7 @@ class CrawlerScaleTests(unittest.TestCase):
             sleep_seconds=0,
         )
 
-        self.assertEqual(len(calls), 200)
+        self.assertEqual(len(calls), 250)
 
 
 class CrawlerParserVariantTests(unittest.TestCase):
