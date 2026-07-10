@@ -196,6 +196,51 @@ class RecommendationSessionService:
             created_at=float(row["created_at"]),
         )
 
+    def _store_batch(
+        self,
+        session_id: str,
+        channel: str,
+        index: int,
+        item_keys: list[str],
+        reason: str,
+        payload: dict[str, object],
+    ) -> RecommendationBatch:
+        batch_id = uuid.uuid4().hex
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO recommendation_batches(
+                    id, session_id, channel, batch_index, item_keys_json,
+                    reason, payload_json, created_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    session_id,
+                    channel,
+                    index,
+                    json.dumps(item_keys, ensure_ascii=False, separators=(",", ":")),
+                    str(reason or ""),
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    now,
+                ),
+            )
+        return RecommendationBatch(
+            id=batch_id,
+            session_id=session_id,
+            channel=channel,
+            index=index,
+            items=tuple(dict(item) for item in payload.get("items", []) if isinstance(item, dict)),
+            item_keys=tuple(item_keys),
+            pool_size=int(payload.get("pool_size") or 0),
+            matched_size=int(payload.get("matched_size") or 0),
+            visible_size=int(payload.get("visible_size") or 0),
+            reason=str(reason or ""),
+            exhausted=bool(payload.get("exhausted", False)),
+            created_at=now,
+        )
+
     def next_batch(self, session_id: str, channel: str, reason: str = "") -> RecommendationBatch:
         with self._lock:
             session = self.restore_session(session_id)
@@ -217,26 +262,33 @@ class RecommendationSessionService:
             pool_size = int(state.get("pool_size") or len(items))
             matched_size = int(state.get("matched_size") or len(items))
             if cursor >= len(items):
-                return RecommendationBatch(
-                    id=f"exhausted:{session_id}:{channel}:{last_batch + 1}",
-                    session_id=session_id,
-                    channel=channel,
-                    index=last_batch + 1,
-                    items=(),
-                    item_keys=(),
-                    pool_size=pool_size,
-                    matched_size=matched_size,
-                    visible_size=0,
-                    reason=str(reason or ""),
-                    exhausted=True,
-                    created_at=time.time(),
+                if active_batch > 0:
+                    current = self._load_batch(session_id, channel, active_batch)
+                    if current.exhausted and current.visible_size == 0:
+                        return current
+                index = last_batch + 1
+                batch = self._store_batch(
+                    session_id,
+                    channel,
+                    index,
+                    [],
+                    str(reason or ""),
+                    {
+                        "items": [],
+                        "pool_size": pool_size,
+                        "matched_size": matched_size,
+                        "visible_size": 0,
+                        "exhausted": True,
+                    },
                 )
+                state["active_batch"] = index
+                state["last_batch"] = index
+                self._save_channels(session_id, channels)
+                return batch
 
             selected = items[cursor : cursor + batch_size]
             index = last_batch + 1
-            batch_id = uuid.uuid4().hex
             item_keys = [_item_key(item) for item in selected]
-            now = time.time()
             payload = {
                 "items": selected,
                 "pool_size": pool_size,
@@ -244,43 +296,12 @@ class RecommendationSessionService:
                 "visible_size": len(selected),
                 "exhausted": cursor + len(selected) >= len(items),
             }
-            with self.database.connection() as connection:
-                connection.execute(
-                    """
-                    INSERT INTO recommendation_batches(
-                        id, session_id, channel, batch_index, item_keys_json,
-                        reason, payload_json, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        batch_id,
-                        session_id,
-                        channel,
-                        index,
-                        json.dumps(item_keys, ensure_ascii=False, separators=(",", ":")),
-                        str(reason or ""),
-                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                        now,
-                    ),
-                )
+            batch = self._store_batch(session_id, channel, index, item_keys, str(reason or ""), payload)
             state["cursor"] = cursor + len(selected)
             state["active_batch"] = index
             state["last_batch"] = index
             self._save_channels(session_id, channels)
-            return RecommendationBatch(
-                id=batch_id,
-                session_id=session_id,
-                channel=channel,
-                index=index,
-                items=tuple(selected),
-                item_keys=tuple(item_keys),
-                pool_size=pool_size,
-                matched_size=matched_size,
-                visible_size=len(selected),
-                reason=str(reason or ""),
-                exhausted=bool(payload["exhausted"]),
-                created_at=now,
-            )
+            return batch
 
     def current_batch(self, session_id: str, channel: str) -> RecommendationBatch:
         session = self.restore_session(session_id)

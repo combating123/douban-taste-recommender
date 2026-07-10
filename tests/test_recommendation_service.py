@@ -92,6 +92,37 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         current = restored_service.current_batch(session.id, "电视剧")
         self.assertEqual(current.id, batch.id)
 
+    def test_exhausted_batch_is_persisted_and_restorable(self):
+        session = self.create()
+        channel = next(iter(pools()))
+        first = self.service.next_batch(session.id, channel)
+        second = self.service.next_batch(session.id, channel)
+        third = self.service.next_batch(session.id, channel)
+        exhausted = self.service.next_batch(session.id, channel, reason="exhausted")
+
+        self.assertTrue(exhausted.exhausted)
+        self.assertEqual(exhausted.visible_size, 0)
+        self.assertEqual(exhausted.index, third.index + 1)
+
+        repeated = self.service.next_batch(session.id, channel)
+        self.assertEqual(repeated.id, exhausted.id)
+        self.assertEqual(repeated.index, exhausted.index)
+
+        restored = self.service.restore_session(session.id)
+        self.assertEqual(restored.channels[channel]["active_batch"], exhausted.index)
+        self.assertEqual(restored.channels[channel]["last_batch"], exhausted.index)
+        self.assertEqual(restored.channels[channel]["cursor"], 7)
+
+        current = RecommendationSessionService(self.database).current_batch(session.id, channel)
+        self.assertEqual(current.id, exhausted.id)
+
+        previous = self.service.previous_batch(session.id, channel)
+        self.assertEqual(previous.id, third.id)
+
+        resumed = self.service.next_batch(session.id, channel)
+        self.assertEqual(resumed.id, exhausted.id)
+        self.assertEqual(resumed.reason, "exhausted")
+
 
 if __name__ == "__main__":
     unittest.main()

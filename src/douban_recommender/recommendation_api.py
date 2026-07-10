@@ -4,6 +4,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .candidate_planner import build_candidate_plan
 from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
@@ -124,10 +125,69 @@ def _conflicts(item: dict[str, object]) -> list[str]:
 
 def _normalize_batch_item(item: dict[str, object]) -> dict[str, object]:
     payload = dict(item)
+    payload["url"] = _safe_url(payload.get("url"))
+    payload["cover"] = _safe_url(payload.get("cover"), allow_data=True)
+    payload["source"] = _safe_source(payload.get("source"))
+    payload["people_photos"] = _safe_people_photos(payload.get("people_photos"))
     payload["item_key"] = recommendation_item_key(payload)
     payload["conflicts"] = _conflicts(payload)
     payload["media_status"] = _media_status(payload)
     return payload
+
+
+def _safe_url(value: object, *, allow_data: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if allow_data and text.startswith("data:image/"):
+        return text
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return ""
+    netloc = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path or "", "", ""))
+
+
+def _safe_source(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return "external_url"
+    prefix, separator, suffix = text.partition(":")
+    if separator and (
+        suffix.startswith("//")
+        or "://" in suffix
+        or "@" in suffix
+        or "?" in suffix
+        or "#" in suffix
+    ):
+        return prefix or "external_url"
+    return text
+
+
+def _safe_people_photos(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for name, url in value.items():
+        clean_name = str(name or "").strip()
+        clean_url = _safe_url(url)
+        if clean_name and clean_url:
+            out[clean_name] = clean_url
+    return out
 
 
 class RecommendationApi:
@@ -253,12 +313,9 @@ class RecommendationApi:
 
     def _require_schema(self, payload: dict[str, Any]) -> None:
         if "schema_version" not in payload:
-            return
-        try:
-            version = int(payload.get("schema_version"))
-        except (TypeError, ValueError) as exc:
-            raise RecommendationApiError("schema_version must be 2") from exc
-        if version != SCHEMA_VERSION:
+            raise RecommendationApiError("schema_version must be 2")
+        version = payload.get("schema_version")
+        if type(version) is not int or version != SCHEMA_VERSION:
             raise RecommendationApiError("schema_version must be 2")
 
     def _intent(self, payload: dict[str, Any]) -> RecommendationIntent:

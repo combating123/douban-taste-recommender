@@ -4,10 +4,12 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from douban_recommender.database import AppDatabase
+from douban_recommender.models import MediaItem
 from douban_recommender.web import Handler
 import douban_recommender.web as web_module
 
@@ -94,6 +96,31 @@ class RecommendationApiV2Tests(unittest.TestCase):
         status, body = self.request(path, method="GET")
         self.assertEqual(status, 200, body)
         return body
+
+    def assert_no_secret_echo(self, payload, *secrets):
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for secret in secrets:
+            self.assertNotIn(secret, serialized)
+
+    def first_nonempty_channel(self, response):
+        for name, channel in response["channels"].items():
+            if channel["batch"]["items"]:
+                return name, channel
+        self.fail("expected at least one non-empty recommendation channel")
+
+    def find_item_by_id(self, response, douban_id):
+        channels = response.get("channels")
+        if isinstance(channels, dict):
+            for channel in channels.values():
+                for item in channel.get("batch", {}).get("items", []):
+                    if item.get("douban_id") == douban_id:
+                        return item
+        batch = response.get("batch")
+        if isinstance(batch, dict):
+            for item in batch.get("items", []):
+                if item.get("douban_id") == douban_id:
+                    return item
+        self.fail(f"expected item with douban_id={douban_id}")
 
     def session_payload(self, **overrides):
         payload = {
@@ -227,6 +254,194 @@ class RecommendationApiV2Tests(unittest.TestCase):
         )
         self.assertEqual(status, 404)
         self.assertIn("not found", payload["error"])
+
+    def test_v2_post_routes_require_explicit_schema_version_2(self):
+        created = self.create_session()
+        channel_name, channel_state = self.first_nonempty_channel(created)
+        item_key = channel_state["batch"]["items"][0]["item_key"]
+
+        recorded = self.post_json(
+            "/api/v2/feedback",
+            {
+                "schema_version": 2,
+                "profile_key": "profile-1",
+                "session_id": created["id"],
+                "event_type": "not-tonight",
+                "scope": "session",
+                "item_key": item_key,
+            },
+        )
+
+        invalid_requests = [
+            (
+                "/api/v2/recommend/sessions",
+                {key: value for key, value in self.session_payload().items() if key != "schema_version"},
+                "missing",
+            ),
+            ("/api/v2/recommend/sessions", self.session_payload(schema_version="2"), "string"),
+            (
+                f"/api/v2/recommend/sessions/{created['id']}/batch",
+                {"channel": channel_name},
+                "missing",
+            ),
+            (
+                f"/api/v2/recommend/sessions/{created['id']}/batch",
+                {"schema_version": "2", "channel": channel_name},
+                "string",
+            ),
+            (
+                f"/api/v2/recommend/sessions/{created['id']}/previous",
+                {"channel": channel_name},
+                "missing",
+            ),
+            (
+                f"/api/v2/recommend/sessions/{created['id']}/previous",
+                {"schema_version": "2", "channel": channel_name},
+                "string",
+            ),
+            (
+                "/api/v2/feedback",
+                {
+                    "profile_key": "profile-1",
+                    "session_id": created["id"],
+                    "event_type": "not-tonight",
+                    "scope": "session",
+                    "item_key": item_key,
+                },
+                "missing",
+            ),
+            (
+                "/api/v2/feedback",
+                {
+                    "schema_version": "2",
+                    "profile_key": "profile-1",
+                    "session_id": created["id"],
+                    "event_type": "not-tonight",
+                    "scope": "session",
+                    "item_key": item_key,
+                },
+                "string",
+            ),
+            (f"/api/v2/feedback/{recorded['id']}/undo", {}, "missing"),
+            (f"/api/v2/feedback/{recorded['id']}/undo", {"schema_version": "2"}, "string"),
+        ]
+
+        for path, payload, label in invalid_requests:
+            with self.subTest(path=path, label=label):
+                status, body = self.post_json_status(path, payload)
+                self.assertEqual(status, 400)
+                self.assertIn("schema_version", body["error"])
+
+        restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
+        self.assertEqual(restored["schema_version"], 2)
+
+    def test_create_session_sanitizes_candidate_item_urls_cover_and_source(self):
+        channel_name, _ = self.first_nonempty_channel(self.create_session())
+        secret_url = "https://viewer:session-secret@example.com/subject/42/?token=url-secret#frag-url"
+        secret_cover = "https://cdn.example/poster.jpg?signature=cover-secret#frag-cover"
+        secret_source = "https://source.example/list?token=source-secret#frag-source"
+
+        response = self.create_session(
+            candidates_csv="",
+            candidate_items=[
+                {
+                    "title": "sanitized candidate",
+                    "media_type": channel_name,
+                    "douban_id": "sanitized-item",
+                    "url": secret_url,
+                    "cover": secret_cover,
+                    "source": secret_source,
+                    "summary": "safe summary",
+                }
+            ],
+            use_sample_candidates=False,
+            batch_size=1,
+        )
+
+        _, channel = self.first_nonempty_channel(response)
+        item = channel["batch"]["items"][0]
+        self.assertEqual(item["url"], "https://example.com/subject/42/")
+        self.assertEqual(item["cover"], "https://cdn.example/poster.jpg")
+        self.assertEqual(item["source"], "external_url")
+        self.assert_no_secret_echo(
+            response,
+            "session-secret",
+            "url-secret",
+            "frag-url",
+            "cover-secret",
+            "frag-cover",
+            "source-secret",
+            "frag-source",
+        )
+
+    def test_candidate_url_fetch_results_do_not_echo_input_secrets_in_session_or_batch(self):
+        secret_input_url = "https://viewer:input-secret@example.com/list?token=input-token#input-fragment"
+        secret_item_url = "https://service:result-secret@example.com/subject/200/?token=result-token#result-fragment"
+        secret_cover = "https://img.example/poster.jpg?signature=cover-token#cover-fragment"
+        secret_photo = "https://photos.example/actor.jpg?token=photo-token#photo-fragment"
+        module_name = "douban_recommender.recommendation_api.fetch_url_candidates"
+
+        channel_name, _ = self.first_nonempty_channel(self.create_session())
+        with mock.patch(module_name, side_effect=lambda urls: [
+            MediaItem(
+                title="url candidate one",
+                media_type=channel_name,
+                douban_rating=9.9,
+                vote_count=999999,
+                summary="quality candidate",
+                douban_id="url-candidate-1",
+                url=secret_item_url,
+                cover=secret_cover,
+                source=f"douban_page:{secret_input_url}",
+                raw={"people_photos": {"Actor": secret_photo}},
+            ),
+            MediaItem(
+                title="url candidate two",
+                media_type=channel_name,
+                douban_rating=9.8,
+                vote_count=999998,
+                summary="quality candidate",
+                douban_id="url-candidate-2",
+                url=secret_item_url,
+                cover=secret_cover,
+                source=f"douban_page:{secret_input_url}",
+                raw={"people_photos": {"Actor": secret_photo}},
+            ),
+        ]) as fake_fetch:
+            created = self.create_session(
+                candidates_csv="",
+                candidate_urls=[secret_input_url],
+                use_sample_candidates=False,
+                batch_size=1,
+            )
+            fake_fetch.assert_called_once_with([secret_input_url])
+
+        first_item = self.find_item_by_id(created, "url-candidate-1")
+        self.assertEqual(first_item["url"], "https://example.com/subject/200/")
+        self.assertEqual(first_item["cover"], "https://img.example/poster.jpg")
+        self.assertEqual(first_item["source"], "douban_page")
+        self.assertEqual(first_item["people_photos"]["Actor"], "https://photos.example/actor.jpg")
+
+        next_batch = self.post_json(
+            f"/api/v2/recommend/sessions/{created['id']}/batch",
+            {"schema_version": 2, "channel": channel_name},
+        )
+        restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
+
+        for payload in (created, next_batch, restored):
+            self.assert_no_secret_echo(
+                payload,
+                "input-secret",
+                "input-token",
+                "input-fragment",
+                "result-secret",
+                "result-token",
+                "result-fragment",
+                "cover-token",
+                "cover-fragment",
+                "photo-token",
+                "photo-fragment",
+            )
 
 
 if __name__ == "__main__":
