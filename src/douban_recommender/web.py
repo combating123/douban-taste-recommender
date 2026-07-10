@@ -19,6 +19,7 @@ from .douban_sources import enrich_media_items, enrich_missing_posters_from_subj
 from .douban_sources import needs_external_poster_rescue, poster_source_config_from_dict
 from .douban_sources import build_url_opener
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
+from .media_api import MediaApi, build_default_media_api
 from .models import MediaItem
 from .profiler import build_taste_profile
 from .recommender import recommend
@@ -38,6 +39,8 @@ MAX_IMAGE_PROXY_CACHE_ITEMS = 512
 CINESCOPE_SYNC_ENRICH_LIMIT = 40
 PUBLIC_PEOPLE_PHOTO_CACHE: dict[str, str] = {}
 PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE: set[str] = set()
+MEDIA_API: MediaApi | None = None
+MEDIA_API_LOCK = threading.Lock()
 PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "黑泽明": "Akira Kurosawa",
     "三船敏郎": "Toshiro Mifune",
@@ -74,6 +77,16 @@ PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "中野裕斗": "Yuuto Nakano",
     "土井美加": "Mika Doi",
 }
+
+
+def get_media_api() -> MediaApi:
+    global MEDIA_API
+    if MEDIA_API is not None:
+        return MEDIA_API
+    with MEDIA_API_LOCK:
+        if MEDIA_API is None:
+            MEDIA_API = build_default_media_api()
+    return MEDIA_API
 
 
 def anime_subsection_name(countries: list[str]) -> str:
@@ -623,6 +636,23 @@ class Handler(BaseHTTPRequestHandler):
                 image_url = query.get("url", [""])[0]
                 data, content_type = fetch_proxy_image(image_url)
                 self.send_bytes(data, content_type=content_type)
+            elif path.startswith("/media/"):
+                route_filename = path.removeprefix("/media/")
+                asset = get_media_api().asset(route_filename)
+                if not asset:
+                    self.send_json({"error": "media not found"}, status=404)
+                    return
+                self.send_bytes(
+                    asset.path.read_bytes(),
+                    content_type=asset.mime_type,
+                    cache_control="public, max-age=31536000, immutable",
+                )
+            elif path == "/api/v2/media/health":
+                self.send_json(get_media_api().health())
+            elif path.startswith("/api/v2/media/jobs/"):
+                job_id = path.rsplit("/", 1)[-1]
+                data = get_media_api().get_job(job_id)
+                self.send_json(data, status=404 if data.get("error") else 200)
             elif path.startswith("/api/poster-jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 self.send_json(self.handle_poster_job_get(job_id))
@@ -645,6 +675,8 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.handle_enrich_people(payload)
             elif path == "/api/poster-jobs":
                 data = self.handle_poster_job_create(payload)
+            elif path == "/api/v2/media/jobs":
+                data = get_media_api().create_job(payload)
             elif path in {"/api/crawl-douban", "/api/sync-douban"}:
                 data = self.handle_sync_douban(payload)
             else:
@@ -992,11 +1024,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def send_bytes(self, data: bytes, content_type: str = "application/octet-stream", status: int = 200) -> None:
+    def send_bytes(
+        self,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+        status: int = 200,
+        cache_control: str = "public, max-age=86400",
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
 
