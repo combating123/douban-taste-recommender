@@ -40,6 +40,14 @@ python -m douban_recommender.web
 
 同步后查看完整度和每页诊断。如果抓取结果是 0 / 0，请先看诊断分类，再决定是否粘贴 Cookie。诊断会区分真实空页、需要登录、隐私权限、安全验证、页面有内容但解析失败等情况。
 
+新版同步任务默认采用“自动抓取到末页”：空白分页、连续失败或明确登录拦截才会停止，250 页只是防止异常循环的高位安全阀，不是推荐数量限制。任务接口为：
+
+- `POST /api/v2/sync/jobs`
+- `GET /api/v2/sync/jobs/<job-id>`
+- `POST /api/v2/sync/jobs/<job-id>/resume`
+
+部分分页失败时可以从失败位置继续，已经成功的条目会作为种子保留。
+
 ## 使用方式
 
 ### 方式 A：网页界面
@@ -122,6 +130,30 @@ https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m
 
 粘贴后应用会在发起本机请求后清空输入框。Cookie 不会保存到磁盘，不会进入缓存，不会出现在推荐报告里。
 
+新版界面中 Cookie 只保存在 sessionStorage，并且只在当前浏览器标签会话和本机同步请求内使用；关闭该标签后会话值失效。后端 SQLite、媒体缓存、任务响应和日志均不保存或回显 Cookie。
+
+## 本地数据目录与可信媒体仓库
+
+CineScope 的新版持久数据使用 SQLite 和内容哈希媒体仓库。可以用环境变量指定目录：
+
+```powershell
+$env:CINESCOPE_DATA_DIR = "D:\CineScopeData"
+$env:PYTHONPATH = "$PWD\src"
+python -m douban_recommender.web
+```
+
+未设置 `CINESCOPE_DATA_DIR` 时，Windows 默认使用 `%LOCALAPPDATA%\CineScope`。其中只保存非敏感片库、推荐会话、同步任务、身份映射和已经验证的媒体文件。
+
+外部海报、背景和人物照片会先经过标题/年份/类型/人物身份校验，再校验 MIME、图片魔数、像素解码和尺寸。通过后按 SHA-256 保存，浏览器最终只读取 `/media/<hash>` 形式的本地资源。无法确认的图片不会冒险使用，而是显示明确标记的设计兜底图。
+
+媒体任务与健康状态：
+
+- `POST /api/v2/media/jobs`
+- `GET /api/v2/media/jobs/<job-id>`
+- `GET /api/v2/media/health`
+
+`/api/image-proxy` 继续作为旧界面的兼容接口；新版界面的最终目标是只消费经过验证的本地 `/media/` 资源。
+
 ## 海报加载、Clash / V2Ray 代理教程
 
 页面会优先通过本地 `/api/image-proxy` 代理加载海报；如果豆瓣 CDN 返回反爬 HTML 或图片域名被网络拦截，系统会把这些条目送进“海报修复现场”，逐部尝试多源换源，而不是只显示一条无聊进度条。
@@ -171,6 +203,8 @@ python -m douban_recommender.web
 
 缓存内容只包含非敏感数据，例如同步到的条目、同步诊断、候选池和推荐结果。Cookie 字段会被移除或脱敏。你可以在页面里点击“清空缓存”。
 
+新版 SQLite 与可信媒体目录由 `CINESCOPE_DATA_DIR` 控制。代理只允许 `http://127.0.0.1:<port>` 形式的本地端口；不要粘贴代理订阅地址。
+
 ## 测试
 
 标准测试入口：
@@ -188,6 +222,12 @@ python -m unittest discover -s tests -v
 douban-taste-recommender/
   src/douban_recommender/
     crawler.py            # 豆瓣同步、解析和诊断
+    database.py           # SQLite schema 与持久状态
+    runtime_paths.py      # 用户数据目录解析
+    sync_service.py       # 可恢复的后台同步任务
+    identity_service.py   # 作品 / 人物跨源身份校验
+    media/                # 图片验证、哈希仓库、来源适配和任务编排
+    media_api.py          # /api/v2/media 与 /media 本地交付
     storage.py            # 本地非敏感缓存
     candidate_planner.py  # 电影 / 电视剧 / 动漫候选规划
     douban_sources.py     # 豆瓣公开候选源

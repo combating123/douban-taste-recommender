@@ -88,6 +88,17 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("AniList", text)
         self.assertIn("Jikan / MyAnimeList", text)
 
+    def test_readme_documents_v3_foundation_media_and_privacy_boundaries(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("CINESCOPE_DATA_DIR", text)
+        self.assertIn("/api/v2/media/health", text)
+        self.assertIn("/api/v2/sync/jobs", text)
+        self.assertIn("/media/<hash>", text)
+        self.assertIn("Cookie 只保存在 sessionStorage", text)
+        self.assertIn("自动抓取到末页", text)
+        self.assertIn("250 页", text)
+
 
 if __name__ == "__main__":
     unittest.main()
