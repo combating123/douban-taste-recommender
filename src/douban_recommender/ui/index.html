@@ -6,19 +6,25 @@
   <meta name="color-scheme" content="dark" />
   <title>CineScope · 本地 AI 影视体验</title>
   <link rel="stylesheet" href="/assets/v3/styles/tokens.css" />
+  <link rel="stylesheet" href="/assets/v3/styles/shell.css" />
 </head>
 <body>
   <a class="skip-link" href="#app-view">跳至主要内容</a>
+  <button id="rail-restore" class="rail-restore" type="button" aria-controls="primary-rail" aria-expanded="false" hidden>恢复导航</button>
   <div class="cinescope-shell">
-    <aside class="app-rail" aria-label="CineScope 空间导航">
-      <a class="rail-mark" href="/tonight" aria-label="CineScope 今晚">CS</a>
+    <aside id="primary-rail" class="app-rail" aria-label="CineScope 空间导航">
+      <a class="rail-mark" href="/tonight" data-route aria-label="CineScope 今晚">CS</a>
       <nav aria-label="主要空间">
-        <a href="/tonight">今晚</a>
-        <a href="/universe">宇宙</a>
-        <a href="/library">片库</a>
-        <a href="/taste">口味</a>
-        <a href="/health">健康</a>
+        <a href="/tonight" data-route><span class="rail-symbol" aria-hidden="true">今</span><span class="rail-label">今晚</span></a>
+        <a href="/universe" data-route><span class="rail-symbol" aria-hidden="true">宇</span><span class="rail-label">宇宙</span></a>
+        <a href="/library" data-route><span class="rail-symbol" aria-hidden="true">库</span><span class="rail-label">片库</span></a>
+        <a href="/taste" data-route><span class="rail-symbol" aria-hidden="true">味</span><span class="rail-label">口味</span></a>
+        <a href="/health" data-route><span class="rail-symbol" aria-hidden="true">健</span><span class="rail-label">健康</span></a>
       </nav>
+      <div class="rail-controls">
+        <button id="rail-collapse-toggle" class="rail-control" type="button" aria-controls="primary-rail" aria-expanded="true">折叠导航</button>
+        <button id="rail-hide-toggle" class="rail-control" type="button" aria-controls="primary-rail" aria-expanded="true">隐藏导航</button>
+      </div>
     </aside>
 
     <div class="shell-content">
@@ -30,16 +36,23 @@
       <div id="command-lens-root" aria-label="Command Lens"></div>
       <main id="app-view" tabindex="-1">
         <section class="shell-intro" aria-labelledby="shell-title">
-          <p class="eyebrow">五个空间，一条观看线索</p>
+          <p class="eyebrow">五个空间，一条观影线索</p>
           <h1 id="shell-title">从今晚开始，回到你的银幕宇宙。</h1>
           <p>正在载入可恢复的 CineScope 工作台。你的片库、口味与本地媒体服务始终保持在本机边界内。</p>
         </section>
       </main>
     </div>
   </div>
+  <nav id="bottom-nav" class="bottom-nav" aria-label="移动端主导航">
+    <a href="/tonight" data-route>今晚</a>
+    <a href="/universe" data-route>宇宙</a>
+    <a href="/library" data-route>片库</a>
+    <a href="/taste" data-route>口味</a>
+    <a href="/health" data-route>健康</a>
+  </nav>
   <div id="overlay-root" aria-live="polite" aria-relevant="additions"></div>
   <noscript>
-    <p class="noscript-message">CineScope 需要启用 JavaScript 才能打开互动影视工作台；本地服务与已有数据不会因此离开设备。</p>
+    <p class="noscript-message">CineScope 需要启用 JavaScript 才能打开交互影视工作台；本地服务与已有数据不会因此离开设备。</p>
   </noscript>
   <script type="module" src="/assets/v3/js/app.js"></script>
 </body>

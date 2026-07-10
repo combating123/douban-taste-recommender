@@ -1,0 +1,139 @@
+.cinescope-shell {
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  min-height: 100vh;
+  transition: grid-template-columns var(--motion-standard) ease;
+}
+
+.app-rail {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  width: var(--rail-width);
+  height: 100vh;
+  padding: 1rem 0.5rem;
+  border-right: 1px solid var(--line);
+  background: rgba(8, 11, 18, 0.76);
+  transition: width var(--motion-standard) ease, opacity var(--motion-fast) ease, transform var(--motion-standard) ease;
+}
+
+.app-rail nav { display: grid; gap: 0.55rem; margin-top: 2rem; }
+
+.app-rail a {
+  display: grid;
+  min-height: 2.7rem;
+  place-items: center;
+  border-radius: 0.75rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  transition: transform var(--motion-fast) ease, opacity var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+
+.app-rail a:hover,
+.app-rail a:focus-visible,
+.app-rail a[aria-current="page"] { color: var(--text); background: var(--surface); transform: translateY(-2px); }
+.app-rail .rail-mark { color: var(--canvas); background: var(--signal); font-size: 0.8rem; letter-spacing: 0.08em; }
+.rail-symbol { display: block; font-size: 0.95rem; }
+.rail-label { display: block; margin-top: 0.16rem; font-size: 0.62rem; }
+
+.rail-controls { display: grid; gap: 0.5rem; margin-top: auto; padding-top: 1.25rem; }
+.rail-control,
+.rail-restore {
+  min-height: 2.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  color: var(--muted);
+  background: var(--surface);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rail-control:hover,
+.rail-control:focus-visible,
+.rail-restore:hover,
+.rail-restore:focus-visible { color: var(--text); border-color: var(--focus); outline: none; }
+.rail-restore { position: fixed; z-index: 5; top: 1rem; left: 1rem; padding: 0.45rem 0.7rem; }
+.rail-restore[hidden] { display: none; }
+
+.shell-content { min-width: 0; padding: clamp(1rem, 3vw, 3rem); }
+.top-bar { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; min-width: 0; }
+.eyebrow { margin: 0; color: var(--signal); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.15em; text-transform: uppercase; }
+.shell-status { margin: 0; color: var(--muted); font-size: 0.86rem; text-align: right; }
+#command-lens-root:empty { display: none; }
+
+.shell-intro,
+.route-placeholder {
+  max-width: 60rem;
+  margin-top: clamp(4rem, 13vh, 9rem);
+  padding: clamp(1.4rem, 4vw, 3rem);
+  border: 1px solid var(--line);
+  border-radius: 1.5rem;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 66%), var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.shell-intro h1,
+.route-placeholder h1 { max-width: 13ch; margin: 0.75rem 0 1rem; font-size: clamp(2.3rem, 7vw, 6.4rem); line-height: 0.96; letter-spacing: -0.055em; }
+.shell-intro > p:last-child,
+.route-placeholder p { max-width: 55ch; margin: 0; color: var(--muted); font-size: clamp(1rem, 1.8vw, 1.2rem); line-height: 1.7; }
+
+.bottom-nav { display: none; }
+
+.rail-collapsed .app-rail { width: 56px; padding-right: 0.35rem; padding-left: 0.35rem; }
+.rail-collapsed .cinescope-shell { grid-template-columns: 56px minmax(0, 1fr); }
+.rail-collapsed .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.rail-collapsed .rail-control { font-size: 0; }
+.rail-collapsed .rail-control::before { font-size: 0.82rem; content: "≡"; }
+
+.rail-hidden .cinescope-shell { grid-template-columns: minmax(0, 1fr); }
+.rail-hidden .app-rail { display: none; }
+
+.noscript-message { margin: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.8rem; color: var(--muted); background: var(--surface-strong); }
+
+@media (max-width: 720px) {
+  .cinescope-shell { grid-template-columns: minmax(0, 1fr); }
+  .app-rail,
+  .rail-restore { display: none; }
+  .shell-content { padding-bottom: 5.75rem; }
+  .top-bar { align-items: flex-start; flex-direction: column; }
+  .shell-status { text-align: left; }
+  .shell-intro,
+  .route-placeholder { margin-top: 12vh; }
+  .bottom-nav {
+    position: fixed;
+    z-index: 4;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.2rem;
+    padding: 0.45rem;
+    border-top: 1px solid var(--line);
+    background: rgba(8, 11, 18, 0.94);
+    backdrop-filter: blur(16px);
+  }
+  .bottom-nav a {
+    min-width: 0;
+    padding: 0.55rem 0.15rem;
+    border-radius: 0.65rem;
+    color: var(--muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-align: center;
+    text-decoration: none;
+  }
+  .bottom-nav a[aria-current="page"] { color: var(--canvas); background: var(--signal); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cinescope-shell,
+  .app-rail,
+  .app-rail a { transition-duration: 1ms; }
+}
