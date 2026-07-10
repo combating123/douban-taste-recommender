@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -85,6 +86,16 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         forward = self.service.next_batch(session.id, "动漫")
         self.assertEqual(forward.id, second.id)
         self.assertEqual(forward.reason, "太相似")
+
+    def test_previous_batch_on_new_session_returns_first_batch_without_self_lock(self):
+        session = self.create()
+        started = time.perf_counter()
+
+        batch = self.service.previous_batch(session.id, "电影")
+
+        self.assertLess(time.perf_counter() - started, 2.0)
+        self.assertEqual(batch.index, 1)
+        self.assertEqual(batch.visible_size, 3)
 
     def test_session_restores_from_new_service_instance(self):
         session = self.create()
@@ -207,6 +218,36 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         self.assertEqual(watched[0]["state"], "watched")
         self.assertEqual(watched[0]["payload"]["title"], item["title"])
         self.assertIn(key, self.service.restore_session(session.id).channels["动漫"]["excluded_keys"])
+
+    def test_repeated_stable_feedback_does_not_replay_library_writes(self):
+        cases = [("watched", "watched", "动漫", 0), ("want", "wanted", "电视剧", 1)]
+        for event_type, state, channel, item_index in cases:
+            with self.subTest(event_type=event_type):
+                session = self.create()
+                batch = self.service.next_batch(session.id, channel)
+                key = batch.item_keys[item_index]
+
+                first = self.service.apply_feedback(session.id, event_type, key)
+                before = self._library_row(key)
+                time.sleep(0.01)
+                second = self.service.apply_feedback(session.id, event_type, key)
+                after = self._library_row(key)
+
+                self.assertEqual(second["event_id"], first["event_id"])
+                self.assertEqual(before["state"], state)
+                self.assertEqual(after["updated_at"], before["updated_at"])
+                self.assertEqual(after["source"], before["source"])
+                self.assertEqual(after["payload_json"], before["payload_json"])
+
+    def _library_row(self, item_key: str):
+        with self.database.connection() as connection:
+            return connection.execute(
+                """
+                SELECT item_key, payload_json, state, source, created_at, updated_at
+                FROM library_items WHERE item_key = ?
+                """,
+                (item_key,),
+            ).fetchone()
 
     def test_want_feedback_upserts_wanted_library_item(self):
         session = self.create()

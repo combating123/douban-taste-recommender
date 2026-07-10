@@ -395,23 +395,7 @@ class RecommendationSessionService:
                     raise ValueError("recommendation item not found")
 
                 state = _FEEDBACK_LIBRARY_STATES.get(clean_event_type, "")
-                if state:
-                    self._upsert_library_item(
-                        connection,
-                        clean_item_key,
-                        item_payload,
-                        state,
-                        f"feedback:{clean_event_type}",
-                    )
-
-                excluded = False
-                if clean_event_type in _FEEDBACK_EXCLUSION_EVENTS:
-                    excluded = True
-                    if self._exclude_key(channels, clean_item_key):
-                        self._save_channels(connection, session.id, channels)
-
-                event_payload = dict(payload or {})
-                event_payload["item"] = item_payload
+                excluded = clean_event_type in _FEEDBACK_EXCLUSION_EVENTS
                 existing = connection.execute(
                     """
                     SELECT id FROM feedback_events
@@ -424,6 +408,20 @@ class RecommendationSessionService:
                 if existing:
                     event_id = str(existing["id"])
                 else:
+                    if state:
+                        self._upsert_library_item(
+                            connection,
+                            clean_item_key,
+                            item_payload,
+                            state,
+                            f"feedback:{clean_event_type}",
+                        )
+
+                    if excluded and self._exclude_key(channels, clean_item_key):
+                        self._save_channels(connection, session.id, channels)
+
+                    event_payload = dict(payload or {})
+                    event_payload["item"] = item_payload
                     event_id = uuid.uuid4().hex
                     connection.execute(
                         """
@@ -542,6 +540,7 @@ class RecommendationSessionService:
 
     def previous_batch(self, session_id: str, channel: str) -> RecommendationBatch:
         with self._lock:
+            needs_first_batch = False
             with self.database.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 session = self._session_from_row(self._session_row_in_connection(connection, session_id))
@@ -552,9 +551,13 @@ class RecommendationSessionService:
                 active = int(state.get("active_batch") or 0)
                 if active <= 1:
                     if active <= 0:
-                        return self.next_batch(session_id, channel)
+                        needs_first_batch = True
+                    else:
+                        return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                else:
+                    active -= 1
+                    state["active_batch"] = active
+                    self._save_channels(connection, session_id, channels)
                     return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
-                active -= 1
-                state["active_batch"] = active
-                self._save_channels(connection, session_id, channels)
-                return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+            if needs_first_batch:
+                return self.next_batch(session_id, channel)
