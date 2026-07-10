@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 
 from .candidate_planner import build_candidate_plan
+from .catalog_api import CatalogApi, CatalogApiError, build_default_catalog_api
 from .crawler import crawl_user_collections, normalize_douban_user_id, redact_cookie_from_message
 from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
 from .douban_sources import enrich_media_items, enrich_missing_posters_from_subject_suggest, enrich_missing_posters_from_web_sources, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
@@ -47,6 +48,8 @@ SYNC_API: SyncApi | None = None
 SYNC_API_LOCK = threading.Lock()
 RECOMMENDATION_API: RecommendationApi | None = None
 RECOMMENDATION_API_LOCK = threading.Lock()
+CATALOG_API: CatalogApi | None = None
+CATALOG_API_LOCK = threading.Lock()
 PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "黑泽明": "Akira Kurosawa",
     "三船敏郎": "Toshiro Mifune",
@@ -113,6 +116,16 @@ def get_recommendation_api() -> RecommendationApi:
         if RECOMMENDATION_API is None:
             RECOMMENDATION_API = build_default_recommendation_api()
     return RECOMMENDATION_API
+
+
+def get_catalog_api() -> CatalogApi:
+    global CATALOG_API
+    if CATALOG_API is not None:
+        return CATALOG_API
+    with CATALOG_API_LOCK:
+        if CATALOG_API is None:
+            CATALOG_API = build_default_catalog_api()
+    return CATALOG_API
 
 
 def anime_subsection_name(countries: list[str]) -> str:
@@ -679,6 +692,24 @@ class Handler(BaseHTTPRequestHandler):
                 job_id = path.rsplit("/", 1)[-1]
                 data = get_media_api().get_job(job_id)
                 self.send_json(data, status=404 if data.get("error") else 200)
+            elif path.startswith("/api/v2/titles/"):
+                title_id = path.removeprefix("/api/v2/titles/").strip("/")
+                if not title_id or "/" in title_id or "\\" in title_id or ".." in title_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                self.send_json(get_catalog_api().get_title(title_id))
+            elif path.startswith("/api/v2/people/"):
+                person_id = path.removeprefix("/api/v2/people/").strip("/")
+                if not person_id or "/" in person_id or "\\" in person_id or ".." in person_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                self.send_json(get_catalog_api().get_person(person_id))
+            elif path == "/api/v2/library":
+                self.send_json(get_catalog_api().list_library(parse_qs(parsed.query)))
+            elif path == "/api/v2/taste":
+                self.send_json(get_catalog_api().taste(parse_qs(parsed.query)))
+            elif path == "/api/v2/universe":
+                self.send_json(get_catalog_api().universe(parse_qs(parsed.query)))
             elif path.startswith("/api/v2/sync/jobs/"):
                 job_id = path.removeprefix("/api/v2/sync/jobs/").strip("/")
                 if not job_id or "/" in job_id:
@@ -697,7 +728,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(self.handle_poster_job_get(job_id))
             else:
                 self.send_json({"error": "not found"}, status=404)
-        except RecommendationApiError as exc:
+        except (RecommendationApiError, CatalogApiError) as exc:
             self.send_json({"error": str(exc)}, status=exc.status_code)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=500)
