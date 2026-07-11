@@ -507,9 +507,9 @@ class UiV3AuditTests(unittest.TestCase):
             if record["method"] == "POST" and path == "/api/v2/recommend/sessions":
                 return 200, session, 0
             if path == "/api/v2/titles/douban:1001":
-                return 200, {"item_key": "douban:1001", "people": [{"id": "bad/id"}, {"id": "person-1"}]}, 0
-            if path == "/api/v2/people/person-1":
-                return 200, {"id": "person-1", "name": "raw-person-private-text"}, 0
+                return 200, {"item_key": "douban:1001", "people": [{"id": "bad/id"}, {"id": "person:1"}]}, 0
+            if path == "/api/v2/people/person:1":
+                return 200, {"id": "person:1", "name": "raw-person-private-text"}, 0
             return 404, {"error": "unexpected fixture URL private-server-text"}, 0
 
         with http_fixture(responder) as (origin, records):
@@ -544,7 +544,7 @@ class UiV3AuditTests(unittest.TestCase):
             )
 
         result = json.loads(output)
-        expected = {"sessionId": "session-seed-1", "titleId": "douban:1001", "personId": "person-1"}
+        expected = {"sessionId": "session-seed-1", "titleId": "douban:1001", "personId": "person:1"}
         self.assertEqual(expected, result["firstResult"])
         self.assertEqual(expected, result["secondResult"])
         self.assertEqual(expected, result["cachedResult"])
@@ -557,9 +557,11 @@ class UiV3AuditTests(unittest.TestCase):
             self.assertNotIn(forbidden, persisted)
 
         posts = [record for record in records if record["method"] == "POST"]
+        raw_gets = [urlsplit(record["path"]).path for record in records if record["method"] == "GET"]
         gets = [unquote(urlsplit(record["path"]).path) for record in records if record["method"] == "GET"]
         self.assertEqual(1, len(posts))
-        self.assertEqual(["/api/v2/titles/douban:1001", "/api/v2/people/person-1"], gets)
+        self.assertEqual(["/api/v2/titles/douban:1001", "/api/v2/people/person:1"], raw_gets)
+        self.assertEqual(["/api/v2/titles/douban:1001", "/api/v2/people/person:1"], gets)
         self.assertEqual(
             {
                 "schema_version": 2,

@@ -63,6 +63,12 @@
   overflow-wrap: anywhere;
 }
 
+#app-view h1[tabindex="-1"] {
+  overflow-wrap: normal;
+  word-break: normal;
+  text-wrap: balance;
+}
+
 .command-lens,
 .person-sheet,
 .detail-hero,
@@ -133,6 +139,8 @@ canvas {
 
 @media (max-width: 1200px) {
   .shell-content { padding-inline: clamp(1rem, 2.5vw, 2rem); }
+  .tonight-intro { align-items: flex-start; flex-direction: column; }
+  .tonight-channels { justify-content: flex-start; }
   .tonight-batch-toolbar { grid-template-columns: minmax(0, 1fr); }
   .tonight-batch-controls { justify-content: stretch; }
   .tonight-reason { flex: 1 1 min(18rem, 100%); width: auto; }
@@ -170,7 +178,7 @@ canvas {
   }
 
   .top-bar { align-items: flex-start; flex-direction: column; }
-  .shell-status { width: 100%; text-align: left; }
+  .shell-status { flex: 0 1 auto; width: 100%; text-align: left; }
 
   .bottom-nav {
     display: grid;

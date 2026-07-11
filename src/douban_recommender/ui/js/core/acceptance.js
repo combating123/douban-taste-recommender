@@ -109,7 +109,7 @@ async function seedAcceptance(owner) {
 
   for (const { titleId } of candidates) {
     const title = await request(owner, "CINESCOPE_ACCEPTANCE_TITLE_FAILED", () => (
-      owner.api.getV2(`/api/v2/titles/${encodeURIComponent(titleId)}`, { signal: owner.controller.signal })
+      owner.api.getV2(`/api/v2/titles/${titleId}`, { signal: owner.controller.signal })
     ));
     const personId = (Array.isArray(title?.people) ? title.people : [])
       .map((person) => safeId(person?.id))
@@ -117,7 +117,7 @@ async function seedAcceptance(owner) {
     if (!personId) continue;
 
     await request(owner, "CINESCOPE_ACCEPTANCE_PERSON_FAILED", () => (
-      owner.api.getV2(`/api/v2/people/${encodeURIComponent(personId)}`, { signal: owner.controller.signal })
+      owner.api.getV2(`/api/v2/people/${personId}`, { signal: owner.controller.signal })
     ));
     requireCurrent(owner);
     let beforeState;

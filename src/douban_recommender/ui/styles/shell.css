@@ -51,6 +51,12 @@
   font: inherit;
   cursor: pointer;
 }
+.rail-control {
+  padding-inline: 0.2rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 
 .rail-control:hover,
 .rail-control:focus-visible,
@@ -60,6 +66,7 @@
 .rail-restore[hidden] { display: none; }
 
 .shell-content { min-width: 0; padding: clamp(1rem, 3vw, 3rem); }
+#app-view [tabindex="-1"]:focus { outline: none; }
 .top-bar { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; min-width: 0; }
 .eyebrow { margin: 0; color: var(--signal); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.15em; text-transform: uppercase; }
 .shell-status { margin: 0; color: var(--muted); font-size: 0.86rem; text-align: right; }

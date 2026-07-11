@@ -3466,6 +3466,35 @@ class UiV3ContractTests(unittest.TestCase):
                 with self.subTest(transition=transition):
                     self.assertIn(property_name, {"transform", "opacity"})
 
+    def test_route_focus_target_has_no_visual_outline_and_rail_controls_stay_compact(self):
+        css = (UI_ROOT / "styles" / "shell.css").read_text(encoding="utf-8")
+        tonight = (UI_ROOT / "styles" / "tonight.css").read_text(encoding="utf-8")
+        responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
+
+        route_focus = re.search(r'#app-view\s+\[tabindex="-1"\]:focus\s*\{([^}]*)\}', css)
+        self.assertIsNotNone(route_focus)
+        self.assertRegex(route_focus.group(1), r"outline\s*:\s*none")
+
+        rail_control = re.search(r"\.rail-control\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(rail_control)
+        self.assertRegex(rail_control.group(1), r"font-size\s*:\s*0\.72rem")
+        self.assertRegex(rail_control.group(1), r"white-space\s*:\s*nowrap")
+
+        route_heading = re.search(r'#app-view\s+h1\[tabindex="-1"\]\s*\{([^}]*)\}', responsive)
+        self.assertIsNotNone(route_heading)
+        self.assertRegex(route_heading.group(1), r"text-wrap\s*:\s*balance")
+        self.assertRegex(route_heading.group(1), r"overflow-wrap\s*:\s*normal")
+
+        tonight_title = re.search(r"\.tonight-intro__title\s*\{([^}]*)\}", tonight)
+        self.assertIsNotNone(tonight_title)
+        self.assertRegex(tonight_title.group(1), r"max-width\s*:\s*none")
+        self.assertRegex(tonight_title.group(1), r"font-size\s*:\s*clamp\(2\.2rem,\s*4\.6vw,\s*4\.8rem\)")
+
+        tablet = re.search(r"@media\s*\(max-width:\s*1200px\)\s*\{([\s\S]*?)\n\}", responsive)
+        self.assertIsNotNone(tablet)
+        self.assertRegex(tablet.group(1), r"\.tonight-intro\s*\{[^}]*flex-direction\s*:\s*column")
+        self.assertRegex(tablet.group(1), r"\.tonight-channels\s*\{[^}]*justify-content\s*:\s*flex-start")
+
         source = "".join(
             (UI_ROOT / path).read_text(encoding="utf-8")
             for path in ("js/features/universe.js", "js/features/detail.js", "js/app.js")
@@ -4042,6 +4071,14 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(1, result["focus"])
         self.assertEqual(1, len(result["announcements"]))
         self.assertEqual([], result["unhandled"])
+
+    def test_mobile_top_bar_resets_status_flex_basis(self):
+        responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
+        mobile = re.search(r"@media\s*\(max-width:\s*720px\)\s*\{([\s\S]*)\}\s*$", responsive)
+        self.assertIsNotNone(mobile)
+        status = re.search(r"\.shell-status\s*\{([^}]*)\}", mobile.group(1))
+        self.assertIsNotNone(status)
+        self.assertRegex(status.group(1), r"flex:\s*0\s+1\s+auto")
 
     def test_task8_static_shell_breakpoints_safe_area_and_long_content_contract(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
