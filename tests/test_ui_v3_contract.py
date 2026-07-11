@@ -843,6 +843,56 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(88, result["scrollY"])
         self.assertNotIn("scroll:777", result["events"])
 
+    def test_blocked_and_stale_navigation_release_marker_before_real_departure(self):
+        output = run_node_module(
+            f'''
+            import {{ createRouter }} from "{module_url('js/core/router.js')}";
+            import {{ restoreUiState }} from "{module_url('js/core/store.js')}";
+            const deferred = () => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }};
+            const slow = deferred(); const values = new Map(); const listeners = new Map();
+            const browser = {{
+              location: {{ pathname: "/home" }}, scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ listeners.set(type, listener); }}, removeEventListener(type) {{ listeners.delete(type); }},
+              dispatchEvent(event) {{ return listeners.get(event.type)?.(event); }},
+              requestAnimationFrame(callback) {{ callback(); return 1; }},
+              scrollTo(options) {{ this.scrollY = options.top; }},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser); globalThis.PopStateEvent = browser.PopStateEvent;
+            const router = createRouter([
+              {{ pattern: "/home", name: "home" }}, {{ pattern: "/slow", name: "slow" }},
+              {{ pattern: "/blocked", name: "blocked" }}, {{ pattern: "/real", name: "real" }},
+            ], {{
+              async onRoute(route) {{
+                if (route.name === "slow") return slow.promise;
+                if (route.name === "blocked") return false;
+                return true;
+              }},
+            }});
+
+            await router.start();
+            browser.scrollY = 31;
+            const staleNavigation = router.navigate("/slow");
+            await Promise.resolve();
+            browser.scrollY = 44;
+            await router.navigate("/blocked");
+            slow.resolve(true);
+            await staleNavigation;
+            browser.scrollY = 55;
+            await router.navigate("/real");
+            const saved = restoreUiState();
+            if (saved.scrollByRoute["/home"] !== 55) throw new Error(`fresh departure scroll was suppressed: ${{JSON.stringify(saved.scrollByRoute)}}`);
+            if (router.currentRoute?.name !== "real") throw new Error(`real navigation did not commit: ${{router.currentRoute?.name}}`);
+            console.log(JSON.stringify({{ saved: saved.scrollByRoute, current: router.currentRoute.name }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(55, result["saved"]["/home"])
+        self.assertEqual("real", result["current"])
+
     def test_router_scroll_save_updates_store_before_route_persistence(self):
         output = run_node_module(
             f'''
@@ -1037,6 +1087,58 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(160, result["restored"]["anime-series"]["candidate_counts"]["target_size"])
         self.assertEqual(192, result["restored"]["anime-series"]["candidate_counts"]["returned_size"])
+
+    def test_legacy_unknown_target_survives_store_and_renders_dash(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const {{ createEmptyUiState, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const values = new Map();
+            const storage = {{
+              getItem(key) {{ return values.get(key) ?? null; }},
+              setItem(key, value) {{ values.set(key, String(value)); }},
+            }};
+            const channel = (pool) => ({{
+              pool_size: pool, matched_size: pool, visible_size: 5, active_batch: 3,
+              batch: {{ id: `legacy-${{pool}}`, index: 3, items: [], pool_size: pool, matched_size: pool, visible_size: 5 }},
+            }});
+            const legacySession = {{
+              id: "legacy-session", candidate_counts: {{ target_size: null, returned_size: 192 }},
+              intent: {{}}, chips: [],
+              channels: {{ "电影": channel(85), "电视剧": channel(54), "动漫": channel(53) }},
+            }};
+            const legacy = reduceUiState(createEmptyUiState(), {{ type: "recommendation/sessionReceived", session: legacySession }});
+            persistUiState(legacy, storage);
+            const restored = restoreUiState(storage);
+            for (const slug of ["movie", "series", "anime-series"]) {{
+              const counts = restored.recommendation.channels[slug].candidate_counts;
+              if (counts?.target_size !== null || counts?.returned_size !== 192) {{
+                throw new Error(`legacy unknown target was not preserved for ${{slug}}: ${{JSON.stringify(counts)}}`);
+              }}
+            }}
+            const legacyVisible = renderTonight(legacy).textContent;
+            if (!legacyVisible.includes("目标 —") || legacyVisible.includes("目标 0") || !legacyVisible.includes("实际返回 192")) {{
+              throw new Error(`legacy counts were rendered inaccurately: ${{legacyVisible}}`);
+            }}
+
+            const exactSession = structuredClone(legacySession);
+            exactSession.id = "exact-session";
+            exactSession.candidate_counts.target_size = 160;
+            const exact = reduceUiState(createEmptyUiState(), {{ type: "recommendation/sessionReceived", session: exactSession }});
+            const exactVisible = renderTonight(exact).textContent;
+            if (!exactVisible.includes("目标 160") || !exactVisible.includes("实际返回 192")) {{
+              throw new Error(`new-session counts lost exact values: ${{exactVisible}}`);
+            }}
+            console.log(JSON.stringify({{ legacyVisible, exactVisible, restored: restored.recommendation.channels }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("目标 —", result["legacyVisible"])
+        self.assertIn("目标 160", result["exactVisible"])
+        self.assertIsNone(result["restored"]["anime-series"]["candidate_counts"]["target_size"])
 
     def test_tonight_visibly_exposes_target_returned_channel_and_batch_counts(self):
         prelude = fake_dom_module_prelude()
@@ -3607,6 +3709,18 @@ class UiV3ContractTests(unittest.TestCase):
                 property_name = transition.strip().split(maxsplit=1)[0]
                 with self.subTest(transition=transition):
                     self.assertIn(property_name, {"transform", "opacity"})
+
+    def test_mobile_universe_roster_entries_keep_readable_width_before_horizontal_scroll(self):
+        css = (UI_ROOT / "styles" / "universe.css").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            css,
+            r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.universe-node-entry\s*\{[^}]*flex\s*:\s*0\s+0\s+min\(",
+        )
+        self.assertRegex(
+            css,
+            r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.universe-node-button\s*\{[^}]*width\s*:\s*100%",
+        )
 
     def test_route_focus_target_has_no_visual_outline_and_rail_controls_stay_compact(self):
         css = (UI_ROOT / "styles" / "shell.css").read_text(encoding="utf-8")

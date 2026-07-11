@@ -434,6 +434,40 @@ class RecommendationApiV2Tests(unittest.TestCase):
         restored = self.get_json(f"/api/v2/recommend/sessions/{response['id']}")
         self.assertEqual(restored["candidate_counts"], counts)
 
+    def test_legacy_session_restore_keeps_target_unknown_and_returned_exact(self):
+        created = self.post_json(
+            "/api/v2/recommend/sessions",
+            self.session_payload(
+                candidates_csv="",
+                use_sample_candidates=True,
+                rated_items=[],
+                batch_size=24,
+                limit=160,
+            ),
+        )
+        with self.api.database.connection() as connection:
+            row = connection.execute(
+                "SELECT channels_json FROM recommendation_sessions WHERE id = ?",
+                (created["id"],),
+            ).fetchone()
+            channels = json.loads(str(row["channels_json"]))
+            for channel in channels.values():
+                channel.pop("candidate_counts", None)
+            connection.execute(
+                "UPDATE recommendation_sessions SET channels_json = ? WHERE id = ?",
+                (json.dumps(channels, ensure_ascii=False), created["id"]),
+            )
+
+        restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
+
+        self.assertIn("target_size", restored["candidate_counts"])
+        self.assertIsNone(restored["candidate_counts"]["target_size"])
+        self.assertEqual(
+            restored["candidate_counts"]["returned_size"],
+            sum(channel["pool_size"] for channel in restored["channels"].values()),
+        )
+        self.assertNotEqual(restored["candidate_counts"]["target_size"], 0)
+
     def test_session_response_returns_grounded_intent_chips(self):
         created = self.create_session(intent_text="90分钟内的悬疑电影")
 

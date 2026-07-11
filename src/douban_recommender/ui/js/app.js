@@ -143,10 +143,14 @@ function backendChannelsToState(session, previous = {}, { preserveOtherSessions 
     const candidateCounts = {
       target_size: Number.isInteger(rawCandidateCounts.target_size) && rawCandidateCounts.target_size >= 0
         ? rawCandidateCounts.target_size
-        : current.candidate_counts?.target_size,
+        : Number.isInteger(current.candidate_counts?.target_size) && current.candidate_counts.target_size >= 0
+          ? current.candidate_counts.target_size
+          : null,
       returned_size: Number.isInteger(rawCandidateCounts.returned_size) && rawCandidateCounts.returned_size >= 0
         ? rawCandidateCounts.returned_size
-        : current.candidate_counts?.returned_size,
+        : Number.isInteger(current.candidate_counts?.returned_size) && current.candidate_counts.returned_size >= 0
+          ? current.candidate_counts.returned_size
+          : null,
     };
     const incoming = session?.channels?.[backend] && typeof session.channels[backend] === "object"
       ? session.channels[backend]

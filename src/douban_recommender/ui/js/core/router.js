@@ -97,7 +97,11 @@ export function createRouter(routes, { onRoute, onScrollSaved } = {}) {
   let started = false;
   let lastNavigation = Promise.resolve(null);
   let navigationGeneration = 0;
-  let pendingDeparturePath = null;
+  let pendingDeparture = null;
+
+  function releasePendingDeparture(requestGeneration) {
+    if (pendingDeparture?.generation === requestGeneration) pendingDeparture = null;
+  }
 
   async function renderLocation(path, state) {
     const browser = browserWindow();
@@ -109,25 +113,32 @@ export function createRouter(routes, { onRoute, onScrollSaved } = {}) {
       params: {},
     };
 
-    if (
-      currentRoute
-      && currentRoute.path !== nextRoute.path
-      && pendingDeparturePath !== currentRoute.path
-    ) {
+    if (currentRoute && pendingDeparture?.path === currentRoute.path) {
+      pendingDeparture = { ...pendingDeparture, generation: requestGeneration };
+    } else if (currentRoute && currentRoute.path !== nextRoute.path) {
       if (onScrollSaved) onScrollSaved(currentRoute.path, browser.scrollY);
       else saveScroll(currentRoute.path, browser.scrollY);
-      pendingDeparturePath = currentRoute.path;
+      pendingDeparture = { path: currentRoute.path, generation: requestGeneration };
     }
 
-    const routeResult = await onRoute(nextRoute, state);
+    let routeResult;
+    try {
+      routeResult = await onRoute(nextRoute, state);
+    } catch (error) {
+      releasePendingDeparture(requestGeneration);
+      throw error;
+    }
     if (
       routeResult === false
       || requestGeneration !== navigationGeneration
       || normalisePath(browser.location.pathname) !== nextRoute.path
-    ) return null;
+    ) {
+      releasePendingDeparture(requestGeneration);
+      return null;
+    }
 
     currentRoute = nextRoute;
-    pendingDeparturePath = null;
+    releasePendingDeparture(requestGeneration);
     persistActiveRoute(nextRoute);
 
     const savedPosition = restoreUiState().scrollByRoute[nextRoute.path] ?? 0;
@@ -172,7 +183,7 @@ export function createRouter(routes, { onRoute, onScrollSaved } = {}) {
       browserWindow().removeEventListener("popstate", onPopState);
       started = false;
       navigationGeneration += 1;
-      pendingDeparturePath = null;
+      pendingDeparture = null;
     },
   };
 }

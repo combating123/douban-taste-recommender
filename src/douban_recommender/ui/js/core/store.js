@@ -125,8 +125,8 @@ function sanitizeBatchIds(ids) {
 function sanitizeCandidateCounts(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
-    target_size: optionalCount(source.target_size) ?? 0,
-    returned_size: optionalCount(source.returned_size) ?? 0,
+    target_size: optionalCount(source.target_size),
+    returned_size: optionalCount(source.returned_size),
   };
 }
 

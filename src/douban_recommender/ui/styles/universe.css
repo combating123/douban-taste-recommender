@@ -247,7 +247,8 @@
   .relationship-list { width: 100%; }
   .relationship-list__item { grid-template-columns: 3.8rem minmax(0, 1fr); }
   .universe-node-roster { flex-wrap: nowrap; padding-bottom: 0.4rem; overflow-x: auto; }
-  .universe-node-button { flex: 0 0 auto; max-width: 15rem; }
+  .universe-node-entry { flex: 0 0 min(18rem, calc(100% - 0.75rem)); }
+  .universe-node-button { width: 100%; max-width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

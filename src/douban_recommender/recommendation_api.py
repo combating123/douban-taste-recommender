@@ -756,6 +756,7 @@ class RecommendationApi:
             ),
             {},
         )
+        candidate_counts.setdefault("target_size", None)
         candidate_counts["returned_size"] = sum(channel["pool_size"] for channel in channels.values())
         return {
             "schema_version": SCHEMA_VERSION,

@@ -153,3 +153,46 @@ python -m douban_recommender.web --host 127.0.0.1 --port 7862 --no-browser
 - 浏览器状态核对仅返回 allowlisted 投影：route、动漫批次、动漫滚动位置、候选托盘数量；未导出完整运行时状态。
 - 可见图片门禁继续要求同源 `/media/*`；刷新审计的外链图片与损坏图片均为 `0`。
 - 外部限制仅为：公开连接未触发登录，所以无法在不提供用户 Cookie 的前提下实测 `needs_cookie` 续跑分支；公开无 Cookie 同步本身已完整通过。
+
+## Task 5 review fixes — final-code gate (2026-07-12)
+
+### Review findings closed with TDD
+
+1. **Unknown legacy recommendation target:** a deliberately downgraded legacy session now restores `candidate_counts.target_size` as JSON `null` instead of inventing `0`; its exact `returned_size` is still recomputed from the restored channel pools. The V3 store and app reducer preserve that unknown value and Tonight renders `目标 —`. A newly created/metadata-bearing session continues to render exact values (`目标 160`, `实际返回 192`).
+2. **Stale departure-scroll ownership:** the router's pending departure marker is now owned by the navigation generation. A blocked, stale, or throwing navigation releases only its own marker, while an overlapping newer navigation retains ownership. The regression scenario `slow -> blocked -> real` saves the fresh `/home` scroll value `55` before the real route commits.
+3. **390px Universe roster compression discovered by the fresh gate:** the first final-code pass exposed nine vertically compressed roster entries. A focused failing CSS contract was added before changing production CSS; mobile roster entries now retain a readable bounded width and scroll horizontally inside their own roster without document-level horizontal overflow.
+
+### Dedicated final-code service and live sync
+
+- Service: `CINESCOPE_UI_VERSION=v3` (explicit opt-in), `127.0.0.1:7875`, data directory `output/task5-acceptance-data`.
+- Browser origin: `http://task5-review-final-20260712.localhost:7875`.
+- Accepted recommendation session: `ecbb40ee00384b0c82dcad30559df1d4`; target `160`; returned `192`; anime batch `3`.
+- Public sync profile: `https://www.douban.com/people/272042071/?_dtcc=1&_i=fixture`.
+- Final sync job: `d6574a3aed8649b3a9e0be45c3ef2c45`, state `complete`.
+- Actual live result: `280` items, `244` watched/collect, `36` wanted/wish, `22` successful pages, `0` failed pages; visible stop reason `已到达列表末页`. This is two more watched and two more wanted than the approximate historical `242/34` baseline, so the live values are authoritative for this gate.
+
+### Four-viewport principal-route matrix
+
+Principal routes: `/tonight`, `/tonight/movie`, `/tonight/series`, `/tonight/anime-series`, `/title/douban:1291879`, `/person/derived:6buR5rO95piO`, `/universe`, `/library`, `/taste`, `/health`.
+
+| Viewport | Rows passed | Broken images | External images | Overflow nodes | Focus failures | Empty main | Horizontal scroll | Rail / bottom nav |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 1440x900 | 10/10 | 0 | 0 | 0 | 0 | 0 | 0 | rail visible / bottom hidden |
+| 1280x800 | 10/10 | 0 | 0 | 0 | 0 | 0 | 0 | rail visible / bottom hidden |
+| 1024x768 | 10/10 | 0 | 0 | 0 | 0 | 0 | 0 | rail visible / bottom hidden |
+| 390x844 | 10/10 | 0 | 0 | 0 | 0 | 0 | 0 | rail hidden 10/10 / bottom visible 10/10 |
+| **Total** | **40/40** | **0** | **0** | **0** | **0** | **0** | **0** | mobile contract passed |
+
+The four Tonight routes produced 16 count-line rows. At `/tonight/anime-series`, all four viewports visibly showed `目标 160`, `实际返回 192`, `候选池 53`, `匹配 53`, `本批可见 5`, and `当前批次 3`, with zero count-line overflow. `/health` visibly showed the long privacy/help line `默认自动翻页到末页；安全上限 250 页。Cookie 仅保留在当前标签页会话中。`, the sync line `条目 280 · 看过 244 · 想看 36 · 成功页 22 · 失败页 0`, and `已到达列表末页` at every viewport, with zero overflow.
+
+Machine-readable and visual evidence:
+
+- `output/task5-acceptance/task5-review-final-evidence.json` — aggregate summary plus all 40 route/viewport rows.
+- `output/task5-acceptance/final-code-gate/evidence.json` — raw final-code audit rows.
+- `output/task5-acceptance/final-code-gate/<viewport>/*.png` — 40 route screenshots.
+- `output/task5-acceptance/final-code-gate/focus/*-tonight-counts.png` and `*-health-sync.png` — four-view count and Health crops.
+- `output/task5-acceptance/final-code-gate/focus/task5-final-counts-health-contact-sheet.png` — reviewed contact sheet.
+
+### Privacy and remaining external limitation
+
+The Cookie field remained visibly empty. No Cookie was read from browser/session storage, a browser profile, disk, environment dumps, request headers, or persisted state; no storage was inspected to recover one. The accepted session was loaded through a same-origin API read and an allowlisted in-memory store dispatch only. Visible images remained fail-closed to same-origin `/media/*`. Public sync did not request authentication, so the visible `needs_cookie` resume branch could not be completed without a user-supplied Cookie; no Cookie was sourced or fabricated.

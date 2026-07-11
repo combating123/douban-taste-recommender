@@ -82,9 +82,10 @@ function countValue(state, key) {
   return numberValue(state?.batch?.[key]);
 }
 
-function renderCount(label, value, modifier) {
+function renderCount(label, value, modifier, { unknownWhenMissing = false } = {}) {
   const count = element("p", `tonight-count tonight-count--${modifier}`);
-  count.textContent = `${label} ${numberValue(value)}`;
+  const displayValue = unknownWhenMissing && !Number.isFinite(value) ? "—" : numberValue(value);
+  count.textContent = `${label} ${displayValue}`;
   return count;
 }
 
@@ -158,7 +159,7 @@ function renderBatchToolbar(recommendation, channel) {
 
   const counts = element("div", "tonight-counts");
   counts.append(
-    renderCount("目标", candidateCounts.target_size, "target"),
+    renderCount("目标", candidateCounts.target_size, "target", { unknownWhenMissing: true }),
     renderCount("实际返回", candidateCounts.returned_size, "returned"),
     renderCount("候选池", countValue(state, "pool_size"), "pool"),
     renderCount("匹配", countValue(state, "matched_size"), "matched"),
