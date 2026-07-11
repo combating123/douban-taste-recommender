@@ -2,6 +2,8 @@ import { renderRoutePlaceholder, setCurrentNavigation, setText } from "./core/do
 import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, sanitizeNonSensitiveText, sanitizeNonSensitiveValue } from "./core/store.js";
+import { migrateLegacyClientState } from "./core/migrate.js";
+import { configureRecoveryBoundary, rememberLastStableState, renderSafely } from "./core/recovery.js";
 import { announce } from "./core/focus.js";
 import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
@@ -190,6 +192,25 @@ export function reduceUiState(state, action) {
           knownJobIds: Array.isArray(action.sync?.knownJobIds) ? [...action.sync.knownJobIds] : [],
         },
       };
+    case "recovery/restored": {
+      const stable = action.state && typeof action.state === "object" ? action.state : {};
+      return {
+        ...state,
+        activePath: stable.activePath || state.activePath,
+        activeParams: stable.activeParams || {},
+        scrollByRoute: stable.scrollByRoute || {},
+        rail: stable.rail || { mode: "expanded" },
+        recommendation: {
+          ...state.recommendation,
+          activeChannel: stable.recommendation?.activeChannel || "movie",
+          channels: stable.recommendation?.channels || state.recommendation.channels,
+        },
+        candidateTray: { ...state.candidateTray, context: stable.candidateTray?.context || {} },
+        commandLens: { draft: "", chips: [] },
+        library: stable.library || { state: "all" },
+        sync: stable.sync || state.sync,
+      };
+    }
     case "universe/contextChanged":
       return {
         ...state,
@@ -505,62 +526,73 @@ export function createAppRouteHandler({
   announceRoute = announce,
 } = {}) {
   let activeSpace = null;
+  configureRecoveryBoundary({
+    root: appView,
+    getCurrentPath: () => store.getState?.().activePath || "",
+    getStableState: () => store.getState?.() || null,
+  });
   const disposeActiveSpace = () => {
     activeSpace?.dispose?.();
     activeSpace = null;
   };
   const handler = async (route) => {
-    disposeActiveSpace();
-    prepare();
-    store.dispatch({ type: "route/changed", route });
-    appView.dataset.route = route.path;
-    setNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
     const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
-    if (route.path.startsWith("/tonight")) {
-      universeGate.invalidate();
-      explorationGate.invalidate();
-      renderTonightView(store.getState());
-      await restoreGate.restore(route, heading);
-    } else if (route.name === "title" || route.name === "person") {
-      universeGate.invalidate({ preserveDom: true });
-      restoreGate.invalidate();
-      await explorationGate.render(route, heading);
-    } else if (route.name === "universe") {
-      restoreGate.invalidate();
-      explorationGate.invalidate();
-      await universeGate.render();
-    } else if (route.name === "library") {
-      universeGate.invalidate();
-      restoreGate.invalidate();
-      explorationGate.invalidate();
-      activeSpace = renderLibraryView(appView, {
-        filters: store.getState().library || { state: "all" },
-        onFilterChange: (state) => store.dispatch({ type: "library/filterChanged", state }),
-      });
-      setStatus("CineScope 正在浏览：片库");
-    } else if (route.name === "taste") {
-      universeGate.invalidate();
-      restoreGate.invalidate();
-      explorationGate.invalidate();
-      activeSpace = renderTasteView(appView);
-      setStatus("CineScope 正在浏览：口味 DNA");
-    } else if (route.name === "health") {
-      universeGate.invalidate();
-      restoreGate.invalidate();
-      explorationGate.invalidate();
-      activeSpace = renderHealthView(appView, {
-        syncState: store.getState().sync || {},
-        onSyncStateChange: (sync) => store.dispatch({ type: "sync/stateChanged", sync }),
-      });
-      setStatus("CineScope 正在浏览：健康与同步");
-    } else {
-      universeGate.invalidate();
-      restoreGate.invalidate();
-      explorationGate.invalidate();
-      renderPlaceholder(appView, { heading, description });
-      setStatus(`CineScope 正在浏览：${heading}`);
-    }
-    if (store.getState?.().activePath !== route.path) return false;
+    const renderResult = await renderSafely(route, async () => {
+      disposeActiveSpace();
+      prepare();
+      store.dispatch({ type: "route/changed", route });
+      appView.dataset.route = route.path;
+      setNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
+      if (route.path.startsWith("/tonight")) {
+        universeGate.invalidate();
+        explorationGate.invalidate();
+        await renderTonightView(store.getState());
+        await restoreGate.restore(route, heading);
+      } else if (route.name === "title" || route.name === "person") {
+        universeGate.invalidate({ preserveDom: true });
+        restoreGate.invalidate();
+        await explorationGate.render(route, heading);
+      } else if (route.name === "universe") {
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        await universeGate.render();
+      } else if (route.name === "library") {
+        universeGate.invalidate();
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        activeSpace = await renderLibraryView(appView, {
+          filters: store.getState().library || { state: "all" },
+          onFilterChange: (state) => store.dispatch({ type: "library/filterChanged", state }),
+        });
+        setStatus("CineScope 正在浏览：片库");
+      } else if (route.name === "taste") {
+        universeGate.invalidate();
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        activeSpace = await renderTasteView(appView);
+        setStatus("CineScope 正在浏览：口味 DNA");
+      } else if (route.name === "health") {
+        universeGate.invalidate();
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        activeSpace = await renderHealthView(appView, {
+          syncState: store.getState().sync || {},
+          onSyncStateChange: (sync) => store.dispatch({ type: "sync/stateChanged", sync }),
+        });
+        setStatus("CineScope 正在浏览：健康与同步");
+      } else {
+        universeGate.invalidate();
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        await renderPlaceholder(appView, { heading, description });
+        setStatus(`CineScope 正在浏览：${heading}`);
+      }
+    }, {
+      root: appView,
+      getCurrentPath: () => store.getState?.().activePath || "",
+      getStableState: () => store.getState?.() || null,
+    });
+    if (renderResult.stale || store.getState?.().activePath !== route.path) return false;
     const focusTarget = appView.querySelector?.("h1") || appView;
     if (focusTarget && typeof focusTarget.focus === "function") {
       focusTarget.setAttribute?.("tabindex", "-1");
@@ -579,6 +611,7 @@ export function createAppRouteHandler({
 }
 
 export function bootstrapCineScopeShell() {
+  migrateLegacyClientState();
   const appView = document.getElementById("app-view");
   const status = document.getElementById("shell-status");
   if (!appView || !status) return;
@@ -615,6 +648,18 @@ export function bootstrapCineScopeShell() {
     onBeforeOpen: () => closeCommandLens(),
   });
   let router = null;
+  configureRecoveryBoundary({
+    root: appView,
+    getCurrentPath: () => store.getState().activePath || "",
+    getStableState: () => store.getState(),
+    onRetry: (stableState) => {
+      store.dispatch({ type: "recovery/restored", state: stableState });
+      persistUiState(store.getState());
+      applyRailMode(store.getState().rail.mode);
+      if (stableState.activePath) void router?.navigate(stableState.activePath);
+    },
+  });
+  if (store.getState().activePath) rememberLastStableState(store.getState());
   const recommendUniverseNode = createUniverseRecommendationHandler({
     store,
     navigate: (path) => router?.navigate(path),
