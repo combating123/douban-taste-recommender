@@ -3,8 +3,10 @@ export const UI_SCHEMA_VERSION = 3;
 
 const CHANNEL_SLUGS = ["movie", "series", "anime-series"];
 const RAIL_MODES = new Set(["expanded", "collapsed", "hidden"]);
+const LIBRARY_STATES = new Set(["all", "watched", "wish", "wanted", "candidate", "rated", "collect", "ready", "hidden", "archived"]);
 const SENSITIVE_KEY = /(?:cookie|api[_-]?key|authorization|headers?|token|secret|password)/i;
 const EXTERNAL_URL = /^(?:https?:)?\/\//i;
+const SAFE_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 function emptyChannelState() {
   return { sessionId: null, batchIndex: 0, batchIds: [] };
@@ -24,6 +26,12 @@ export function createEmptyUiState() {
     candidateTray: { itemIds: [], context: {} },
     commandLens: { draft: "", chips: [] },
     rail: { mode: "expanded" },
+    library: { state: "all" },
+    sync: {
+      profile: "",
+      options: { maxPages: 250, includeWish: true, includeDo: false, expectedCollect: null, expectedWish: null },
+      knownJobIds: [],
+    },
   };
 }
 
@@ -129,6 +137,46 @@ function sanitizeChips(chips) {
   });
 }
 
+function sanitizeLibraryState(value) {
+  return LIBRARY_STATES.has(value) ? value : "all";
+}
+
+function sanitizeSyncProfile(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (/^[A-Za-z0-9._~-]{1,128}$/.test(text)) return text;
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "https:" || !/(^|\.)douban\.com$/i.test(url.hostname)) return "";
+    const match = url.pathname.match(/^\/people\/([A-Za-z0-9._~-]{1,128})(?:\/|$)/);
+    return match ? `https://www.douban.com/people/${match[1]}/` : "";
+  } catch {
+    return "";
+  }
+}
+
+function optionalCount(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 && number <= 1000000 ? number : null;
+}
+
+function sanitizeSyncOptions(options) {
+  const source = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+  const rawMaxPages = Number(source.maxPages);
+  return {
+    maxPages: Number.isInteger(rawMaxPages) ? Math.max(1, Math.min(250, rawMaxPages)) : 250,
+    includeWish: source.includeWish !== false,
+    includeDo: Boolean(source.includeDo),
+    expectedCollect: optionalCount(source.expectedCollect),
+    expectedWish: optionalCount(source.expectedWish),
+  };
+}
+
+function sanitizeKnownJobIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((jobId) => typeof jobId === "string" && SAFE_JOB_ID.test(jobId)))].slice(-50);
+}
+
 export function normalizeUiState(state = {}) {
   const source = state && typeof state === "object" ? state : {};
   const recommendation = source.recommendation && typeof source.recommendation === "object"
@@ -141,6 +189,8 @@ export function normalizeUiState(state = {}) {
     ? source.commandLens
     : {};
   const rail = source.rail && typeof source.rail === "object" ? source.rail : {};
+  const library = source.library && typeof source.library === "object" ? source.library : {};
+  const sync = source.sync && typeof source.sync === "object" ? source.sync : {};
   const activeChannel = CHANNEL_SLUGS.includes(recommendation.activeChannel)
     ? recommendation.activeChannel
     : "movie";
@@ -166,6 +216,12 @@ export function normalizeUiState(state = {}) {
       chips: sanitizeChips(commandLens.chips),
     },
     rail: { mode: RAIL_MODES.has(rail.mode) ? rail.mode : "expanded" },
+    library: { state: sanitizeLibraryState(library.state) },
+    sync: {
+      profile: sanitizeSyncProfile(sync.profile),
+      options: sanitizeSyncOptions(sync.options),
+      knownJobIds: sanitizeKnownJobIds(sync.knownJobIds),
+    },
   };
 }
 

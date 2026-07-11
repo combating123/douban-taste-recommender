@@ -32,6 +32,74 @@ def run_node_module(script):
     return result.stdout
 
 
+def fake_dom_module_prelude():
+    return textwrap.dedent(
+        r'''
+        class FakeClassList {
+          constructor(owner) { this.owner = owner; this.values = new Set(); }
+          add(...names) { names.filter(Boolean).forEach((name) => this.values.add(name)); this.sync(); }
+          remove(...names) { names.forEach((name) => this.values.delete(name)); this.sync(); }
+          toggle(name, force) {
+            const enabled = force === undefined ? !this.values.has(name) : Boolean(force);
+            if (enabled) this.values.add(name); else this.values.delete(name);
+            this.sync(); return enabled;
+          }
+          contains(name) { return this.values.has(name); }
+          sync() { this.owner._className = [...this.values].join(" "); }
+          replace(value) { this.values = new Set(String(value || "").split(/\s+/).filter(Boolean)); this.sync(); }
+        }
+        class FakeElement {
+          constructor(tagName) {
+            this.tagName = String(tagName).toUpperCase(); this.children = []; this.parentNode = null;
+            this.attributes = new Map(); this.dataset = {}; this.style = { height: "", setProperty(name, value) { this[name] = String(value); } };
+            this.listeners = new Map(); this._className = ""; this.classList = new FakeClassList(this); this._textContent = "";
+            this.value = ""; this.checked = false; this.disabled = false; this.hidden = false; this.type = "";
+            this.clientWidth = 1000; this.clientHeight = 520; this.scrollTop = 0;
+          }
+          set className(value) { this.classList.replace(value); } get className() { return this._className; }
+          set textContent(value) { this._textContent = String(value ?? ""); this.children = []; }
+          get textContent() { return this._textContent + this.children.map((child) => child.textContent || "").join(""); }
+          append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+          appendChild(node) { if (node == null) return node; this.children.push(node); node.parentNode = this; return node; }
+          replaceChildren(...nodes) { this.children.forEach((node) => { node.parentNode = null; }); this.children = []; this._textContent = ""; this.append(...nodes); }
+          setAttribute(name, value) {
+            const text = String(value); this.attributes.set(name, text);
+            if (name === "class") this.className = text;
+            if (name.startsWith("data-")) this.dataset[name.slice(5).replace(/-([a-z])/g, (_m, c) => c.toUpperCase())] = text;
+          }
+          getAttribute(name) { return this.attributes.get(name) ?? null; }
+          addEventListener(type, listener) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }
+          removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
+          dispatchEvent(event) { event.target ||= this; for (const listener of this.listeners.get(event.type) || []) listener(event); return true; }
+          focus() { globalThis.document.activeElement = this; }
+          matches(selector) {
+            if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
+            const data = selector.match(/^\[data-([a-z-]+)="([^"]+)"\]$/);
+            if (data) return this.dataset[data[1].replace(/-([a-z])/g, (_m, c) => c.toUpperCase())] === data[2];
+            return this.tagName === selector.toUpperCase();
+          }
+          querySelectorAll(selector) { return this.children.flatMap((child) => [child, ...(typeof child.querySelectorAll === "function" ? child.querySelectorAll(selector) : [])]).filter((node) => typeof node.matches === "function" && node.matches(selector)); }
+          querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+          get firstElementChild() { return this.children[0] || null; }
+        }
+        globalThis.document = {
+          readyState: "loading", activeElement: null,
+          createElement(tagName) { return new FakeElement(tagName); },
+          addEventListener() {}, removeEventListener() {}, querySelectorAll() { return []; },
+        };
+        globalThis.location = { origin: "https://cinescope.test", pathname: "/health" };
+        globalThis.window = { addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: false }) };
+        globalThis.Image = class FakeImage {
+          constructor() { this.tagName = "IMG"; this.naturalWidth = 640; this.children = []; }
+          set src(value) { this._src = value; queueMicrotask(() => this.onload?.()); } get src() { return this._src; }
+          decode() { return Promise.resolve(); }
+        };
+        const collectNodes = (node) => [node, ...node.children.flatMap((child) => collectNodes(child))];
+        const flush = async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve(); };
+        '''
+    )
+
+
 class UiV3ContractTests(unittest.TestCase):
     def test_router_declares_deep_link_patterns(self):
         source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
@@ -2337,6 +2405,258 @@ class UiV3ContractTests(unittest.TestCase):
         )
         detail_result = json.loads(output)
         self.assertEqual(["douban:42"], detail_result["routed"])
+
+    def test_library_cursor_filter_stale_response_virtual_spacers_and_dispose(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = []; const observers = []; const rafs = new Map(); let rafId = 0; const cancelled = [];
+            class FakeObserver {{
+              constructor(callback) {{ this.callback = callback; this.disconnected = false; observers.push(this); }}
+              observe(target) {{ this.target = target; }} disconnect() {{ this.disconnected = true; }}
+            }}
+            const fetchJson = (path, options = {{}}) => new Promise((resolve, reject) => requests.push({{ path, options, resolve, reject }}));
+            const requestFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            const cancelFrame = (id) => {{ cancelled.push(id); rafs.delete(id); }};
+            const item = (index, prefix = "W") => ({{
+              item_key: `douban:${{prefix}}${{index}}`, title: `${{prefix}} title ${{index}}`, state: "watched", year: 2000 + index,
+              poster: {{ url: `/media/${{prefix}}-${{index}}.webp`, media_status: "ready" }},
+              backdrop: {{ url: `/media/${{prefix}}-${{index}}-backdrop.webp`, media_status: "ready" }},
+              item: {{ cover: "https://remote.invalid/forbidden-cover.jpg" }}, cover: "https://remote.invalid/also-forbidden.jpg",
+            }});
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson, createObserver: (callback) => new FakeObserver(callback), requestFrame, cancelFrame }});
+            const firstReady = controller.mount({{ state: "watched" }}); await flush();
+            if (!requests[0].path.includes("state=watched") || requests[0].path.includes("cursor=")) throw new Error("initial filter request was wrong");
+            requests[0].resolve({{ items: Array.from({{ length: 72 }}, (_v, index) => item(index)), next_cursor: "cursor-one" }});
+            await firstReady; await flush();
+            let snapshot = controller.snapshot();
+            if (snapshot.itemCount !== 72 || snapshot.renderedItemCount >= 72) throw new Error("library did not window the fixed-row grid");
+            if (snapshot.topSpacer !== 0 || snapshot.bottomSpacer <= 0) throw new Error("initial virtual spacers were not calculated");
+            const viewport = root.querySelector('[data-role="library-window"]');
+            const renderedImages = collectNodes(root).filter((node) => node.tagName === "IMG");
+            if (!renderedImages.length || renderedImages.some((image) => !image.src.startsWith("/media/") || image.src.includes("forbidden"))) throw new Error("library used a non-catalog or external cover");
+
+            observers[0].callback([{{ isIntersecting: true }}]); await flush();
+            if (!requests[1].path.includes("cursor=cursor-one")) throw new Error("sentinel did not request the next cursor");
+            const changed = controller.setFilter("wish"); await flush();
+            if (!requests[1].options.signal.aborted) throw new Error("filter change did not abort the cursor request");
+            if (!requests[2].path.includes("state=wish") || requests[2].path.includes("cursor=")) throw new Error("filter reset retained the old cursor");
+            requests[1].resolve({{ items: [item(999, "STALE")], next_cursor: null }});
+            requests[2].resolve({{ items: Array.from({{ length: 80 }}, (_v, index) => item(index, "FRESH")), next_cursor: "fresh-next" }});
+            await changed; await flush();
+            snapshot = controller.snapshot();
+            if (snapshot.state !== "wish" || snapshot.itemKeys.some((key) => key.includes("STALE"))) throw new Error("stale cursor response overwrote the new filter");
+
+            viewport.scrollTop = 1500; viewport.dispatchEvent({{ type: "scroll" }});
+            const frame = [...rafs.entries()][0]; if (!frame) throw new Error("scroll did not schedule virtualization RAF"); rafs.delete(frame[0]); frame[1]();
+            snapshot = controller.snapshot();
+            if (snapshot.topSpacer <= 0 || snapshot.bottomSpacer < 0) throw new Error("scrolled virtual spacers were not updated");
+            const pending = controller.loadNext(); await flush();
+            controller.dispose();
+            if (!requests.at(-1).options.signal.aborted) throw new Error("unmount did not abort active fetch");
+            if (!observers[0].disconnected || (viewport.listeners.get("scroll")?.size || 0) !== 0) throw new Error("unmount leaked observer or scroll listener");
+            if (rafs.size !== 0) throw new Error("unmount leaked RAF callbacks");
+            requests.at(-1).resolve({{ items: [], next_cursor: null }}); await pending;
+            console.log(JSON.stringify(snapshot));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("wish", result["state"])
+        self.assertGreater(result["topSpacer"], 0)
+
+    def test_taste_renders_all_five_groups_with_safe_local_evidence_links(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{ summary: {{ profile_key: "default" }}, groups: {{
+              stable: [{{ feature: "稳定 <script>偏好", score: 0.9, evidence_item_ids: ["douban:1"], sources: ["library"] }}],
+              conflicting: [{{ feature: "冲突", score: -0.2, evidence_item_ids: ["douban:2"], sources: ["rating"] }}],
+              recent: [{{ feature: "最近信号", score: 0.4, evidence_item_ids: ["douban:3"], sources: ["sync"] }}],
+              negative: [{{ feature: "避雷", score: -0.8, evidence_item_ids: ["douban:4"], sources: ["feedback"] }}],
+              unexplored: [{{ feature: "未探索", score: 0.1, evidence_item_ids: ["douban:5", "https://evil.test/title"] , sources: ["wish"] }}],
+            }} }};
+            const {{ renderTasteDna }} = await import("{module_url('js/features/taste.js')}");
+            const root = new FakeElement("main");
+            const controller = renderTasteDna(root, {{ fetchJson: async (path) => {{ if (path !== "/api/v2/taste?profile_key=default") throw new Error(path); return payload; }} }});
+            await controller.ready;
+            const groups = collectNodes(root).filter((node) => node.dataset?.tasteGroup).map((node) => node.dataset.tasteGroup);
+            if (groups.join(",") !== "stable,conflicting,recent,negative,unexplored") throw new Error(`missing taste groups: ${{groups}}`);
+            const links = collectNodes(root).filter((node) => node.tagName === "A");
+            if (links.length !== 5 || links.some((link) => !link.getAttribute("href").startsWith("/title/") || link.getAttribute("href").includes("evil.test"))) throw new Error("unsafe evidence link rendered");
+            if (!root.textContent.includes("稳定 <script>偏好") || root.textContent.includes("近30天") || root.textContent.includes("30 天")) throw new Error("taste copy was unsafe or invented a time window");
+            controller.dispose();
+            console.log(JSON.stringify({{ groups, hrefs: links.map((link) => link.getAttribute("href")), text: root.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["stable", "conflicting", "recent", "negative", "unexplored"], result["groups"])
+        self.assertTrue(all(href.startswith("/title/") for href in result["hrefs"]))
+
+    def test_health_uses_unknown_diagnostics_and_renders_media_health_with_incomplete_job(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const calls = [];
+            const fetchJson = async (path) => {{
+              calls.push(path);
+              if (path === "/api/v2/media/health") return {{ assets: {{ total: 12, bytes: 4096 }}, jobs: {{ queued: 2, failed: 1 }}, delivery: "local-only" }};
+              if (path === "/api/v2/sync/jobs/restored") return {{ id: "restored", state: "complete", user_id: "272042071" }};
+              throw new Error(path);
+            }};
+            const timers = new Map(); let timerId = 0;
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const root = new FakeElement("main");
+            const controller = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}), syncState: {{ knownJobIds: ["restored"] }}, setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }}, clearTimer(id) {{ timers.delete(id); }} }});
+            await controller.ready;
+            const text = root.textContent;
+            if (!text.includes("12") || !text.includes("4 KB") || !text.includes("queued") || !text.includes("2")) throw new Error("media health was not rendered");
+            if (!text.includes("—") || !text.includes("尚未提供")) throw new Error("unknown provider diagnostics were fabricated");
+            if (text.includes("0 ms") || text.includes("100%") || text.includes("healthy")) throw new Error("health fabricated latency or percentages");
+            if (!text.includes("记录不完整") || text.includes("同步成功")) throw new Error("incomplete restored job was shown as success");
+            controller.dispose();
+            console.log(JSON.stringify({{ calls, text, timers: timers.size }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("/api/v2/media/health", result["calls"])
+        self.assertIn("/api/v2/sync/jobs/restored", result["calls"])
+
+    def test_sync_cookie_stays_in_tab_session_and_public_snapshots_use_auto_pagination(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const sessionValues = new Map([["cinescope.sync.cookie.tab", "bid=tab-secret; ck=hidden"]]);
+            const storage = {{ getItem(key) {{ return sessionValues.get(key) ?? null; }}, setItem(key, value) {{ sessionValues.set(key, String(value)); }}, removeItem(key) {{ sessionValues.delete(key); }} }};
+            const posts = []; const publicStates = []; const timers = new Map(); let timerId = 0;
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{ storage, fetchJson: async () => ({{}}), postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ job_id: "job-one", state: "queued", user_id: "272042071" }}; }}, onStateChange(state) {{ publicStates.push(JSON.parse(JSON.stringify(state))); }}, setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }}, clearTimer(id) {{ timers.delete(id); }} }});
+            if (controller.elements.cookie.value !== "bid=tab-secret; ck=hidden") throw new Error("tab session cookie was not auto-filled");
+            controller.elements.profile.value = "https://www.douban.com/people/272042071/?cookie=profile-secret";
+            await controller.start();
+            if (posts[0].path !== "/api/v2/sync/jobs" || posts[0].payload.max_pages !== 250) throw new Error("sync did not default to the 250-page safety cap");
+            if (posts[0].payload.user !== "https://www.douban.com/people/272042071/") throw new Error("profile URL was not reduced to its public canonical form");
+            if (!root.textContent.includes("默认自动翻页到末页") || !root.textContent.includes("250")) throw new Error("auto-pagination copy was missing");
+            const rawPublic = JSON.stringify({{ snapshots: publicStates, controller: controller.snapshot() }});
+            if (rawPublic.includes("tab-secret") || rawPublic.includes("ck=hidden") || rawPublic.includes("profile-secret") || rawPublic.toLowerCase().includes("cookie")) throw new Error("cookie escaped into public persistence snapshots");
+            if (sessionValues.get("cinescope.sync.cookie.tab") !== "bid=tab-secret; ck=hidden") throw new Error("same-tab cookie was not retained in sessionStorage");
+            controller.dispose();
+            console.log(JSON.stringify({{ post: {{ path: posts[0].path, maxPages: posts[0].payload.max_pages }}, publicStates, text: root.textContent, timers: timers.size }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(250, result["post"]["maxPages"])
+        self.assertIn("默认自动翻页到末页", result["text"])
+
+    def test_sync_polling_dedupes_latest_wins_cleans_up_and_shows_resume_400(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = []; const timers = new Map(); const cleared = []; let timerId = 0;
+            const fetchJson = (path, options = {{}}) => new Promise((resolve, reject) => requests.push({{ path, options, resolve, reject }}));
+            const postJson = async (_path, _payload) => {{ const error = new Error("resume rejected"); error.status = 400; error.publicMessage = "sync job has no failed pages to resume"; throw error; }};
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{ knownJobIds: ["job-a", "job-a"], fetchJson, postJson, setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }}, clearTimer(id) {{ cleared.push(id); timers.delete(id); }} }});
+            await flush();
+            if (requests.length !== 1 || requests[0].path !== "/api/v2/sync/jobs/job-a") throw new Error("restored job polling was duplicated");
+            requests[0].resolve({{ id: "job-a", state: "needs_cookie", user_id: "272", counts: {{ items: 0 }}, stopped_reason: "豆瓣要求登录态", diagnostics: [{{ status: "collect", start: 0, classification: "login_required", message: "HTTP 403" }}] }});
+            await controller.ready; await flush();
+            if (timers.size !== 0) throw new Error("terminal resumable job kept a polling timer");
+            const first = controller.refreshJob("job-a"); await flush();
+            const second = controller.refreshJob("job-a"); await flush();
+            if (!requests[1].options.signal.aborted) throw new Error("new poll did not abort the previous generation");
+            requests[2].resolve({{ id: "job-a", state: "complete", user_id: "272", counts: {{ items: 8, pages_ok: 2, pages_failed: 0 }}, stopped_reason: "已到达空白分页", diagnostics: [] }});
+            await second;
+            requests[1].resolve({{ id: "job-a", state: "failed", user_id: "stale", counts: {{ items: 0 }}, stopped_reason: "stale", diagnostics: [] }});
+            await first;
+            if (controller.snapshot().jobs["job-a"].state !== "complete") throw new Error("stale job response won over the latest generation");
+
+            controller.elements.cookie.value = "poll-secret";
+            controller.acceptJob({{ id: "job-private", state: "failed", user_id: "272", counts: {{ items: 0 }}, stopped_reason: "poll-secret", diagnostics: [{{ status: "wish", start: 15, classification: "network_error", message: "poll-secret" }}], errors: ["poll-secret"] }});
+            if (JSON.stringify(controller.snapshot()).includes("poll-secret")) throw new Error("cookie escaped into job metadata");
+            const resumable = controller.acceptJob({{ id: "job-b", state: "needs_cookie", user_id: "272", counts: {{ items: 0 }}, stopped_reason: "需要 Cookie", diagnostics: [{{ status: "wish", start: 15, classification: "login_required", message: "HTTP 403" }}] }});
+            if (!resumable.canResume) throw new Error("real resumable diagnostics did not expose resume");
+            await controller.resume("job-b");
+            if (!root.textContent.includes("HTTP 400") || !root.textContent.includes("no failed pages")) throw new Error("resume 400 was not visible");
+
+            const pending = controller.refreshJob("job-c"); await flush();
+            controller.dispose();
+            if (!requests.at(-1).options.signal.aborted || timers.size !== 0) throw new Error("unmount leaked polling fetch or timer");
+            requests.at(-1).resolve({{ id: "job-c", state: "running", user_id: "272" }}); await pending;
+            console.log(JSON.stringify({{ requests: requests.length, cleared: cleared.length, snapshot: controller.snapshot(), text: root.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("complete", result["snapshot"]["jobs"]["job-a"]["state"])
+        self.assertIn("HTTP 400", result["text"])
+
+    def test_task7_state_routes_static_css_and_390_overflow_contract(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createAppRouteHandler, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const calls = []; const disposals = [];
+            const store = {{ state: {{ activePath: null, activeParams: {{}}, recommendation: {{ channels: {{}} }}, library: {{ state: "wish" }}, sync: {{ knownJobIds: ["job-1"] }} }}, getState() {{ return this.state; }}, dispatch(action) {{ this.state = reduceUiState(this.state, action); calls.push(action.type); }} }};
+            const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
+            const appView = {{ dataset: {{}} }};
+            const renderer = (name) => (_root, options) => {{ calls.push(`${{name}}:${{options?.filters?.state || options?.syncState?.knownJobIds?.[0] || "default"}}`); return {{ dispose() {{ disposals.push(name); }} }}; }};
+            const handler = createAppRouteHandler({{ appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate, prepare() {{}}, setNavigation() {{}}, renderTonightView() {{}}, renderPlaceholder() {{}}, setStatus() {{}}, renderLibraryView: renderer("library"), renderTasteView: renderer("taste"), renderHealthView: renderer("health") }});
+            await handler({{ name: "library", path: "/library", params: {{}} }});
+            await handler({{ name: "taste", path: "/taste", params: {{}} }});
+            await handler({{ name: "health", path: "/health", params: {{}} }});
+            handler.dispose();
+            if (!calls.includes("library:wish") || !calls.includes("health:job-1")) throw new Error("real space renderer did not receive restored route state");
+            if (disposals.join(",") !== "library,taste,health") throw new Error(`route lifecycle did not dispose all spaces: ${{disposals}}`);
+            console.log(JSON.stringify({{ calls, disposals, route: appView.dataset.route }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["library", "taste", "health"], result["disposals"])
+
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        app = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+        self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/spaces.css" />', html)
+        self.assertNotRegex(app, r'pattern:\s*["\']/sync["\']')
+        self.assertNotIn('createElement("link")', app)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*390px\)")
+        self.assertIn("min-width: 0", css)
+        self.assertIn("overflow-wrap: anywhere", css)
+        declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
+        for declaration in declarations:
+            for transition in declaration.split(","):
+                self.assertIn(transition.strip().split(maxsplit=1)[0], {"transform", "opacity"})
+        self.assertIn("prefers-reduced-motion", css)
+
+    def test_store_persists_library_and_non_sensitive_sync_allowlist_without_raw_cookie(self):
+        output = run_node_module(
+            f'''
+            import {{ persistUiState, restoreUiState, UI_STATE_KEY }} from "{module_url('js/core/store.js')}";
+            const values = new Map(); const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            persistUiState({{
+              activePath: "/health", library: {{ state: "wish" }},
+              sync: {{ profile: "https://www.douban.com/people/272042071/?cookie=must-not-persist", options: {{ maxPages: 250, includeWish: true, includeDo: false, expectedCollect: 244, expectedWish: 36 }}, knownJobIds: ["job-a", "job-a", "bad/id"], payload: {{ cookie: "must-not-persist" }} }},
+              doubanCookie: "must-not-persist",
+            }}, storage);
+            const raw = values.get(UI_STATE_KEY); const restored = restoreUiState(storage);
+            if (raw.includes("must-not-persist") || raw.toLowerCase().includes("cookie")) throw new Error("raw persisted snapshot contains cookie material");
+            if (restored.activePath !== "/health" || restored.library.state !== "wish") throw new Error("route or library filter was not restored");
+            if (restored.sync.profile !== "https://www.douban.com/people/272042071/" || restored.sync.options.maxPages !== 250) throw new Error("safe sync profile/options were not restored");
+            if (restored.sync.knownJobIds.join(",") !== "job-a") throw new Error("known job IDs were not allowlisted and deduplicated");
+            console.log(JSON.stringify({{ raw, restored }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("wish", result["restored"]["library"]["state"])
+        self.assertEqual(["job-a"], result["restored"]["sync"]["knownJobIds"])
 
     def test_universe_stylesheet_is_static_responsive_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")

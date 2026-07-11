@@ -337,6 +337,7 @@ class WebApiTests(unittest.TestCase):
             "candidates_csv": csv_text,
             "fetch_douban": False,
             "use_sample_candidates": True,
+            "enrich_details": False,
             "include_movies": True,
             "include_series": True,
             "like_terms": "剧情,悬疑",

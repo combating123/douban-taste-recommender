@@ -7,6 +7,9 @@ import { configureTonight, renderTonight, restoreTonightSession, syncTonightSess
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
 import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
 import { configureUniverse, destroyUniverse, expandNode, renderUniverse } from "./features/universe.js";
+import { renderLibrary } from "./features/library.js";
+import { renderTasteDna } from "./features/taste.js";
+import { renderHealth } from "./features/health.js";
 
 const APP_ROUTES = [
   { pattern: "/tonight", name: "tonight" },
@@ -175,6 +178,17 @@ export function reduceUiState(state, action) {
       };
     case "rail/changed":
       return { ...state, rail: { mode: action.mode } };
+    case "library/filterChanged":
+      return { ...state, library: { state: action.state } };
+    case "sync/stateChanged":
+      return {
+        ...state,
+        sync: {
+          profile: typeof action.sync?.profile === "string" ? action.sync.profile : "",
+          options: action.sync?.options && typeof action.sync.options === "object" ? { ...action.sync.options } : {},
+          knownJobIds: Array.isArray(action.sync?.knownJobIds) ? [...action.sync.knownJobIds] : [],
+        },
+      };
     case "universe/contextChanged":
       return {
         ...state,
@@ -256,12 +270,14 @@ function applyRailMode(mode) {
 }
 
 function bindNavigation(router) {
-  document.addEventListener("click", (event) => {
+  const onClick = (event) => {
     const link = event.target.closest("a[data-route]");
     if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     router.navigate(link.getAttribute("href"));
-  });
+  };
+  document.addEventListener("click", onClick);
+  return () => document.removeEventListener("click", onClick);
 }
 
 export function prepareRouteChange() {
@@ -440,9 +456,18 @@ export function createAppRouteHandler({
   setNavigation = setCurrentNavigation,
   renderTonightView = renderTonight,
   renderPlaceholder = renderRoutePlaceholder,
+  renderLibraryView = renderLibrary,
+  renderTasteView = renderTasteDna,
+  renderHealthView = renderHealth,
   setStatus = () => {},
 } = {}) {
-  return async (route) => {
+  let activeSpace = null;
+  const disposeActiveSpace = () => {
+    activeSpace?.dispose?.();
+    activeSpace = null;
+  };
+  const handler = async (route) => {
+    disposeActiveSpace();
     prepare();
     store.dispatch({ type: "route/changed", route });
     appView.dataset.route = route.path;
@@ -461,6 +486,30 @@ export function createAppRouteHandler({
       restoreGate.invalidate();
       explorationGate.invalidate();
       await universeGate.render();
+    } else if (route.name === "library") {
+      universeGate.invalidate();
+      restoreGate.invalidate();
+      explorationGate.invalidate();
+      activeSpace = renderLibraryView(appView, {
+        filters: store.getState().library || { state: "all" },
+        onFilterChange: (state) => store.dispatch({ type: "library/filterChanged", state }),
+      });
+      setStatus("CineScope 正在浏览：片库");
+    } else if (route.name === "taste") {
+      universeGate.invalidate();
+      restoreGate.invalidate();
+      explorationGate.invalidate();
+      activeSpace = renderTasteView(appView);
+      setStatus("CineScope 正在浏览：口味 DNA");
+    } else if (route.name === "health") {
+      universeGate.invalidate();
+      restoreGate.invalidate();
+      explorationGate.invalidate();
+      activeSpace = renderHealthView(appView, {
+        syncState: store.getState().sync || {},
+        onSyncStateChange: (sync) => store.dispatch({ type: "sync/stateChanged", sync }),
+      });
+      setStatus("CineScope 正在浏览：健康与同步");
     } else {
       universeGate.invalidate();
       restoreGate.invalidate();
@@ -469,6 +518,13 @@ export function createAppRouteHandler({
       setStatus(`CineScope 正在浏览：${heading}`);
     }
   };
+  handler.dispose = () => {
+    disposeActiveSpace();
+    restoreGate.invalidate();
+    explorationGate.invalidate();
+    universeGate.invalidate();
+  };
+  return handler;
 }
 
 export function bootstrapCineScopeShell() {
@@ -482,7 +538,7 @@ export function bootstrapCineScopeShell() {
     restoreSession: restoreTonightSession,
     setStatus: (message) => setText(status, message),
   });
-  store.subscribe((state, action) => {
+  const unsubscribe = store.subscribe((state, action) => {
     persistUiState(state);
     if (action.type === "recommendation/sessionReceived" && action.source !== "restore") restoreGate.invalidate();
     if (["recommendation/sessionReceived", "route/changed"].includes(action.type)) {
@@ -526,7 +582,9 @@ export function bootstrapCineScopeShell() {
     getContext: () => store.getState().candidateTray?.context || {},
     setStatus: (message) => setText(status, message),
   });
-  document.getElementById("command-lens-trigger")?.addEventListener("click", () => openCommandLens());
+  const commandTrigger = document.getElementById("command-lens-trigger");
+  const onCommandTrigger = () => openCommandLens();
+  commandTrigger?.addEventListener("click", onCommandTrigger);
   const setRailMode = (mode) => {
     store.dispatch({ type: "rail/changed", mode });
     persistUiState(store.getState());
@@ -534,26 +592,48 @@ export function bootstrapCineScopeShell() {
   };
 
   applyRailMode(store.getState().rail.mode);
-  document.getElementById("rail-collapse-toggle")?.addEventListener("click", () => {
+  const collapseToggle = document.getElementById("rail-collapse-toggle");
+  const hideToggle = document.getElementById("rail-hide-toggle");
+  const railRestore = document.getElementById("rail-restore");
+  const onCollapse = () => {
     setRailMode(store.getState().rail.mode === "collapsed" ? "expanded" : "collapsed");
-  });
-  document.getElementById("rail-hide-toggle")?.addEventListener("click", () => setRailMode("hidden"));
-  document.getElementById("rail-restore")?.addEventListener("click", () => setRailMode("expanded"));
+  };
+  const onHide = () => setRailMode("hidden");
+  const onRestore = () => setRailMode("expanded");
+  collapseToggle?.addEventListener("click", onCollapse);
+  hideToggle?.addEventListener("click", onHide);
+  railRestore?.addEventListener("click", onRestore);
 
+  const routeHandler = createAppRouteHandler({
+    appView,
+    store,
+    restoreGate,
+    explorationGate,
+    universeGate,
+    setStatus: (message) => setText(status, message),
+  });
   router = createRouter(APP_ROUTES, {
-    onRoute: createAppRouteHandler({
-      appView,
-      store,
-      restoreGate,
-      explorationGate,
-      universeGate,
-      setStatus: (message) => setText(status, message),
-    }),
+    onRoute: routeHandler,
   });
 
-  bindNavigation(router);
+  const unbindNavigation = bindNavigation(router);
   router.start();
-  return { router, store };
+  return {
+    router,
+    store,
+    destroy() {
+      routeHandler.dispose();
+      router.destroy();
+      unbindNavigation();
+      unsubscribe();
+      commandTrigger?.removeEventListener("click", onCommandTrigger);
+      collapseToggle?.removeEventListener("click", onCollapse);
+      hideToggle?.removeEventListener("click", onHide);
+      railRestore?.removeEventListener("click", onRestore);
+      closePersonSheet();
+      destroyUniverse();
+    },
+  };
 }
 
 if (document.readyState === "loading") {

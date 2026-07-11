@@ -24,23 +24,55 @@ function normaliseV2Path(path) {
   return `${target.pathname}${target.search}`;
 }
 
-async function request(path, { method = "GET", body, headers = {} } = {}) {
+export class ApiError extends Error {
+  constructor(status, message, payload = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = Number(status) || 0;
+    this.publicMessage = message;
+    this.payload = payload;
+  }
+}
+
+async function request(path, { method = "GET", body, headers = {}, signal } = {}) {
   const options = { method, headers: { ...headers } };
+  if (signal) options.signal = signal;
   if (body !== undefined) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
 
   const response = await fetch(path, options);
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-  return response.status === 204 ? {} : response.json();
+  if (response.status === 204) {
+    if (!response.ok) throw new ApiError(response.status, `Request failed: ${response.status}`);
+    return {};
+  }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    const message = typeof payload?.error === "string" && payload.error.trim()
+      ? payload.error.trim()
+      : `Request failed: ${response.status}`;
+    throw new ApiError(response.status, message, payload);
+  }
+  return payload ?? {};
 }
 
-export function postV2(path, payload = {}) {
+export function getV2(path, { signal } = {}) {
+  return request(normaliseV2Path(path), { method: "GET", signal });
+}
+
+export function postV2(path, payload = {}, { signal } = {}) {
   const body = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   return request(normaliseV2Path(path), {
     method: "POST",
     body: { ...body, schema_version: V2_SCHEMA_VERSION },
+    signal,
   });
 }
 
