@@ -48,14 +48,27 @@ function renderHealthMetrics(root, mediaPayload, diagnosticsPayload, { mediaSett
   const provider = objectValue(diagnostics.provider_attempt_health);
   const providerAttempts = provider.basis === "historical_attempts" ? observedCount(provider.attempts_total) : null;
   const audit = objectValue(diagnostics.media_audit);
+  const observabilityLimits = objectValue(diagnostics.observability_limits);
+  const auditWindow = objectValue(observabilityLimits.media_audit_window);
   const auditTotal = observedCount(audit.total);
   const auditReady = observedCount(audit.ready);
-  const auditDetails = [
+  const auditWindowRows = observedCount(auditWindow.rows_audited);
+  const auditWindowBatches = observedCount(auditWindow.selected_batches);
+  const auditWindowKnown = auditWindow.scope === "recent_recommendation_batches"
+    && auditWindowRows !== null
+    && auditWindowRows === auditTotal;
+  const auditDetails = auditWindowKnown ? [
     ["降级", observedCount(audit.degraded)],
     ["歧义", observedCount(audit.ambiguous)],
     ["缺失", observedCount(audit.missing)],
-    ["错图候选", observedCount(audit.wrong_identity_candidates)],
-  ].filter((entry) => entry[1] !== null).map(([label, count]) => `${label} ${count}`).join(" · ");
+  ].filter((entry) => entry[1] !== null).map(([label, count]) => `${label} ${count}`) : [];
+  if (auditWindowKnown) {
+    auditDetails.push(`${auditWindowBatches === null ? "—" : auditWindowBatches} 个最近批次`, `${auditWindowRows} 行`);
+    if (auditWindow.truncated === true) auditDetails.push("窗口已截断");
+  }
+  const wrongIdentityScopeKnown = observabilityLimits.wrong_identity_candidates_scope === "global_historical_identity_rejected_hard_conflicts"
+    && observabilityLimits.recommendation_media_identity_attribution === "unavailable_without_stable_foreign_key";
+  const wrongIdentityCandidates = wrongIdentityScopeKnown ? observedCount(audit.wrong_identity_candidates) : null;
   const appVersion = typeof diagnostics.app_version === "string" && diagnostics.app_version && diagnostics.app_version !== "unknown"
     ? diagnostics.app_version
     : null;
@@ -65,7 +78,8 @@ function renderHealthMetrics(root, mediaPayload, diagnosticsPayload, { mediaSett
     metric("缓存占用", cacheBytes === null ? "—" : bytesText(cacheBytes), cacheBytes === null ? (diagnosticsSettled ? "尚未提供" : "正在读取") : "只读统计"),
     metric("交付边界", media.delivery === "local-only" ? "仅本地" : "—", typeof media.delivery === "string" && media.delivery ? media.delivery : "尚未提供"),
     metric("Provider attempts", providerAttempts === null ? "—" : countText(providerAttempts), providerAttempts === null ? "尚未提供" : "历史 attempts"),
-    metric("媒体审计", auditTotal !== null && auditReady !== null ? `${auditReady} / ${auditTotal}` : "—", auditDetails || "尚未提供"),
+    metric("媒体审计（最近有界窗口）", auditWindowKnown && auditReady !== null ? `${auditReady} / ${auditTotal}` : "—", auditDetails.join(" · ") || "尚未提供"),
+    metric("全局历史错图候选", wrongIdentityCandidates === null ? "—" : countText(wrongIdentityCandidates), wrongIdentityCandidates === null ? "尚未提供" : "无法归属具体推荐行"),
     metric("Diagnostics", appVersion || "—", appVersion ? "应用版本" : "尚未提供"),
   );
   const persistentQueue = objectValue(diagnostics.persistent_queue_states);

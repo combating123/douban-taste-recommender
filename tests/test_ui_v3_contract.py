@@ -2939,12 +2939,21 @@ class UiV3ContractTests(unittest.TestCase):
               provider_attempt_health: {{ basis: "historical_attempts", attempts_total: 7, status_counts: {{ ready: 3, provider_error: 1 }} }},
               persistent_queue_states: {{ queued: 4, degraded: 2 }},
               media_audit: {{ total: 10, ready: 6, degraded: 2, ambiguous: 1, missing: 1, wrong_identity_candidates: 1 }},
+              observability_limits: {{
+                media_audit_window: {{ scope: "recent_recommendation_batches", ordering: "created_at_desc_then_id_desc", batch_limit: 32, row_limit: 256, selected_batches: 2, rows_audited: 10, truncated: false }},
+                wrong_identity_candidates_scope: "global_historical_identity_rejected_hard_conflicts",
+                recommendation_media_identity_attribution: "unavailable_without_stable_foreign_key",
+              }},
             }});
             firstMedia.resolve({{ assets: {{ total: 12, bytes: 4096 }}, jobs: {{ queued: 2 }}, delivery: "local-only" }});
             await first.ready;
             const mergedText = root.textContent;
             if (!mergedText.includes("8 KB") || !mergedText.includes("7") || !mergedText.includes("历史 attempts")) throw new Error("diagnostics metrics were not merged");
-            if (!mergedText.includes("6 / 10") || !mergedText.includes("错图候选 1")) throw new Error("media audit was not rendered from real fields");
+            const metricCards = collectNodes(root).filter((node) => node.tagName === "ARTICLE");
+            const auditCard = metricCards.find((card) => card.children[0]?.textContent === "媒体审计（最近有界窗口）");
+            const wrongIdentityCard = metricCards.find((card) => card.children[0]?.textContent === "全局历史错图候选");
+            if (!auditCard || !auditCard.textContent.includes("6 / 10") || auditCard.textContent.includes("错图候选")) throw new Error("bounded row media audit scope was misleading");
+            if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("1") || !wrongIdentityCard.textContent.includes("无法归属具体推荐行")) throw new Error("global historical wrong-identity scope was not explicit");
 
             const second = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}) }});
             await Promise.resolve();
@@ -2964,6 +2973,41 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(2, result["paths"].count("/api/v2/media/health"))
         self.assertEqual(2, result["paths"].count("/api/v2/diagnostics"))
         self.assertTrue(result["staleAborted"])
+
+    def test_health_wrong_identity_scope_fails_closed_when_observability_is_unknown(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const fetchJson = async (path) => {{
+              if (path === "/api/v2/media/health") return {{ assets: {{ total: 4, bytes: 1024 }}, jobs: {{}}, delivery: "local-only" }};
+              if (path === "/api/v2/diagnostics") return {{
+                media_audit: {{ total: 4, ready: 3, degraded: 0, ambiguous: 0, missing: 1, wrong_identity_candidates: 5 }},
+                observability_limits: {{
+                  media_audit_window: {{ scope: "recent_recommendation_batches", ordering: "created_at_desc_then_id_desc", batch_limit: 32, row_limit: 256, selected_batches: 1, rows_audited: 4, truncated: false }},
+                  wrong_identity_candidates_scope: "unknown",
+                  recommendation_media_identity_attribution: "unknown",
+                }},
+              }};
+              throw new Error(path);
+            }};
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const root = new FakeElement("main");
+            const controller = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}) }});
+            await controller.ready;
+            const cards = collectNodes(root).filter((node) => node.tagName === "ARTICLE");
+            const auditCard = cards.find((card) => card.children[0]?.textContent === "媒体审计（最近有界窗口）");
+            const wrongIdentityCard = cards.find((card) => card.children[0]?.textContent === "全局历史错图候选");
+            if (!auditCard || !auditCard.textContent.includes("3 / 4") || auditCard.textContent.includes("错图候选")) throw new Error("row audit did not remain separate");
+            if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("—") || !wrongIdentityCard.textContent.includes("尚未提供") || wrongIdentityCard.textContent.includes("5")) throw new Error("unknown global scope did not fail closed");
+            controller.dispose();
+            console.log(JSON.stringify({{ audit: auditCard.textContent, wrongIdentity: wrongIdentityCard.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("3 / 4", result["audit"])
+        self.assertIn("—", result["wrongIdentity"])
+        self.assertIn("尚未提供", result["wrongIdentity"])
 
     def test_sync_cookie_stays_in_tab_session_and_public_snapshots_use_auto_pagination(self):
         prelude = fake_dom_module_prelude()

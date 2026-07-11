@@ -18,6 +18,7 @@ from douban_recommender.media.store import MediaStore
 from douban_recommender.media.validator import validate_image_bytes
 from douban_recommender.web import Handler
 import douban_recommender.diagnostics as diagnostics_module
+import douban_recommender.media.store as media_store_module
 import douban_recommender.web as web_module
 
 
@@ -131,6 +132,54 @@ class MediaAuditTests(unittest.TestCase):
         audit = audit_recommendation_media([], self.db)
         self.assertEqual(audit.wrong_identity_candidates, 2)
 
+    def test_duplicate_covers_batch_manifest_read_and_lookup_once_but_classify_each_row(self):
+        asset = self.put_asset("teal")
+        rows = [
+            self.row(asset.local_url, status="ready"),
+            self.row(asset.local_url, status="ambiguous"),
+            self.row(asset.local_url, status="degraded"),
+        ]
+        real_connect = diagnostics_module.sqlite3.connect
+        connection_count = 0
+        manifest_queries = []
+
+        class ConnectionSpy:
+            def __init__(self, delegate):
+                object.__setattr__(self, "delegate", delegate)
+
+            def __getattr__(self, name):
+                return getattr(self.delegate, name)
+
+            def __setattr__(self, name, value):
+                setattr(self.delegate, name, value)
+
+            def execute(self, sql, parameters=()):
+                if "FROM asset_files" in " ".join(str(sql).split()):
+                    manifest_queries.append(str(sql))
+                return self.delegate.execute(sql, parameters)
+
+        def connect_spy(*args, **kwargs):
+            nonlocal connection_count
+            connection_count += 1
+            return ConnectionSpy(real_connect(*args, **kwargs))
+
+        with (
+            mock.patch.object(diagnostics_module.sqlite3, "connect", side_effect=connect_spy),
+            mock.patch.object(
+                media_store_module,
+                "validate_image_bytes",
+                wraps=media_store_module.validate_image_bytes,
+            ) as validation_spy,
+        ):
+            audit = audit_recommendation_media(rows, self.db)
+
+        self.assertEqual((audit.ready, audit.ambiguous, audit.degraded, audit.missing), (1, 1, 1, 0))
+        self.assertEqual(audit.ready + audit.degraded + audit.ambiguous + audit.missing, audit.total)
+        self.assertEqual(connection_count, 1)
+        self.assertEqual(len(manifest_queries), 1)
+        self.assertIn(" IN ", manifest_queries[0])
+        self.assertEqual(validation_spy.call_count, 1)
+
 
 class DiagnosticsPayloadTests(unittest.TestCase):
     def setUp(self):
@@ -231,7 +280,7 @@ class DiagnosticsPayloadTests(unittest.TestCase):
                 "cache_bytes",
                 "media_totals",
                 "media_audit",
-                "observability",
+                "observability_limits",
             },
         )
         self.assertEqual(payload["app_version"], "9.8.7")
@@ -240,7 +289,10 @@ class DiagnosticsPayloadTests(unittest.TestCase):
         self.assertEqual(payload["sync_counts"]["jobs_total"], 1)
         self.assertEqual(payload["sync_counts"]["items_total"], 1)
         self.assertEqual(payload["session_counts"]["total"], 1)
-        self.assertEqual(payload["batch_counts"], {"total": 1, "recommendation_rows": 2})
+        self.assertEqual(
+            payload["batch_counts"],
+            {"total": 1, "audit_window_batches": 1, "audit_window_rows": 2},
+        )
         self.assertEqual(payload["provider_attempt_health"]["basis"], "historical_attempts")
         self.assertEqual(payload["provider_attempt_health"]["attempts_total"], 3)
         self.assertEqual(payload["persistent_queue_states"]["degraded"], 1)
@@ -249,8 +301,28 @@ class DiagnosticsPayloadTests(unittest.TestCase):
         self.assertEqual(payload["media_audit"]["ready"], 1)
         self.assertEqual(payload["media_audit"]["missing"], 1)
         self.assertEqual(payload["media_audit"]["wrong_identity_candidates"], 1)
-        self.assertEqual(payload["observability"]["in_memory_queue_depth"], "unknown")
-        self.assertEqual(payload["observability"]["recommendation_media_identity_attribution"], "unknown")
+        limits = payload["observability_limits"]
+        self.assertEqual(limits["in_memory_queue_depth"], "unknown")
+        self.assertEqual(
+            limits["recommendation_media_identity_attribution"],
+            "unavailable_without_stable_foreign_key",
+        )
+        self.assertEqual(
+            limits["wrong_identity_candidates_scope"],
+            "global_historical_identity_rejected_hard_conflicts",
+        )
+        self.assertEqual(
+            limits["media_audit_window"],
+            {
+                "scope": "recent_recommendation_batches",
+                "ordering": "created_at_desc_then_id_desc",
+                "batch_limit": 32,
+                "row_limit": 256,
+                "selected_batches": 1,
+                "rows_audited": 2,
+                "truncated": False,
+            },
+        )
 
         text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         for forbidden in (
@@ -293,8 +365,8 @@ class DiagnosticsPayloadTests(unittest.TestCase):
             payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
         self.assertEqual(payload["app_version"], "unknown")
         self.assertEqual(payload["cache_bytes"], "unknown")
-        self.assertEqual(payload["observability"]["cache_bytes"], "unknown")
-        self.assertEqual(payload["observability"]["in_memory_queue_depth"], "unknown")
+        self.assertEqual(payload["observability_limits"]["cache_bytes"], "unknown")
+        self.assertEqual(payload["observability_limits"]["in_memory_queue_depth"], "unknown")
         self.assertNotIn("secret", json.dumps(payload, ensure_ascii=False))
 
     def test_missing_database_returns_unknown_without_creating_files_or_directories(self):
@@ -305,6 +377,64 @@ class DiagnosticsPayloadTests(unittest.TestCase):
         self.assertEqual(payload["sync_counts"], "unknown")
         self.assertEqual(payload["media_audit"], "unknown")
         self.assertEqual(payload["cache_bytes"], 0)
+        self.assertEqual(
+            payload["observability_limits"]["media_audit_window"]["selected_batches"],
+            "unknown",
+        )
+
+    def test_diagnostics_media_audit_uses_a_recent_bounded_window_and_discloses_truncation(self):
+        with self.db.connection() as connection:
+            connection.execute("DELETE FROM recommendation_batches")
+            for batch_index in range(40):
+                ready = batch_index >= 8
+                items = [
+                    {
+                        "title": f"Batch {batch_index} item {item_index}",
+                        "cover": self.asset.local_url if ready else "",
+                        "media_status": {"poster": "ready" if ready else "missing"},
+                    }
+                    for item_index in range(10)
+                ]
+                connection.execute(
+                    """
+                    INSERT INTO recommendation_batches(
+                        id, session_id, channel, batch_index, item_keys_json,
+                        reason, payload_json, created_at
+                    ) VALUES(?, 'session-a', 'top', ?, '[]', '', ?, ?)
+                    """,
+                    (
+                        f"batch-{batch_index:02d}",
+                        batch_index,
+                        json.dumps({"items": items}),
+                        float(batch_index),
+                    ),
+                )
+
+        payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
+        self.assertEqual(
+            payload["batch_counts"],
+            {"total": 40, "audit_window_batches": 32, "audit_window_rows": 256},
+        )
+        self.assertEqual(
+            {
+                key: payload["media_audit"][key]
+                for key in ("total", "ready", "degraded", "ambiguous", "missing")
+            },
+            {"total": 256, "ready": 256, "degraded": 0, "ambiguous": 0, "missing": 0},
+        )
+        self.assertEqual(payload["media_audit"]["wrong_identity_candidates"], 1)
+        self.assertEqual(
+            payload["observability_limits"]["media_audit_window"],
+            {
+                "scope": "recent_recommendation_batches",
+                "ordering": "created_at_desc_then_id_desc",
+                "batch_limit": 32,
+                "row_limit": 256,
+                "selected_batches": 32,
+                "rows_audited": 256,
+                "truncated": True,
+            },
+        )
 
 
 class DiagnosticsRouteTests(unittest.TestCase):
