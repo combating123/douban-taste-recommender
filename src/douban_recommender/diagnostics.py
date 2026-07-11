@@ -49,10 +49,17 @@ class MediaAudit:
     degraded: int
     ambiguous: int
     missing: int
-    wrong_identity_candidates: int
+    wrong_identity_candidates: int | str
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, int | str]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class HistoricalAttemptMetrics:
+    provider_health: dict[str, object] | str = UNKNOWN
+    wrong_identity_candidates: int | str = UNKNOWN
+    observed: bool = False
 
 
 class _SingleRowCursor:
@@ -138,18 +145,8 @@ def _row_is_explicitly_ambiguous(row: object) -> bool:
     )
 
 
-def _iter_attempts(connection: sqlite3.Connection) -> Iterator[dict[str, object]]:
-    for row in connection.execute("SELECT attempts_json FROM resolution_jobs"):
-        decoded = json.loads(str(row["attempts_json"] or "[]"))
-        if not isinstance(decoded, list):
-            raise ValueError("invalid attempts payload")
-        for item in decoded:
-            if isinstance(item, dict):
-                yield item
-
-
-def _wrong_identity_candidates(connection: sqlite3.Connection) -> int:
-    return _historical_attempt_metrics(connection)[1]
+def _wrong_identity_candidates(connection: sqlite3.Connection) -> int | str:
+    return _historical_attempt_metrics(connection).wrong_identity_candidates
 
 
 def _read_only_media_store(db: AppDatabase, manifests: Mapping[str, object]) -> MediaStore:
@@ -190,7 +187,7 @@ def _audit_recommendation_media(
     rows: Iterable[object],
     db: AppDatabase,
     connection: sqlite3.Connection,
-    wrong_identity_candidates: int,
+    wrong_identity_candidates: int | str,
 ) -> MediaAudit:
     recommendation_rows = list(rows)
     prepared_rows: list[tuple[object, str, re.Match[str] | None]] = []
@@ -372,35 +369,59 @@ def _recommendation_audit_window(
 
 def _historical_attempt_metrics(
     connection: sqlite3.Connection,
-) -> tuple[dict[str, object] | str, int]:
+) -> HistoricalAttemptMetrics:
     status_counts = {status.replace("-", "_"): 0 for status in ATTEMPT_STATUSES}
     status_counts[UNKNOWN] = 0
     provider_counts = {provider: 0 for provider in KNOWN_PROVIDERS}
     provider_counts[UNKNOWN] = 0
     attempts_total = 0
     wrong_identity_candidates = 0
-    for attempt in _iter_attempts(connection):
-        attempts_total += 1
-        status = str(attempt.get("status") or "").strip().lower()
-        status_key = status.replace("-", "_") if status in ATTEMPT_STATUSES else UNKNOWN
-        status_counts[status_key] += 1
-        provider = str(attempt.get("source") or "").strip().lower()
-        provider_counts[provider if provider in provider_counts and provider != UNKNOWN else UNKNOWN] += 1
-        raw_reasons = attempt.get("reasons")
-        reasons = raw_reasons if isinstance(raw_reasons, (list, tuple)) else ()
-        normalized = {str(reason or "").strip().lower() for reason in reasons}
-        if status == "identity-rejected" and normalized & HARD_IDENTITY_CONFLICTS:
-            wrong_identity_candidates += 1
-    if attempts_total == 0:
-        return UNKNOWN, 0
-    return (
-        {
+    invalid_history = False
+    try:
+        rows = connection.execute("SELECT attempts_json FROM resolution_jobs")
+        for row in rows:
+            try:
+                decoded = json.loads(str(row["attempts_json"] or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                invalid_history = True
+                continue
+            if not isinstance(decoded, list):
+                invalid_history = True
+                continue
+            for attempt in decoded:
+                if not isinstance(attempt, dict):
+                    invalid_history = True
+                    continue
+                status = str(attempt.get("status") or "").strip().lower()
+                if not status:
+                    invalid_history = True
+                    continue
+                attempts_total += 1
+                status_key = status.replace("-", "_") if status in ATTEMPT_STATUSES else UNKNOWN
+                status_counts[status_key] += 1
+                provider = str(attempt.get("source") or "").strip().lower()
+                provider_counts[
+                    provider if provider in provider_counts and provider != UNKNOWN else UNKNOWN
+                ] += 1
+                raw_reasons = attempt.get("reasons")
+                reasons = raw_reasons if isinstance(raw_reasons, (list, tuple)) else ()
+                normalized = {str(reason or "").strip().lower() for reason in reasons}
+                if status == "identity-rejected" and normalized & HARD_IDENTITY_CONFLICTS:
+                    wrong_identity_candidates += 1
+    except Exception:
+        return HistoricalAttemptMetrics()
+
+    if invalid_history or attempts_total == 0:
+        return HistoricalAttemptMetrics()
+    return HistoricalAttemptMetrics(
+        provider_health={
             "basis": "historical_attempts",
             "attempts_total": attempts_total,
             "status_counts": status_counts,
             "provider_counts": provider_counts,
         },
-        wrong_identity_candidates,
+        wrong_identity_candidates=wrong_identity_candidates,
+        observed=True,
     )
 
 
@@ -508,7 +529,7 @@ def build_diagnostics(
     observability_limits["cache_bytes"] = "observed" if cache_bytes != UNKNOWN else UNKNOWN
 
     recommendation_rows: list[dict[str, object]] | None = None
-    wrong_identity_candidates: int | None = None
+    attempt_metrics = HistoricalAttemptMetrics()
     try:
         with _read_only_connection(db.path) as connection:
             try:
@@ -531,12 +552,13 @@ def build_diagnostics(
                 payload["batch_counts"] = UNKNOWN
                 recommendation_rows = None
             try:
-                provider_health, wrong_identity_candidates = _historical_attempt_metrics(connection)
-                payload["provider_attempt_health"] = provider_health
+                attempt_metrics = _historical_attempt_metrics(connection)
+                payload["provider_attempt_health"] = attempt_metrics.provider_health
                 observability_limits["provider_health"] = (
-                    "historical_attempts" if provider_health != UNKNOWN else UNKNOWN
+                    "historical_attempts" if attempt_metrics.observed else UNKNOWN
                 )
             except Exception:
+                attempt_metrics = HistoricalAttemptMetrics()
                 payload["provider_attempt_health"] = UNKNOWN
             try:
                 payload["persistent_queue_states"] = _fixed_state_counts(
@@ -549,18 +571,19 @@ def build_diagnostics(
                 payload["media_totals"] = _media_totals(connection)
             except Exception:
                 payload["media_totals"] = UNKNOWN
-            if recommendation_rows is not None and wrong_identity_candidates is not None:
+            if recommendation_rows is not None:
                 try:
                     payload["media_audit"] = _audit_recommendation_media(
                         recommendation_rows,
                         db,
                         connection,
-                        wrong_identity_candidates,
+                        attempt_metrics.wrong_identity_candidates,
                     ).to_dict()
-                    observability_limits["wrong_identity_candidates_scope"] = WRONG_IDENTITY_SCOPE
-                    observability_limits["recommendation_media_identity_attribution"] = (
-                        MISSING_IDENTITY_FOREIGN_KEY
-                    )
+                    if attempt_metrics.observed:
+                        observability_limits["wrong_identity_candidates_scope"] = WRONG_IDENTITY_SCOPE
+                        observability_limits["recommendation_media_identity_attribution"] = (
+                            MISSING_IDENTITY_FOREIGN_KEY
+                        )
                 except Exception:
                     payload["media_audit"] = UNKNOWN
     except Exception:

@@ -2982,7 +2982,7 @@ class UiV3ContractTests(unittest.TestCase):
             const fetchJson = async (path) => {{
               if (path === "/api/v2/media/health") return {{ assets: {{ total: 4, bytes: 1024 }}, jobs: {{}}, delivery: "local-only" }};
               if (path === "/api/v2/diagnostics") return {{
-                media_audit: {{ total: 4, ready: 3, degraded: 0, ambiguous: 0, missing: 1, wrong_identity_candidates: 5 }},
+                media_audit: {{ total: 4, ready: 3, degraded: 0, ambiguous: 0, missing: 1, wrong_identity_candidates: "unknown" }},
                 observability_limits: {{
                   media_audit_window: {{ scope: "recent_recommendation_batches", ordering: "created_at_desc_then_id_desc", batch_limit: 32, row_limit: 256, selected_batches: 1, rows_audited: 4, truncated: false }},
                   wrong_identity_candidates_scope: "unknown",
@@ -2999,7 +2999,7 @@ class UiV3ContractTests(unittest.TestCase):
             const auditCard = cards.find((card) => card.children[0]?.textContent === "媒体审计（最近有界窗口）");
             const wrongIdentityCard = cards.find((card) => card.children[0]?.textContent === "全局历史错图候选");
             if (!auditCard || !auditCard.textContent.includes("3 / 4") || auditCard.textContent.includes("错图候选")) throw new Error("row audit did not remain separate");
-            if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("—") || !wrongIdentityCard.textContent.includes("尚未提供") || wrongIdentityCard.textContent.includes("5")) throw new Error("unknown global scope did not fail closed");
+            if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("—") || !wrongIdentityCard.textContent.includes("尚未提供") || wrongIdentityCard.textContent.includes("0")) throw new Error("unknown global scope rendered a fabricated zero");
             controller.dispose();
             console.log(JSON.stringify({{ audit: auditCard.textContent, wrongIdentity: wrongIdentityCard.textContent }}));
             '''

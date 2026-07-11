@@ -59,7 +59,14 @@ class MediaAuditTests(unittest.TestCase):
         audit = audit_recommendation_media([self.row(asset.local_url)], self.db)
         self.assertEqual(
             audit,
-            MediaAudit(total=1, ready=1, degraded=0, ambiguous=0, missing=0, wrong_identity_candidates=0),
+            MediaAudit(
+                total=1,
+                ready=1,
+                degraded=0,
+                ambiguous=0,
+                missing=0,
+                wrong_identity_candidates="unknown",
+            ),
         )
 
     def test_empty_external_invalid_and_unmanifested_covers_are_missing(self):
@@ -251,6 +258,98 @@ class DiagnosticsPayloadTests(unittest.TestCase):
                 """,
                 (json.dumps(attempts),),
             )
+
+    def set_attempts_json(self, value):
+        encoded = value if isinstance(value, str) else json.dumps(value)
+        with self.db.connection() as connection:
+            connection.execute(
+                "UPDATE resolution_jobs SET attempts_json = ? WHERE id = 'media-a'",
+                (encoded,),
+            )
+
+    def assert_bounded_row_audit_remains_observed(self, payload):
+        self.assertEqual(
+            {
+                key: payload["media_audit"][key]
+                for key in ("total", "ready", "degraded", "ambiguous", "missing")
+            },
+            {"total": 2, "ready": 1, "degraded": 0, "ambiguous": 0, "missing": 1},
+        )
+        self.assertEqual(
+            payload["observability_limits"]["media_audit_window"],
+            {
+                "scope": "recent_recommendation_batches",
+                "ordering": "created_at_desc_then_id_desc",
+                "batch_limit": 32,
+                "row_limit": 256,
+                "selected_batches": 1,
+                "rows_audited": 2,
+                "truncated": False,
+            },
+        )
+
+    def assert_global_attempts_unknown(self, payload):
+        self.assertEqual(payload["provider_attempt_health"], "unknown")
+        self.assertEqual(payload["media_audit"]["wrong_identity_candidates"], "unknown")
+        self.assertEqual(
+            payload["observability_limits"]["wrong_identity_candidates_scope"],
+            "unknown",
+        )
+        self.assertEqual(
+            payload["observability_limits"]["recommendation_media_identity_attribution"],
+            "unknown",
+        )
+
+    def test_empty_attempt_history_keeps_row_audit_but_global_attempt_fields_unknown(self):
+        self.set_attempts_json([])
+        payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
+        self.assert_bounded_row_audit_remains_observed(payload)
+        self.assert_global_attempts_unknown(payload)
+
+    def test_corrupt_attempt_history_keeps_row_audit_and_does_not_leak_error_text(self):
+        self.set_attempts_json('{"token":"corrupt-attempt-secret"')
+        payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
+        self.assert_bounded_row_audit_remains_observed(payload)
+        self.assert_global_attempts_unknown(payload)
+        self.assertNotIn("corrupt-attempt-secret", json.dumps(payload, ensure_ascii=False))
+
+    def test_unavailable_attempt_table_keeps_row_audit_but_global_attempt_fields_unknown(self):
+        with self.db.connection() as connection:
+            connection.execute("DROP TABLE resolution_jobs")
+        payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
+        self.assert_bounded_row_audit_remains_observed(payload)
+        self.assert_global_attempts_unknown(payload)
+
+    def test_observed_attempt_without_hard_conflict_reports_true_zero_and_known_scope(self):
+        self.set_attempts_json([{"source": "tmdb", "status": "miss"}])
+        payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
+        self.assert_bounded_row_audit_remains_observed(payload)
+        self.assertEqual(payload["provider_attempt_health"]["attempts_total"], 1)
+        self.assertEqual(payload["media_audit"]["wrong_identity_candidates"], 0)
+        self.assertEqual(
+            payload["observability_limits"]["wrong_identity_candidates_scope"],
+            "global_historical_identity_rejected_hard_conflicts",
+        )
+        self.assertEqual(
+            payload["observability_limits"]["recommendation_media_identity_attribution"],
+            "unavailable_without_stable_foreign_key",
+        )
+
+    def test_observed_hard_conflict_attempt_reports_positive_global_count(self):
+        self.set_attempts_json(
+            [
+                {"source": "tmdb", "status": "identity-rejected", "reasons": ["year-conflict"]},
+                {"source": "tmdb", "status": "identity-rejected", "reasons": ["title", "year"]},
+            ]
+        )
+        payload = build_diagnostics(db=self.db, cache_dir=self.cache_dir)
+        self.assert_bounded_row_audit_remains_observed(payload)
+        self.assertEqual(payload["provider_attempt_health"]["attempts_total"], 2)
+        self.assertEqual(payload["media_audit"]["wrong_identity_candidates"], 1)
+        self.assertEqual(
+            payload["observability_limits"]["wrong_identity_candidates_scope"],
+            "global_historical_identity_rejected_hard_conflicts",
+        )
 
     def test_build_diagnostics_returns_only_fixed_allowlisted_aggregates(self):
         with mock.patch.object(diagnostics_module.metadata, "version", return_value="9.8.7"):
