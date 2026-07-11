@@ -23,10 +23,12 @@ class ReadmeTests(unittest.TestCase):
     def test_readme_contains_cookie_tutorial_and_privacy_copy(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("Cookie 获取教程", text)
-        self.assertIn("F12", text)
-        self.assertIn("Network / 网络", text)
+        self.assertIn("同步页的 Cookie 输入框", text)
+        self.assertIn("Cookie 只由可见输入获得", text)
+        self.assertIn("当前标签页 sessionStorage", text)
         self.assertIn("Cookie 只用于本机请求豆瓣页面", text)
         self.assertIn("不会保存到磁盘", text)
+        self.assertNotIn("Request Headers", text)
 
     def test_readme_explains_profile_url_is_not_cookie(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -98,6 +100,22 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("Cookie 只保存在 sessionStorage", text)
         self.assertIn("自动抓取到末页", text)
         self.assertIn("250 页", text)
+
+    def test_readme_documents_v3_default_launch_and_legacy_rollback(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        for token in (
+            "V3 是默认界面",
+            "不要求设置环境变量",
+            "首次同步",
+            "CINESCOPE_UI_VERSION=legacy",
+            "DOUBAN_RECOMMENDER_HTTP_PROXY",
+            "API Key 通过环境变量",
+            "媒体健康",
+            "清空缓存",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, text)
 
     def test_readme_documents_command_lens_channels_and_batch_terms(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")

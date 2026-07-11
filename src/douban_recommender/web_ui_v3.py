@@ -35,10 +35,10 @@ def asset_response(relative_path: str) -> tuple[bytes, str]:
 
 
 def selected_ui_version(env: Mapping[str, str] | None = None) -> str:
-    """Select the rollout-safe frontend version, defaulting to the legacy UI."""
+    """Select V3 unless the legacy UI is explicitly requested."""
 
-    source = os.environ if env is None else env
-    return "v3" if source.get("CINESCOPE_UI_VERSION", "").strip().lower() == "v3" else "legacy"
+    value = str((os.environ if env is None else env).get("CINESCOPE_UI_VERSION", "v3")).lower()
+    return "legacy" if value == "legacy" else "v3"
 
 
 def is_v3_frontend_route(path: str) -> bool:

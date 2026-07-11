@@ -98,10 +98,10 @@ class UiV3AssetTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(is_v3_frontend_route(path))
 
-    def test_selected_ui_version_defaults_to_legacy_and_accepts_v3(self):
-        self.assertEqual("legacy", selected_ui_version({}))
-        self.assertEqual("legacy", selected_ui_version({"CINESCOPE_UI_VERSION": "unexpected"}))
-        self.assertEqual("v3", selected_ui_version({"CINESCOPE_UI_VERSION": "v3"}))
+    def test_v3_is_default_and_legacy_is_explicit_opt_in(self):
+        self.assertEqual(selected_ui_version({}), "v3")
+        self.assertEqual(selected_ui_version({"CINESCOPE_UI_VERSION": "legacy"}), "legacy")
+        self.assertEqual(selected_ui_version({"CINESCOPE_UI_VERSION": "unexpected"}), "v3")
 
     def test_v3_deep_link_refresh_returns_shell(self):
         with mock.patch.dict(os.environ, {"CINESCOPE_UI_VERSION": "v3"}, clear=False):
