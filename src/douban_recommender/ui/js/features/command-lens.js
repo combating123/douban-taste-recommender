@@ -1,5 +1,6 @@
 import { postV2 } from "../core/api.js";
 import { trapFocus } from "../core/focus.js";
+import { sanitizeCommandLensChips, sanitizeNonSensitiveText } from "../core/store.js";
 
 const ARRAY_FIELDS = Object.freeze({
   media_type: "media_types",
@@ -11,7 +12,7 @@ const ARRAY_FIELDS = Object.freeze({
 });
 const NUMBER_FIELDS = new Set(["runtime_max", "episode_runtime_max", "year_min", "year_max", "quality_floor"]);
 
-let dependencies = { root: null, store: null, api: { postV2 }, onSession: null };
+let dependencies = { root: null, store: null, api: { postV2 }, onSession: null, onBeforeOpen: null };
 let lens = null;
 let intentInput = null;
 let chipList = null;
@@ -40,14 +41,7 @@ function element(tagName, className, text = "") {
 }
 
 function structuredChips(value) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((chip) => {
-    if (!chip || typeof chip !== "object" || Array.isArray(chip)) return [];
-    const key = textValue(chip.key);
-    const label = textValue(chip.label);
-    if (!key || !label || chip.value === undefined || chip.value === null) return [];
-    return [{ key, label, value: chip.value, removable: Boolean(chip.removable) }];
-  });
+  return sanitizeCommandLensChips(value);
 }
 
 function cloneIntent(intent) {
@@ -129,7 +123,12 @@ function editChip(chip, row) {
   const save = element("button", "intent-chip__save", "应用");
   save.type = "button";
   save.addEventListener("click", () => {
-    const raw = textValue(editor.value);
+    const rawInput = textValue(editor.value);
+    const raw = NUMBER_FIELDS.has(chip.key) ? rawInput : sanitizeNonSensitiveText(rawInput);
+    if (rawInput && !raw) {
+      updateStatus("检测到可能包含凭据或敏感字段的文本，已拒绝更新。", "fallback");
+      return;
+    }
     if (!raw) return;
     const value = NUMBER_FIELDS.has(chip.key) ? Number(raw) : raw;
     if (NUMBER_FIELDS.has(chip.key) && !Number.isFinite(value)) return;
@@ -247,6 +246,7 @@ export function openCommandLens(initialText = "") {
   const root = dependencies.root || document.getElementById?.("command-lens-root");
   if (!root) return null;
   dependencies.root = root;
+  dependencies.onBeforeOpen?.();
   const trigger = lens ? lensTrigger : document.activeElement;
   if (lens) closeCommandLens({ restoreFocus: false });
   lensTrigger = trigger;
@@ -274,7 +274,8 @@ export function openCommandLens(initialText = "") {
   intentInput.rows = 3;
   intentInput.maxLength = 2000;
   intentInput.placeholder = "例如：90 分钟内，悬疑但不要太压抑，最好是近十年的电影";
-  intentInput.value = textValue(initialText) || textValue(dependencies.store?.getState?.()?.commandLens?.draft);
+  intentInput.value = sanitizeNonSensitiveText(textValue(initialText), "", 2000)
+    || sanitizeNonSensitiveText(textValue(dependencies.store?.getState?.()?.commandLens?.draft), "", 2000);
   intentInput.disabled = intentPending;
   intentInput.setAttribute("aria-label", "今晚观影意图");
   submitButton = element("button", "command-lens__submit", "生成今晚片单");
@@ -300,7 +301,12 @@ export function openCommandLens(initialText = "") {
 }
 
 export async function submitIntent(text) {
-  const cleanText = textValue(text);
+  const candidate = textValue(text);
+  const cleanText = sanitizeNonSensitiveText(candidate, "", 2000);
+  if (candidate && !cleanText) {
+    updateStatus("检测到可能包含 Cookie、令牌或其他敏感凭据的文本，已拒绝提交与保存。", "fallback");
+    return null;
+  }
   if (!cleanText) {
     updateStatus("先写下一句今晚的观影线索。", "fallback");
     return null;

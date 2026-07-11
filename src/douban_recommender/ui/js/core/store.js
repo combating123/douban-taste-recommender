@@ -6,7 +6,13 @@ const RAIL_MODES = new Set(["expanded", "collapsed", "hidden"]);
 const LIBRARY_STATES = new Set(["all", "watched", "wish", "wanted", "candidate", "rated", "collect", "ready", "hidden", "archived"]);
 const SENSITIVE_KEY = /(?:cookie|api[_-]?key|authorization|headers?|token|secret|password)/i;
 const EXTERNAL_URL = /^(?:https?:)?\/\//i;
+const SENSITIVE_ASSIGNMENT = /\b(?:cookie|authorization|api[\s_-]?key|access[\s_-]?token|refresh[\s_-]?token|token|secret|password)\b\s*[:=]/i;
+const DOUBAN_COOKIE_ASSIGNMENT = /(?:^|[\s;,])(?:bid|dbcl2|ck|push_noty_num|push_doumail_num)\s*[:=]/i;
+const BEARER_SECRET = /\bbearer\s+[A-Za-z0-9._~+/=-]{6,}/i;
+const PREFIXED_SECRET = /\bsk-[A-Za-z0-9_-]{8,}\b/i;
 const SAFE_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_CANDIDATE_ID = /^[A-Za-z0-9:._~-]{1,256}$/;
+const MAX_CANDIDATE_TRAY_ITEMS = 24;
 
 function emptyChannelState() {
   return { sessionId: null, batchIndex: 0, batchIds: [] };
@@ -43,13 +49,27 @@ function browserStorage() {
   }
 }
 
-function isSafeText(value, maxLength = 512) {
-  return typeof value === "string" && value.length <= maxLength && !EXTERNAL_URL.test(value);
+export function containsSensitiveText(value) {
+  return typeof value === "string" && (
+    SENSITIVE_ASSIGNMENT.test(value)
+    || DOUBAN_COOKIE_ASSIGNMENT.test(value)
+    || BEARER_SECRET.test(value)
+    || PREFIXED_SECRET.test(value)
+  );
 }
 
-function safeText(value, fallback = "", maxLength = 512) {
+function isSafeText(value, maxLength = 512) {
+  return typeof value === "string"
+    && value.length <= maxLength
+    && !EXTERNAL_URL.test(value)
+    && !containsSensitiveText(value);
+}
+
+export function sanitizeNonSensitiveText(value, fallback = "", maxLength = 512) {
   return isSafeText(value, maxLength) ? value : fallback;
 }
+
+const safeText = sanitizeNonSensitiveText;
 
 function isSafePath(value) {
   return typeof value === "string" && value.startsWith("/") && value.length <= 512 && !EXTERNAL_URL.test(value);
@@ -59,7 +79,7 @@ function isSafeKey(key) {
   return typeof key === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(key) && !SENSITIVE_KEY.test(key);
 }
 
-function sanitizeValue(value, depth = 0) {
+export function sanitizeNonSensitiveValue(value, depth = 0) {
   if (depth > 5 || value === null) return null;
   if (typeof value === "string") return isSafeText(value) ? value : null;
   if (typeof value === "boolean") return value;
@@ -67,7 +87,7 @@ function sanitizeValue(value, depth = 0) {
   if (Array.isArray(value)) {
     return value
       .slice(0, 50)
-      .map((entry) => sanitizeValue(entry, depth + 1))
+      .map((entry) => sanitizeNonSensitiveValue(entry, depth + 1))
       .filter((entry) => entry !== null);
   }
   if (typeof value !== "object") return null;
@@ -75,7 +95,7 @@ function sanitizeValue(value, depth = 0) {
   const result = {};
   for (const [key, entry] of Object.entries(value).slice(0, 50)) {
     if (!isSafeKey(key)) continue;
-    const sanitized = sanitizeValue(entry, depth + 1);
+    const sanitized = sanitizeNonSensitiveValue(entry, depth + 1);
     if (sanitized !== null) result[key] = sanitized;
   }
   return result;
@@ -87,7 +107,7 @@ function sanitizeParams(params) {
   const result = {};
   for (const [key, value] of Object.entries(params)) {
     if (!isSafeKey(key)) continue;
-    const sanitized = sanitizeValue(value);
+    const sanitized = sanitizeNonSensitiveValue(value);
     if (sanitized !== null) result[key] = sanitized;
   }
   return result;
@@ -125,16 +145,22 @@ function sanitizeScrollByRoute(scrollByRoute) {
   return result;
 }
 
-function sanitizeChips(chips) {
+export function sanitizeCommandLensChips(chips) {
   if (!Array.isArray(chips)) return [];
   return chips.slice(0, 20).flatMap((chip) => {
     if (!chip || typeof chip !== "object" || Array.isArray(chip)) return [];
     const key = safeText(chip.key, "", 64);
     const label = safeText(chip.label, "", 160);
-    const value = sanitizeValue(chip.value);
+    const value = sanitizeNonSensitiveValue(chip.value);
     if (!key || !label || value === null) return [];
     return [{ key, label, value, removable: Boolean(chip.removable) }];
   });
+}
+
+function sanitizeCandidateIds(ids) {
+  if (!Array.isArray(ids)) return [];
+  return [...new Set(ids.filter((value) => typeof value === "string" && SAFE_CANDIDATE_ID.test(value)))]
+    .slice(-MAX_CANDIDATE_TRAY_ITEMS);
 }
 
 function sanitizeLibraryState(value) {
@@ -208,12 +234,12 @@ export function normalizeUiState(state = {}) {
     },
     scrollByRoute: sanitizeScrollByRoute(source.scrollByRoute),
     candidateTray: {
-      itemIds: sanitizeBatchIds(candidateTray.itemIds),
-      context: sanitizeValue(candidateTray.context) || {},
+      itemIds: sanitizeCandidateIds(candidateTray.itemIds),
+      context: sanitizeNonSensitiveValue(candidateTray.context) || {},
     },
     commandLens: {
       draft: safeText(commandLens.draft, "", 2000),
-      chips: sanitizeChips(commandLens.chips),
+      chips: sanitizeCommandLensChips(commandLens.chips),
     },
     rail: { mode: RAIL_MODES.has(rail.mode) ? rail.mode : "expanded" },
     library: { state: sanitizeLibraryState(library.state) },

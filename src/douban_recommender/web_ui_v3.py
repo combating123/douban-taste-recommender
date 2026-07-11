@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import unquote
 
 from .models import is_safe_route_segment
 
@@ -11,6 +13,8 @@ from .models import is_safe_route_segment
 UI_ROOT = Path(__file__).with_name("ui")
 _V3_SPACES = frozenset({"/tonight", "/universe", "/library", "/taste", "/health"})
 _TONIGHT_CHANNELS = frozenset({"movie", "series", "anime-series"})
+_SERVICE_ROOTS = frozenset({"api", "assets", "media"})
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 
 
 def load_index_html() -> str:
@@ -40,12 +44,22 @@ def selected_ui_version(env: Mapping[str, str] | None = None) -> str:
 def is_v3_frontend_route(path: str) -> bool:
     """Return whether a non-service path is a supported V3 shell deep link."""
 
-    if not isinstance(path, str) or path.startswith(("/api/", "/media/", "/assets/")):
+    if not isinstance(path, str) or not path.startswith("/") or _INVALID_PERCENT_ESCAPE.search(path):
         return False
-    if path in {"/", "/index.html"} | _V3_SPACES:
+    raw_parts = path.split("/")
+    try:
+        parts = [unquote(part, errors="strict") for part in raw_parts]
+    except UnicodeDecodeError:
+        return False
+    if any("/" in part or "\\" in part for part in parts):
+        return False
+    if len(parts) > 1 and parts[1].lower() in _SERVICE_ROOTS:
+        return False
+
+    decoded_path = "/".join(parts)
+    if decoded_path in {"/", "/index.html"} | _V3_SPACES:
         return True
 
-    parts = path.split("/")
     if len(parts) != 3 or parts[0] != "" or not is_safe_route_segment(parts[2]):
         return False
     if parts[1] in {"title", "person"}:

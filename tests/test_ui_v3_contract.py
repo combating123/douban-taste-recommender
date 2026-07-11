@@ -190,6 +190,85 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("session-series", restored["recommendation"]["channels"]["series"]["sessionId"])
         self.assertEqual(["title-1"], restored["candidateTray"]["itemIds"])
 
+    def test_command_lens_runtime_and_persisted_state_reject_sensitive_text_content(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const values = new Map();
+            const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            globalThis.localStorage = storage;
+            const {{ createEmptyUiState, createStore, persistUiState, UI_STATE_KEY }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const store = createStore(createEmptyUiState(), reduceUiState);
+            const secrets = [
+              "Authorization: Bearer top-secret-token",
+              "Cookie: bid=abc123; dbcl2=xyz987",
+              "api_key = sk-1234567890abcdef",
+              "password: cinema-secret",
+              "ck=secret-cookie-value",
+            ];
+            for (const secret of secrets) {{
+              store.dispatch({{
+                type: "commandLens/grounded",
+                draft: secret,
+                chips: [{{ key: "mood", label: secret, value: secret, removable: true }}],
+              }});
+              store.dispatch({{
+                type: "recommendation/sessionReceived",
+                session: {{ id: "safe-session", intent: {{}}, chips: [{{ key: "mood", label: "普通标签", value: secret, removable: true }}], channels: {{}} }},
+              }});
+              const runtime = JSON.stringify(store.getState());
+              if (runtime.includes(secret) || runtime.includes("top-secret-token") || runtime.includes("secret-cookie-value")) throw new Error(`runtime retained secret: ${{runtime}}`);
+              persistUiState(store.getState(), storage);
+              const serialized = values.get(UI_STATE_KEY) || "";
+              if (serialized.includes(secret) || serialized.includes("top-secret-token") || serialized.includes("secret-cookie-value")) throw new Error(`localStorage retained secret: ${{serialized}}`);
+            }}
+            store.dispatch({{
+              type: "commandLens/grounded",
+              draft: "今晚想看九十分钟以内、温暖但不俗套的华语电影",
+              chips: [{{ key: "mood", label: "温暖", value: "温暖", removable: true }}],
+            }});
+            persistUiState(store.getState(), storage);
+            const state = store.getState();
+            if (!state.commandLens.draft.includes("九十分钟") || state.commandLens.chips[0]?.value !== "温暖") throw new Error("ordinary Chinese intent was rejected");
+            console.log(JSON.stringify({{ draft: state.commandLens.draft, chips: state.commandLens.chips, serialized: values.get(UI_STATE_KEY) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("九十分钟", result["draft"])
+        self.assertEqual("温暖", result["chips"][0]["value"])
+
+    def test_command_lens_refuses_secret_submission_before_recommendation_api(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const root = new FakeElement("div");
+            let apiCalls = 0; const actions = [];
+            const store = {{
+              getState() {{ return {{ commandLens: {{ draft: "", chips: [] }}, recommendation: {{ channels: {{}} }} }}; }},
+              dispatch(action) {{ actions.push(action); }},
+            }};
+            const {{ configureCommandLens, openCommandLens, submitIntent }} = await import("{module_url('js/features/command-lens.js')}");
+            configureCommandLens({{
+              root,
+              store,
+              api: {{ async postV2(_path, payload) {{ apiCalls += 1; return {{ id: "session-1", intent: {{ free_text: payload.intent_text }}, chips: [], channels: {{}} }}; }} }},
+            }});
+            openCommandLens();
+            const rejected = await submitIntent("Authorization: Bearer sk-1234567890abcdef");
+            const status = collectNodes(root).find((node) => node.className === "command-lens__status");
+            if (rejected !== null || apiCalls !== 0 || actions.length !== 0) throw new Error("secret reached API or store");
+            if (!status?.textContent.includes("敏感")) throw new Error(`visible rejection missing: ${{status?.textContent}}`);
+            await submitIntent("今晚想看轻松的华语喜剧");
+            if (apiCalls !== 1 || !actions.some((action) => action.type === "commandLens/grounded")) throw new Error("ordinary intent was not submitted");
+            console.log(JSON.stringify({{ apiCalls, status: status.textContent, actions: actions.map((action) => action.type) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["apiCalls"])
+        self.assertIn("commandLens/grounded", result["actions"])
+
     def test_post_v2_forces_schema_and_maps_channels(self):
         output = run_node_module(
             f'''
@@ -689,6 +768,67 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual("person", result["active"]["name"])
         self.assertIn("render:person:person-7", result["events"])
+
+    def test_router_overlapping_navigation_commits_only_latest_route_and_scroll(self):
+        output = run_node_module(
+            f'''
+            import {{ createRouter }} from "{module_url('js/core/router.js')}";
+            import {{ persistUiState, restoreUiState }} from "{module_url('js/core/store.js')}";
+            const deferred = () => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }};
+            const slow = deferred(); const values = new Map(); const listeners = new Map(); const events = []; const rafs = [];
+            let deferFrames = false;
+            const browser = {{
+              location: {{ pathname: "/home" }}, scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ listeners.set(type, listener); }}, removeEventListener(type) {{ listeners.delete(type); }},
+              dispatchEvent(event) {{ return listeners.get(event.type)?.(event); }},
+              requestAnimationFrame(callback) {{ if (deferFrames) rafs.push(callback); else callback(); return rafs.length; }},
+              scrollTo(options) {{ this.scrollY = options.top; events.push(`scroll:${{options.top}}`); }},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser); globalThis.PopStateEvent = browser.PopStateEvent;
+            persistUiState({{ activePath: "/home", scrollByRoute: {{ "/fast": 88, "/slow": 777 }} }}, browser.localStorage);
+            const router = createRouter([
+              {{ pattern: "/home", name: "home" }}, {{ pattern: "/slow", name: "slow" }},
+              {{ pattern: "/fast", name: "fast" }}, {{ pattern: "/blocked", name: "blocked" }},
+            ], {{
+              async onRoute(route) {{
+                events.push(`render:${{route.name}}`);
+                if (route.name === "slow") return slow.promise;
+                if (route.name === "blocked") return false;
+                return true;
+              }},
+            }});
+            await router.start(); events.length = 0; deferFrames = true; browser.scrollY = 31;
+            const slowNavigation = router.navigate("/slow");
+            await Promise.resolve();
+            browser.scrollY = 44;
+            const fastNavigation = router.navigate("/fast");
+            for (let index = 0; index < 8 && rafs.length < 1; index += 1) await Promise.resolve();
+            if (rafs.length !== 1) throw new Error(`latest navigation did not schedule one RAF: ${{rafs.length}}`);
+            rafs.shift()();
+            await fastNavigation;
+            if (router.currentRoute?.name !== "fast" || browser.scrollY !== 88) throw new Error("fast route did not commit and restore its scroll");
+            slow.resolve(true);
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            while (rafs.length) rafs.shift()();
+            await slowNavigation; await Promise.resolve();
+            if (router.currentRoute?.name !== "fast" || browser.scrollY !== 88) throw new Error("slow route performed stale commit or scroll");
+            const saved = restoreUiState();
+            if (saved.scrollByRoute["/home"] !== 31 || events.includes("scroll:777")) throw new Error(`outgoing/stale scroll was wrong: ${{JSON.stringify({{ saved, events }})}}`);
+            const beforeBlocked = events.length;
+            const blockedNavigation = router.navigate("/blocked");
+            await blockedNavigation;
+            if (router.currentRoute?.name !== "fast" || events.slice(beforeBlocked).some((event) => event.startsWith("scroll:"))) throw new Error("onRoute false committed or restored scroll");
+            console.log(JSON.stringify({{ events, current: router.currentRoute.name, scrollY: browser.scrollY, saved: saved.scrollByRoute }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("fast", result["current"])
+        self.assertEqual(88, result["scrollY"])
+        self.assertNotIn("scroll:777", result["events"])
 
     def test_tonight_renders_distinct_counts_three_shelves_and_batch_requests(self):
         output = run_node_module(
@@ -2021,6 +2161,155 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(1, result["prevented"])
         self.assertGreater(result["draws"], 0)
 
+    def test_universe_to_slow_detail_preserves_static_dom_until_atomic_commit(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            FakeElement.prototype.getBoundingClientRect = function() {{ return {{ left: 0, top: 0, width: 900, height: 560 }}; }};
+            FakeElement.prototype.getContext = function() {{ return null; }};
+            FakeElement.prototype.removeAttribute = function(name) {{ this.attributes.delete(name); }};
+            globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {{}};
+            const root = new FakeElement("main"); let fetches = 0;
+            const universe = await import("{module_url('js/features/universe.js')}");
+            universe.configureUniverse({{ async fetchJson() {{ fetches += 1; throw new Error("interaction must be stopped"); }} }});
+            universe.renderUniverse(root, {{ focus_id: "douban:A", nodes: [{{ id: "douban:A", title: "旧宇宙节点" }}], edges: [] }});
+            const oldView = root.firstElementChild;
+            const {{ prepareRouteChange, createAppRouteHandler }} = await import("{module_url('js/app.js')}");
+            prepareRouteChange();
+            if (root.firstElementChild !== oldView || root.children.length === 0) throw new Error("prepareRouteChange blanked Universe DOM");
+            const oldNodeButton = collectNodes(oldView).find((node) => node.dataset?.nodeId === "douban:A");
+            oldNodeButton?.dispatchEvent({{ type: "click" }}); await flush();
+            if (fetches !== 0) throw new Error("preserved Universe DOM retained click interactions");
+
+            let resolveDetail; const detailReady = new Promise((resolve) => {{ resolveDetail = resolve; }});
+            const store = {{
+              state: {{ activePath: "/universe", recommendation: {{ channels: {{}} }}, candidateTray: {{ context: {{ universeFocusId: "douban:A" }} }} }},
+              getState() {{ return this.state; }}, dispatch(action) {{ if (action.type === "route/changed") this.state.activePath = action.route.path; }},
+            }};
+            const invalidations = [];
+            const universeGate = {{ invalidate(options) {{ invalidations.push(options || {{}}); if (!options?.preserveDom) root.replaceChildren(); }} }};
+            const explorationGate = {{
+              invalidate() {{}},
+              async render() {{ await detailReady; root.replaceChildren({{ id: "detail-view", textContent: "新详情", children: [], focus() {{}}, setAttribute() {{}} }}); }},
+            }};
+            const noOpGate = {{ invalidate() {{}}, async restore() {{}} }};
+            const handler = createAppRouteHandler({{
+              appView: root, store, restoreGate: noOpGate, explorationGate, universeGate,
+              prepare() {{}}, setNavigation() {{}}, setStatus() {{}}, announceRoute() {{}},
+            }});
+            const navigation = handler({{ name: "title", path: "/title/douban%3AB", params: {{ id: "douban:B" }} }});
+            await flush();
+            if (root.firstElementChild !== oldView || root.children.length === 0) throw new Error("slow detail blanked preserved Universe DOM while pending");
+            if (invalidations.length !== 1 || invalidations[0].preserveDom !== true) throw new Error("route gate did not request preserveDom invalidation");
+            resolveDetail(); await navigation;
+            if (root.firstElementChild?.id !== "detail-view") throw new Error("detail did not atomically replace preserved Universe DOM");
+            console.log(JSON.stringify({{ fetches, invalidations, final: root.firstElementChild.id }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(0, result["fetches"])
+        self.assertEqual("detail-view", result["final"])
+
+    def test_universe_nodes_expose_stable_detail_and_tonight_actions(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            FakeElement.prototype.getBoundingClientRect = function() {{ return {{ left: 0, top: 0, width: 900, height: 560 }}; }};
+            FakeElement.prototype.getContext = function() {{ return null; }};
+            FakeElement.prototype.removeAttribute = function(name) {{ this.attributes.delete(name); }};
+            globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {{}};
+            const root = new FakeElement("main"); const recommended = [];
+            const {{ configureUniverse, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            configureUniverse({{ onRecommendNode(node) {{ recommended.push(node); }} }});
+            renderUniverse(root, {{
+              focus_id: "douban:A",
+              nodes: [{{ id: "douban:A", title: "绝不能拿标题猜 ID" }}, {{ id: "derived:B", title: "节点乙" }}],
+              edges: [{{ source: "douban:A", target: "derived:B", score: 0.8, reasons: ["共同类型"] }}],
+            }});
+            const all = collectNodes(root); const rosterDetails = all.filter((node) => node.className === "universe-node-detail");
+            const rosterRecommend = all.filter((node) => node.className === "universe-node-recommend");
+            const relation = all.find((node) => node.className === "relationship-list__item");
+            const relationNodes = collectNodes(relation);
+            const relationDetail = relationNodes.find((node) => node.className === "relationship-list__detail");
+            const relationRecommend = relationNodes.find((node) => node.className === "relationship-list__recommend");
+            const hrefs = rosterDetails.map((node) => node.getAttribute("href")).sort();
+            if (JSON.stringify(hrefs) !== JSON.stringify(["/title/derived%3AB", "/title/douban%3AA"])) throw new Error(`roster detail routes are not encoded stable IDs: ${{hrefs}}`);
+            if (rosterDetails.length !== 2 || rosterRecommend.length !== 2 || !relationDetail || !relationRecommend) throw new Error("every Universe node surface lacks both actions");
+            if (relationDetail.getAttribute("href") !== "/title/derived%3AB") throw new Error("relationship detail guessed a title instead of target ID");
+            rosterRecommend[1].dispatchEvent({{ type: "click" }}); relationRecommend.dispatchEvent({{ type: "click" }});
+            if (recommended.length !== 2 || recommended.some((node) => node.id !== "derived:B") || recommended.some((node) => node.id === node.title)) throw new Error("recommend action did not carry stable node identity");
+            console.log(JSON.stringify({{ hrefs, recommended }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["/title/derived%3AB", "/title/douban%3AA"], result["hrefs"])
+        self.assertEqual("derived:B", result["recommended"][0]["id"])
+
+    def test_universe_tonight_action_updates_bounded_tray_then_opens_safe_lens(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const values = new Map(); globalThis.localStorage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            const {{ createEmptyUiState, createStore, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ createUniverseRecommendationHandler, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const store = createStore(createEmptyUiState(), reduceUiState); const navigations = []; const lensTexts = [];
+            const handler = createUniverseRecommendationHandler({{
+              store,
+              navigate(path) {{ navigations.push(path); return Promise.resolve(path); }},
+              openLens(text) {{ lensTexts.push(text); }},
+            }});
+            for (let index = 0; index < 30; index += 1) await handler({{ id: `derived:${{index}}`, title: `安全节点 ${{index}}` }});
+            await handler({{ id: "derived:29", title: "重复节点" }});
+            await handler({{ id: "douban:42", title: "Authorization: Bearer sk-1234567890abcdef" }});
+            await handler({{ id: "bad/id", title: "非法节点" }});
+            const state = store.getState(); persistUiState(state); const restored = restoreUiState();
+            if (state.candidateTray.itemIds.length !== 24 || new Set(state.candidateTray.itemIds).size !== 24) throw new Error("candidate tray was not deduped and bounded");
+            if (!state.candidateTray.itemIds.includes("douban:42") || state.candidateTray.itemIds.includes("bad/id")) throw new Error("candidate tray accepted the wrong stable IDs");
+            if (restored.candidateTray.itemIds.length !== 24) throw new Error("candidate tray did not survive refresh");
+            if (navigations.length !== lensTexts.length || navigations.some((path) => path !== "/tonight")) throw new Error("Tonight navigation and Lens integration diverged");
+            if (lensTexts.at(-1)?.includes("Authorization") || lensTexts.at(-1)?.includes("sk-")) throw new Error("unsafe title entered Command Lens prefill");
+            console.log(JSON.stringify({{ tray: state.candidateTray.itemIds, restored: restored.candidateTray.itemIds, navigations: navigations.length, lastLens: lensTexts.at(-1) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(24, len(result["tray"]))
+        self.assertEqual(24, len(result["restored"]))
+        self.assertEqual(32, result["navigations"])
+
+    def test_universe_ui_expansion_error_is_visible_without_unhandled_rejection(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            FakeElement.prototype.getBoundingClientRect = function() {{ return {{ left: 0, top: 0, width: 900, height: 560 }}; }};
+            FakeElement.prototype.getContext = function() {{ return null; }};
+            FakeElement.prototype.removeAttribute = function(name) {{ this.attributes.delete(name); }};
+            globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {{}};
+            const unhandled = []; process.on("unhandledRejection", (error) => unhandled.push(error.message));
+            const root = new FakeElement("main");
+            const {{ configureUniverse, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            configureUniverse({{ async fetchJson() {{ const error = new Error("expand failed"); error.status = 503; throw error; }} }});
+            renderUniverse(root, {{
+              focus_id: "douban:A",
+              nodes: [{{ id: "douban:A", title: "节点甲" }}, {{ id: "douban:B", title: "节点乙" }}],
+              edges: [{{ source: "douban:A", target: "douban:B", score: 0.8, reasons: ["共同类型"] }}],
+            }});
+            const expand = collectNodes(root).find((node) => node.className === "relationship-list__expand");
+            expand.dispatchEvent({{ type: "click" }});
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const note = collectNodes(root).find((node) => node.className === "universe-limit-note");
+            if (!note?.textContent.includes("暂时无法继续展开") || note.hidden) throw new Error("expandNode did not render its visible error");
+            if (unhandled.length) throw new Error(`UI event leaked unhandled rejection: ${{unhandled}}`);
+            console.log(JSON.stringify({{ note: note.textContent, unhandled }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual([], result["unhandled"])
+        self.assertIn("暂时无法继续展开", result["note"])
+
     def test_universe_expansion_dedupes_requests_caps_graph_and_ignores_destroyed_responses(self):
         output = run_node_module(
             f'''
@@ -3222,6 +3511,63 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(1, result["focusCount"])
         self.assertEqual(1, result["listeners"])
         self.assertEqual(0, result["open"])
+
+    def test_command_lens_and_person_sheet_are_mutually_exclusive_with_trigger_handoff(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{ add() {{}} remove() {{}} }}
+            class FakeElement {{
+              constructor(tagName, name = "") {{
+                this.tagName = tagName.toUpperCase(); this.name = name; this.children = []; this.parentElement = null; this.parentNode = null;
+                this.attributes = new Map(); this.dataset = {{}}; this.className = ""; this.textContent = ""; this.value = "";
+                this.disabled = false; this.hidden = false; this.inert = false; this.isConnected = true; this.classList = new FakeClassList();
+                this.style = {{ setProperty() {{}} }}; this.listeners = new Map(); this.focusCount = 0;
+              }}
+              append(...nodes) {{ nodes.forEach((node) => this.appendChild(node)); }}
+              appendChild(node) {{ this.children.push(node); node.parentElement = this; node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children.forEach((node) => {{ node.parentElement = null; node.parentNode = null; node.isConnected = false; }}); this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }} getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              hasAttribute(name) {{ return this.attributes.has(name); }} removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              remove() {{ if (this.contains(document.activeElement)) document.activeElement = body; if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); this.isConnected = false; }}
+              focus() {{ document.activeElement = this; this.focusCount += 1; }}
+              contains(node) {{ for (let current = node; current; current = current.parentElement) if (current === this) return true; return false; }}
+              querySelectorAll() {{ const found = []; const visit = (node) => {{ for (const child of node.children) {{ if (["BUTTON", "A", "INPUT", "TEXTAREA"].includes(child.tagName)) found.push(child); visit(child); }} }}; visit(this); return found; }}
+              get firstElementChild() {{ return this.children[0] || null; }}
+            }}
+            const body = new FakeElement("body", "body"); const commandRoot = new FakeElement("div", "command"); const overlayRoot = new FakeElement("div", "overlay");
+            const originalTrigger = new FakeElement("button", "person-card"); body.append(originalTrigger, commandRoot, overlayRoot); const listeners = new Map();
+            globalThis.document = {{ readyState: "loading", body, activeElement: originalTrigger, createElement: (tag) => new FakeElement(tag),
+              getElementById(id) {{ if (id === "command-lens-root") return commandRoot; if (id === "overlay-root") return overlayRoot; return null; }}, querySelectorAll() {{ return []; }},
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }}, removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }} }};
+            globalThis.window = {{ matchMedia: () => ({{ matches: false }}) }}; globalThis.location = {{ origin: "https://cinescope.test" }};
+            const command = await import("{module_url('js/features/command-lens.js')}");
+            const people = await import("{module_url('js/features/people.js')}");
+            const store = {{ getState: () => ({{ commandLens: {{ draft: "", chips: [] }}, recommendation: {{ channels: {{}} }} }}), dispatch() {{}} }};
+            command.configureCommandLens({{ root: commandRoot, store, onBeforeOpen: () => people.closePersonSheet() }});
+            people.configurePeople({{ overlayRoot, onBeforeOpen: () => command.closeCommandLens(), fetchJson(_path, {{ signal }}) {{ return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {{ once: true }})); }} }});
+            originalTrigger.focus(); const firstPerson = people.openPersonSheet("person:1");
+            const modalCount = () => [commandRoot, overlayRoot].flatMap((root) => collect(root)).filter((node) => node.getAttribute?.("aria-modal") === "true").length;
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            if (modalCount() !== 1 || overlayRoot.children.length !== 1) throw new Error("person sheet did not open alone");
+            for (const listener of [...(listeners.get("keydown") || [])]) listener({{ key: "k", ctrlKey: true, metaKey: false, preventDefault() {{}} }});
+            await Promise.resolve();
+            if (modalCount() !== 1 || overlayRoot.children.length !== 0 || commandRoot.children.length !== 1) throw new Error("Ctrl+K left two modal traps active");
+            command.closeCommandLens();
+            if (document.activeElement !== originalTrigger) throw new Error("Lens did not capture the restored person trigger");
+            command.openCommandLens();
+            const secondPerson = people.openPersonSheet("person:2");
+            if (modalCount() !== 1 || commandRoot.children.length !== 0 || overlayRoot.children.length !== 1) throw new Error("opening Person Sheet did not close Lens first");
+            for (const listener of [...(listeners.get("keydown") || [])]) listener({{ key: "Escape", preventDefault() {{}} }});
+            await Promise.all([firstPerson, secondPerson]);
+            if (modalCount() !== 0 || commandRoot.children.length !== 0 || overlayRoot.children.length !== 0) throw new Error("Escape closed more than the active modal or leaked one");
+            console.log(JSON.stringify({{ modalCount: modalCount(), focus: originalTrigger.focusCount, keydownListeners: listeners.get("keydown")?.size || 0 }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(0, result["modalCount"])
+        self.assertEqual(1, result["keydownListeners"])
 
     def test_person_sheet_tabs_dynamic_content_and_route_cleanup_releases_trap(self):
         output = run_node_module(

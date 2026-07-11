@@ -89,6 +89,7 @@ async function requestJson(path, { signal } = {}) {
 let dependencies = {
   fetchJson: requestJson,
   onContextChange: () => {},
+  onRecommendNode: () => {},
 };
 let activeUniverse = null;
 let lifecycleGeneration = 0;
@@ -100,6 +101,7 @@ export function configureUniverse(options = {}) {
     ...options,
     fetchJson: options.fetchJson || dependencies.fetchJson,
     onContextChange: options.onContextChange || dependencies.onContextChange,
+    onRecommendNode: options.onRecommendNode || dependencies.onRecommendNode,
   };
 }
 
@@ -182,6 +184,32 @@ function nodeTitle(state, id) {
   return state.nodesById.get(id)?.title || id;
 }
 
+function titleRoute(id) {
+  const stableId = nodeId(id);
+  return stableId ? `/title/${encodeURIComponent(stableId)}` : "";
+}
+
+function detailAction(id, className) {
+  const link = element("a", className, "查看详情");
+  link.setAttribute("href", titleRoute(id));
+  link.setAttribute("data-route", "");
+  return link;
+}
+
+function recommendAction(state, id, className) {
+  const button = element("button", className, "带入今晚推荐");
+  button.type = "button";
+  button.addEventListener("click", () => {
+    const node = state.nodesById.get(id);
+    if (node) dependencies.onRecommendNode({ id: node.id, title: node.title });
+  });
+  return button;
+}
+
+function expandNodeFromUi(id) {
+  void expandNode(id).catch(() => {});
+}
+
 function renderEmpty(container) {
   const empty = element("section", "universe-empty route-view--enter");
   empty.append(
@@ -215,8 +243,12 @@ function relationRow(state, edge) {
   }
   const expand = element("button", "relationship-list__expand", "展开目标节点");
   expand.type = "button";
-  expand.addEventListener("click", () => { void expandNode(edge.target); });
-  controls.append(expand);
+  expand.addEventListener("click", () => expandNodeFromUi(edge.target));
+  controls.append(
+    expand,
+    detailAction(edge.target, "relationship-list__detail"),
+    recommendAction(state, edge.target, "relationship-list__recommend"),
+  );
   copy.append(route, reason, score, controls);
   item.append(media, copy);
   return item;
@@ -228,6 +260,7 @@ function rebuildSemanticView(state) {
   state.nodeButtons.clear();
   state.nodeRoster.replaceChildren();
   for (const node of state.nodesById.values()) {
+    const entry = element("div", "universe-node-entry");
     const button = element("button", "universe-node-button", node.title);
     button.type = "button";
     button.dataset.nodeId = node.id;
@@ -241,9 +274,15 @@ function rebuildSemanticView(state) {
       scheduleDraw(state);
     });
     button.addEventListener("focus", () => focusNode(node.id));
-    button.addEventListener("click", () => { focusNode(node.id); void expandNode(node.id); });
+    button.addEventListener("click", () => { focusNode(node.id); expandNodeFromUi(node.id); });
     state.nodeButtons.set(node.id, button);
-    state.nodeRoster.append(button);
+    const actions = element("div", "universe-node-actions");
+    actions.append(
+      detailAction(node.id, "universe-node-detail"),
+      recommendAction(state, node.id, "universe-node-recommend"),
+    );
+    entry.append(button, actions);
+    state.nodeRoster.append(entry);
   }
 
   state.relationList.replaceChildren();
@@ -405,7 +444,7 @@ function bindCanvas(state) {
     const drag = clearPointer(event);
     if (drag && !drag.moved) {
       const id = nearestNode(state, canvasPoint(state, event));
-      if (id) { focusNode(id); void expandNode(id); }
+      if (id) { focusNode(id); expandNodeFromUi(id); }
     }
   };
   listen(state, canvas, "pointerup", finishPointer);
@@ -432,7 +471,7 @@ function bindCanvas(state) {
       focusNode(ids[(index + direction + ids.length) % ids.length]);
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      void expandNode(state.focusedId);
+      expandNodeFromUi(state.focusedId);
     } else if (event.key === "+" || event.key === "=") {
       event.preventDefault(); state.zoom = Math.min(2.2, state.zoom * 1.1); scheduleDraw(state);
     } else if (event.key === "-") {
@@ -589,14 +628,14 @@ export function expandNode(nodeIdValue) {
   return request;
 }
 
-export function destroyUniverse() {
+export function destroyUniverse({ preserveDom = false } = {}) {
   lifecycleGeneration += 1;
   const state = activeUniverse;
   activeUniverse = null;
   const container = state?.container || universeContainer;
-  universeContainer = null;
+  universeContainer = preserveDom ? container : null;
   if (!state) {
-    container?.replaceChildren();
+    if (!preserveDom) container?.replaceChildren();
     return;
   }
   state.destroyed = true;
@@ -617,5 +656,5 @@ export function destroyUniverse() {
   state.edgesByKey.clear();
   state.positions.clear();
   state.nodeButtons.clear();
-  container?.replaceChildren();
+  if (!preserveDom) container?.replaceChildren();
 }

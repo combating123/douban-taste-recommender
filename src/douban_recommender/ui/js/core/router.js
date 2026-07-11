@@ -93,9 +93,12 @@ export function createRouter(routes, { onRoute } = {}) {
   let currentRoute = null;
   let started = false;
   let lastNavigation = Promise.resolve(null);
+  let navigationGeneration = 0;
+  let pendingDeparturePath = null;
 
   async function renderLocation(path, state) {
     const browser = browserWindow();
+    const requestGeneration = ++navigationGeneration;
     const nextRoute = routeForPath(compiledRoutes, path) ?? {
       name: "not-found",
       pattern: null,
@@ -103,16 +106,33 @@ export function createRouter(routes, { onRoute } = {}) {
       params: {},
     };
 
-    if (currentRoute && currentRoute.path !== nextRoute.path) {
+    if (
+      currentRoute
+      && currentRoute.path !== nextRoute.path
+      && pendingDeparturePath !== currentRoute.path
+    ) {
       saveScroll(currentRoute.path, browser.scrollY);
+      pendingDeparturePath = currentRoute.path;
     }
 
+    const routeResult = await onRoute(nextRoute, state);
+    if (
+      routeResult === false
+      || requestGeneration !== navigationGeneration
+      || normalisePath(browser.location.pathname) !== nextRoute.path
+    ) return null;
+
     currentRoute = nextRoute;
+    pendingDeparturePath = null;
     persistActiveRoute(nextRoute);
-    await onRoute(nextRoute, state);
 
     const savedPosition = restoreUiState().scrollByRoute[nextRoute.path] ?? 0;
     await nextFrame(browser);
+    if (
+      requestGeneration !== navigationGeneration
+      || currentRoute !== nextRoute
+      || normalisePath(browser.location.pathname) !== nextRoute.path
+    ) return null;
     browser.scrollTo({ top: savedPosition, left: 0, behavior: "auto" });
     return nextRoute;
   }
@@ -147,6 +167,8 @@ export function createRouter(routes, { onRoute } = {}) {
       if (!started) return;
       browserWindow().removeEventListener("popstate", onPopState);
       started = false;
+      navigationGeneration += 1;
+      pendingDeparturePath = null;
     },
   };
 }

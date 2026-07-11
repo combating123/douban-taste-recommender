@@ -134,7 +134,11 @@
 
 .relationship-list__focus,
 .relationship-list__expand,
+.relationship-list__detail,
+.relationship-list__recommend,
 .universe-node-button,
+.universe-node-detail,
+.universe-node-recommend,
 .universe-empty__action {
   min-width: 0;
   border: 1px solid var(--line);
@@ -147,15 +151,29 @@
 }
 
 .relationship-list__focus,
-.relationship-list__expand { padding: 0.42rem 0.62rem; font-size: 0.76rem; cursor: pointer; }
+.relationship-list__expand,
+.relationship-list__detail,
+.relationship-list__recommend { padding: 0.42rem 0.62rem; font-size: 0.76rem; cursor: pointer; }
 .relationship-list__expand { color: var(--signal); border-color: rgba(200, 168, 107, 0.3); }
+.relationship-list__detail,
+.universe-node-detail { display: inline-flex; align-items: center; }
+.relationship-list__recommend,
+.universe-node-recommend { color: var(--signal); border-color: rgba(200, 168, 107, 0.3); cursor: pointer; }
 
 .relationship-list__focus:hover,
 .relationship-list__focus:focus-visible,
 .relationship-list__expand:hover,
 .relationship-list__expand:focus-visible,
+.relationship-list__detail:hover,
+.relationship-list__detail:focus-visible,
+.relationship-list__recommend:hover,
+.relationship-list__recommend:focus-visible,
 .universe-node-button:hover,
 .universe-node-button:focus-visible,
+.universe-node-detail:hover,
+.universe-node-detail:focus-visible,
+.universe-node-recommend:hover,
+.universe-node-recommend:focus-visible,
 .universe-empty__action:hover,
 .universe-empty__action:focus-visible { transform: translateY(-2px); opacity: 0.88; }
 
@@ -166,6 +184,20 @@
 }
 
 .universe-node-roster { display: flex; flex-wrap: wrap; gap: 0.55rem; }
+
+.universe-node-entry {
+  display: grid;
+  gap: 0.42rem;
+  max-width: min(100%, 22rem);
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.universe-node-actions { display: flex; flex-wrap: wrap; gap: 0.38rem; }
+.universe-node-detail,
+.universe-node-recommend { padding: 0.38rem 0.58rem; font-size: 0.74rem; }
 
 .universe-node-button {
   max-width: min(100%, 18rem);
@@ -221,6 +253,10 @@
 @media (prefers-reduced-motion: reduce) {
   .relationship-list__focus,
   .relationship-list__expand,
+  .relationship-list__detail,
+  .relationship-list__recommend,
   .universe-node-button,
+  .universe-node-detail,
+  .universe-node-recommend,
   .universe-empty__action { transition-duration: 1ms; }
 }

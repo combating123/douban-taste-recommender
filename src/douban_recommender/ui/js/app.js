@@ -1,7 +1,7 @@
 import { renderRoutePlaceholder, setCurrentNavigation, setText } from "./core/dom.js";
 import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
-import { createStore, persistUiState, restoreUiState } from "./core/store.js";
+import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, sanitizeNonSensitiveText, sanitizeNonSensitiveValue } from "./core/store.js";
 import { announce } from "./core/focus.js";
 import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
@@ -198,6 +198,17 @@ export function reduceUiState(state, action) {
           context: { ...state.candidateTray?.context, ...action.context },
         },
       };
+    case "candidateTray/nodeAdded": {
+      const itemId = stableUniverseId(action.itemId);
+      if (!itemId) return state;
+      const itemIds = [...(Array.isArray(state.candidateTray?.itemIds) ? state.candidateTray.itemIds : [])]
+        .filter((candidateId) => candidateId !== itemId);
+      itemIds.push(itemId);
+      return {
+        ...state,
+        candidateTray: { ...state.candidateTray, itemIds: itemIds.slice(-24) },
+      };
+    }
     case "recommendation/sessionReceived":
       if (action.source === "restore") {
         const expectedChannel = action.channel;
@@ -212,12 +223,12 @@ export function reduceUiState(state, action) {
         ...state,
         commandLens: {
           ...state.commandLens,
-          chips: Array.isArray(action.session?.chips) ? action.session.chips : state.commandLens.chips,
+          chips: Array.isArray(action.session?.chips) ? sanitizeCommandLensChips(action.session.chips) : state.commandLens.chips,
         },
         recommendation: {
           ...state.recommendation,
           sessionId: action.session?.id || state.recommendation.sessionId,
-          intent: action.session?.intent && typeof action.session.intent === "object" ? action.session.intent : {},
+          intent: sanitizeNonSensitiveValue(action.session?.intent) || {},
           intentSessionId: action.session?.id || null,
           channels: backendChannelsToState(action.session, state.recommendation.channels, {
             preserveOtherSessions: action.source === "restore",
@@ -245,7 +256,10 @@ export function reduceUiState(state, action) {
     case "commandLens/grounded":
       return {
         ...state,
-        commandLens: { draft: action.draft || "", chips: Array.isArray(action.chips) ? action.chips : [] },
+        commandLens: {
+          draft: sanitizeNonSensitiveText(action.draft, "", 2000),
+          chips: sanitizeCommandLensChips(action.chips),
+        },
       };
     default:
       return state;
@@ -284,7 +298,7 @@ function bindNavigation(router) {
 export function prepareRouteChange() {
   closeCommandLens({ restoreFocus: false });
   closePersonSheet({ restoreFocus: false });
-  destroyUniverse();
+  destroyUniverse({ preserveDom: true });
 }
 
 function stableUniverseId(value) {
@@ -301,9 +315,9 @@ export function createUniverseRouteGate({
   setStatus = () => {},
 } = {}) {
   let generation = 0;
-  const invalidate = () => {
+  const invalidate = (options = {}) => {
     generation += 1;
-    destroy();
+    destroy(options);
     return generation;
   };
   const renderRoute = async () => {
@@ -337,6 +351,18 @@ export function createUniverseExplorer({ store, navigate = () => {} } = {}) {
       context: { universeFocusId: focusId, expandedIds: Array.isArray(previous.expandedIds) ? previous.expandedIds : [] },
     });
     return navigate("/universe");
+  };
+}
+
+export function createUniverseRecommendationHandler({ store, navigate = () => {}, openLens = openCommandLens } = {}) {
+  return async (node) => {
+    const itemId = stableUniverseId(node?.id);
+    if (!itemId || !store?.dispatch) return false;
+    store.dispatch({ type: "candidateTray/nodeAdded", itemId });
+    await Promise.resolve(navigate("/tonight"));
+    const title = sanitizeNonSensitiveText(textValue(node?.title), "这部作品", 160) || "这部作品";
+    openLens(`以《${title}》为线索，生成今晚推荐；请确认或补充条件。`);
+    return true;
   };
 }
 
@@ -484,7 +510,7 @@ export function createAppRouteHandler({
       renderTonightView(store.getState());
       await restoreGate.restore(route, heading);
     } else if (route.name === "title" || route.name === "person") {
-      universeGate.invalidate();
+      universeGate.invalidate({ preserveDom: true });
       restoreGate.invalidate();
       await explorationGate.render(route, heading);
     } else if (route.name === "universe") {
@@ -564,9 +590,24 @@ export function bootstrapCineScopeShell() {
       renderTonight(state);
     }
   });
-  configureCommandLens({ root: document.getElementById("command-lens-root"), store, api: { postV2 } });
+  configureCommandLens({
+    root: document.getElementById("command-lens-root"),
+    store,
+    api: { postV2 },
+    onBeforeOpen: () => closePersonSheet(),
+  });
   configureTonight({ store, api: { postV2 }, root: appView, openCommandLens });
-  configurePeople({ root: appView, overlayRoot: document.getElementById("overlay-root") });
+  configurePeople({
+    root: appView,
+    overlayRoot: document.getElementById("overlay-root"),
+    onBeforeOpen: () => closeCommandLens(),
+  });
+  let router = null;
+  const recommendUniverseNode = createUniverseRecommendationHandler({
+    store,
+    navigate: (path) => router?.navigate(path),
+    openLens: openCommandLens,
+  });
   configureUniverse({
     onContextChange: (context) => {
       const previous = store.getState().candidateTray?.context || {};
@@ -576,8 +617,8 @@ export function bootstrapCineScopeShell() {
       ])].slice(-36);
       store.dispatch({ type: "universe/contextChanged", context: { ...context, expandedIds } });
     },
+    onRecommendNode: recommendUniverseNode,
   });
-  let router = null;
   const exploreUniverse = createUniverseExplorer({ store, navigate: (path) => router?.navigate(path) });
   configureDetail({
     root: appView,

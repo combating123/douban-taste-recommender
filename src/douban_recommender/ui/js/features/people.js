@@ -35,6 +35,7 @@ let dependencies = {
   root: null,
   overlayRoot: null,
   fetchJson: requestJson,
+  onBeforeOpen: null,
 };
 let titleContext = null;
 let closeActiveSheet = null;
@@ -178,6 +179,7 @@ export async function openPersonSheet(personId, originRect = null) {
   const cleanId = apiRouteSegment(personId);
   if (!cleanId) return null;
   const reopenTrigger = activeSheetTrigger;
+  dependencies.onBeforeOpen?.();
   closePersonSheet({ restoreFocus: false });
 
   const overlayRoot = dependencies.overlayRoot || document.getElementById("overlay-root");
