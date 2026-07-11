@@ -1635,7 +1635,7 @@ class UiV3ContractTests(unittest.TestCase):
             await openPersonSheet("person:1", {{ left: 0, top: 0, width: 1, height: 1 }});
             nodes = collect(overlayRoot);
             nodes.find((node) => node.className === "person-sheet__full-link").onclick();
-            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 3) throw new Error("full-page navigation left the sheet covering the destination");
+            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 2) throw new Error("full-page navigation covered the destination or restored stale focus");
 
             await renderPersonPage("person:1");
             nodes = collect(pageRoot);
@@ -1654,7 +1654,7 @@ class UiV3ContractTests(unittest.TestCase):
             '''
         )
         result = json.loads(output)
-        self.assertEqual(3, result["focusCount"])
+        self.assertEqual(2, result["focusCount"])
         self.assertEqual("/person/person:1", result["href"])
         self.assertIn("资料有限", result["pageText"])
 
@@ -1708,7 +1708,7 @@ class UiV3ContractTests(unittest.TestCase):
             requests[0].pending.resolve({{ id: "person:1", name: "Late person", portrait: {{ url: "", media_status: "missing" }} }});
             await originRequest;
             if (overlayRoot.children.length !== 0) throw new Error("late origin response remounted a closed sheet");
-            if (trigger.focusCount !== 1) throw new Error("connected trigger did not regain focus after origin navigation");
+            if (trigger.focusCount !== 0) throw new Error("origin route navigation restored stale sheet focus");
 
             trigger.isConnected = false;
             const routeRequest = openPersonSheet("person:1", {{ left: 1, top: 1, width: 2, height: 2 }});
@@ -1717,14 +1717,14 @@ class UiV3ContractTests(unittest.TestCase):
             if (!requests[1].signal.aborted || overlayRoot.children.length !== 0 || (listeners.get("keydown")?.size ?? 0) !== 0) throw new Error("external route change did not invalidate active sheet resources");
             requests[1].pending.resolve({{ id: "person:1", name: "Later person", portrait: {{ url: "", media_status: "missing" }} }});
             await routeRequest;
-            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 1) throw new Error("detached trigger was focused or late route response mutated overlay");
+            if (overlayRoot.children.length !== 0 || trigger.focusCount !== 0) throw new Error("detached trigger was focused or late route response mutated overlay");
             closePersonSheet();
             console.log(JSON.stringify({{ requests: requests.length, focusCount: trigger.focusCount, listeners: listeners.get("keydown")?.size ?? 0, overlay: overlayRoot.children.length }}));
             '''
         )
         result = json.loads(output)
         self.assertEqual(2, result["requests"])
-        self.assertEqual(1, result["focusCount"])
+        self.assertEqual(0, result["focusCount"])
         self.assertEqual(0, result["listeners"])
         self.assertEqual(0, result["overlay"])
 
@@ -2938,7 +2938,7 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/spaces.css" />', html)
         self.assertNotRegex(app, r'pattern:\s*["\']/sync["\']')
         self.assertNotIn('createElement("link")', app)
-        self.assertRegex(css, r"@media\s*\(max-width:\s*390px\)")
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)")
         self.assertIn("min-width: 0", css)
         self.assertIn("overflow-wrap: anywhere", css)
         declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
@@ -3028,6 +3028,282 @@ class UiV3ContractTests(unittest.TestCase):
         app_source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("createElement(\"link\")", app_source)
         self.assertNotIn("createElement('link')", app_source)
+
+    def test_focus_trap_cycles_dynamic_tabbables_releases_and_handles_escape(self):
+        output = run_node_module(
+            f'''
+            const listeners = new Map();
+            const announcer = {{ textContent: "", isConnected: true }};
+            const document = {{
+              activeElement: null,
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+              getElementById(id) {{ return id === "a11y-announcer" ? announcer : null; }},
+            }};
+            globalThis.document = document;
+            const focusable = (name) => ({{
+              name, disabled: false, hidden: false, isConnected: true,
+              focusCount: 0, focus() {{ document.activeElement = this; this.focusCount += 1; }},
+              getAttribute(attribute) {{ return attribute === "aria-hidden" ? null : null; }},
+              matches() {{ return true; }},
+            }});
+            const first = focusable("first");
+            const middle = focusable("middle");
+            const last = focusable("last");
+            const items = [first, middle];
+            const dialog = {{
+              isConnected: true,
+              contains(node) {{ return items.includes(node); }},
+              querySelectorAll() {{ return [...items]; }},
+            }};
+            let escapes = 0;
+            const {{ announce, trapFocus }} = await import("{module_url('js/core/focus.js')}");
+            const release = trapFocus(dialog, {{ onEscape() {{ escapes += 1; }} }});
+            const dispatch = (event) => {{ for (const listener of listeners.get("keydown") || []) listener(event); }};
+            let prevented = 0;
+            middle.focus();
+            dispatch({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== first) throw new Error("forward Tab did not wrap to first focusable");
+            items.push(last);
+            first.focus();
+            dispatch({{ key: "Tab", shiftKey: true, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== last) throw new Error("Shift+Tab did not include dynamically added focusable");
+            dispatch({{ key: "Escape", preventDefault() {{ prevented += 1; }} }});
+            if (escapes !== 1) throw new Error("Escape handler was not invoked once");
+            release(); release();
+            last.focus();
+            dispatch({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== last || (listeners.get("keydown")?.size || 0) !== 0) throw new Error("released trap still intercepted focus");
+            announce("First route"); announce("Latest route"); await Promise.resolve();
+            if (announcer.textContent !== "Latest route") throw new Error("persistent announcer did not publish only the latest message");
+            console.log(JSON.stringify({{ prevented, escapes, announcement: announcer.textContent, first: first.focusCount, last: last.focusCount, listeners: listeners.get("keydown")?.size || 0 }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, result["prevented"])
+        self.assertEqual(1, result["escapes"])
+        self.assertEqual("Latest route", result["announcement"])
+        self.assertEqual(0, result["listeners"])
+
+    def test_command_lens_restores_trigger_reopens_without_trap_leak_and_route_close_skips_restore(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.value = ""; this.disabled = false; this.hidden = false;
+                this.isConnected = true; this.focusCount = 0; this.listeners = new Map();
+              }}
+              append(...nodes) {{ nodes.forEach((node) => this.appendChild(node)); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children.forEach((node) => {{ node.parentNode = null; node.isConnected = false; }}); this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); this[`on${{type}}`] = listener; }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              focus() {{ document.activeElement = this; this.focusCount += 1; }}
+              querySelectorAll() {{ return this.children.flatMap((child) => [child, ...child.querySelectorAll()]).filter((node) => ["BUTTON", "TEXTAREA", "INPUT", "A"].includes(node.tagName)); }}
+              contains(node) {{ return node === this || this.children.some((child) => child.contains(node)); }}
+              get firstElementChild() {{ return this.children[0] || null; }}
+            }}
+            const root = new FakeElement("div");
+            const trigger = new FakeElement("button");
+            const listeners = new Map();
+            globalThis.document = {{
+              readyState: "loading", activeElement: trigger,
+              createElement: (tag) => new FakeElement(tag),
+              getElementById(id) {{ return id === "command-lens-root" ? root : null; }},
+              querySelectorAll() {{ return []; }},
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+            }};
+            globalThis.window = {{ matchMedia: () => ({{ matches: false }}) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ closeCommandLens, configureCommandLens, openCommandLens }} = await import("{module_url('js/features/command-lens.js')}");
+            configureCommandLens({{ root, store: {{ getState: () => ({{ commandLens: {{ draft: "", chips: [] }}, recommendation: {{ channels: {{}} }} }}), dispatch() {{}} }} }});
+            openCommandLens();
+            const firstLens = root.firstElementChild;
+            const firstInput = firstLens.querySelectorAll().find((node) => node.tagName === "TEXTAREA");
+            firstInput.focus();
+            for (const listener of listeners.get("keydown") || []) listener({{ key: "k", ctrlKey: true, metaKey: false, preventDefault() {{}} }});
+            if (root.firstElementChild === firstLens) throw new Error("Ctrl+K did not reopen the lens");
+            if ((listeners.get("keydown")?.size || 0) !== 2) throw new Error(`reopen leaked keydown listeners: ${{listeners.get("keydown")?.size}}`);
+            for (const listener of [...(listeners.get("keydown") || [])]) listener({{ key: "Escape", preventDefault() {{}} }});
+            if (root.children.length !== 0 || trigger.focusCount !== 1 || (listeners.get("keydown")?.size || 0) !== 1) throw new Error("Escape did not restore trigger or release only the trap");
+            trigger.focusCount = 0; trigger.focus();
+            openCommandLens();
+            closeCommandLens({{ restoreFocus: false }});
+            if (trigger.focusCount !== 1 || root.children.length !== 0 || (listeners.get("keydown")?.size || 0) !== 1) throw new Error("route close restored focus or leaked a trap");
+            console.log(JSON.stringify({{ focusCount: trigger.focusCount, listeners: listeners.get("keydown")?.size || 0, open: root.children.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["focusCount"])
+        self.assertEqual(1, result["listeners"])
+        self.assertEqual(0, result["open"])
+
+    def test_person_sheet_tabs_dynamic_content_and_route_cleanup_releases_trap(self):
+        output = run_node_module(
+            f'''
+            const pending = (() => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }})();
+            class FakeClassList {{ add() {{}} }}
+            class FakeElement {{
+              constructor(tagName) {{ this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}}; this.className = ""; this.textContent = ""; this.disabled = false; this.hidden = false; this.isConnected = true; this.classList = new FakeClassList(); this.style = {{ setProperty() {{}} }}; this.listeners = new Map(); this.focusCount = 0; }}
+              append(...nodes) {{ nodes.forEach((node) => this.appendChild(node)); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }} getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); this[`on${{type}}`] = listener; }}
+              remove() {{ if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); this.isConnected = false; }}
+              focus() {{ document.activeElement = this; this.focusCount += 1; }}
+              contains(node) {{ return node === this || this.children.some((child) => child.contains(node)); }}
+              querySelectorAll() {{ return this.children.flatMap((child) => [child, ...child.querySelectorAll()]).filter((node) => ["BUTTON", "A", "INPUT"].includes(node.tagName)); }}
+              get firstElementChild() {{ return this.children[0] || null; }}
+            }}
+            const overlayRoot = new FakeElement("div"); const trigger = new FakeElement("button"); const listeners = new Map();
+            globalThis.document = {{ activeElement: trigger, createElement: (tag) => new FakeElement(tag), getElementById: () => overlayRoot,
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }}, removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }} }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ closePersonSheet, configurePeople, openPersonSheet }} = await import("{module_url('js/features/people.js')}");
+            configurePeople({{ overlayRoot, fetchJson() {{ return pending.promise; }} }});
+            const opened = openPersonSheet("person:1");
+            const sheet = overlayRoot.firstElementChild.firstElementChild;
+            const before = sheet.querySelectorAll(); const first = before[0]; const last = before.at(-1);
+            last.focus(); let prevented = 0;
+            for (const listener of listeners.get("keydown") || []) listener({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== first) throw new Error("person sheet forward Tab did not loop");
+            const dynamic = new FakeElement("button"); sheet.append(dynamic); first.focus();
+            for (const listener of listeners.get("keydown") || []) listener({{ key: "Tab", shiftKey: true, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== dynamic) throw new Error("person sheet trap did not include dynamic content");
+            const routeLink = sheet.querySelectorAll().find((node) => node.className === "person-sheet__full-link");
+            routeLink.onclick({{}});
+            if (overlayRoot.children.length !== 0 || (listeners.get("keydown")?.size || 0) !== 0 || trigger.focusCount !== 0) throw new Error("route cleanup leaked trap or restored focus");
+            pending.resolve({{ id: "person:1", name: "late", portrait: {{ url: "", media_status: "missing" }}, known_for: [], evidence: [] }}); await opened;
+            if (overlayRoot.children.length !== 0) throw new Error("late person response remounted a closed sheet");
+            console.log(JSON.stringify({{ prevented, listeners: listeners.get("keydown")?.size || 0, focusCount: trigger.focusCount }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["prevented"])
+        self.assertEqual(0, result["listeners"])
+        self.assertEqual(0, result["focusCount"])
+
+    def test_reduced_motion_skips_view_transitions_and_ready_rejection_is_consumed(self):
+        output = run_node_module(
+            f'''
+            const unhandled = []; process.on("unhandledRejection", (error) => unhandled.push(error.message));
+            globalThis.window = {{ matchMedia(query) {{ return {{ matches: query.includes("prefers-reduced-motion") }}; }} }};
+            let starts = 0;
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }}, startViewTransition(update) {{ starts += 1; update(); return {{ updateCallbackDone: Promise.resolve(), ready: Promise.reject(new Error("ready rejected")), finished: Promise.resolve() }}; }} }};
+            const {{ createExplorationRouteGate }} = await import("{module_url('js/app.js')}");
+            const root = {{ children: [{{ id: "stable" }}], replaceChildren(...nodes) {{ this.children = nodes; }} }};
+            let activePath = "/title/reduced";
+            const renderer = (_id, options) => options.commit({{ id: "reduced-view" }}, {{ heading: "Reduced" }});
+            const gate = createExplorationRouteGate({{ root, getActivePath: () => activePath, renderTitle: renderer, renderPerson: renderer }});
+            await gate.render({{ name: "title", path: activePath, params: {{ id: "reduced" }} }});
+            if (starts !== 0 || root.children[0].id !== "reduced-view") throw new Error("reduced motion did not bypass ViewTransition");
+
+            window.matchMedia = () => ({{ matches: false }});
+            activePath = "/title/normal";
+            await gate.render({{ name: "title", path: activePath, params: {{ id: "normal" }} }});
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (starts !== 1 || unhandled.length !== 0 || root.children[0].id !== "reduced-view") throw new Error(`ready rejection was unhandled or DOM critical path changed: ${{JSON.stringify({{ starts, unhandled, root: root.children[0] }})}}`);
+            console.log(JSON.stringify({{ starts, unhandled, root: root.children[0].id }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["starts"])
+        self.assertEqual([], result["unhandled"])
+
+    def test_detail_and_people_reduced_motion_skip_transitions_and_consume_ready_rejections(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const unhandled = []; process.on("unhandledRejection", (error) => unhandled.push(error.message));
+            let starts = 0;
+            window.matchMedia = (query) => ({{ matches: query.includes("prefers-reduced-motion") }});
+            document.startViewTransition = (update) => {{ starts += 1; update(); return {{ updateCallbackDone: Promise.resolve(), ready: Promise.reject(new Error("ready failed")), finished: Promise.resolve() }}; }};
+            const title = {{ item_key: "douban:42", title: "Reduced title", media_type: "movie", year: 2024, poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }}, item: {{ directors: [], casts: [] }}, people: [] }};
+            const person = {{ id: "person:1", name: "Reduced person", portrait: {{ url: "", media_status: "missing" }}, known_for: [], evidence: [] }};
+            const detailRoot = new FakeElement("main");
+            const personRoot = new FakeElement("main");
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            const {{ configurePeople, renderPersonPage }} = await import("{module_url('js/features/people.js')}");
+            configureDetail({{ root: detailRoot, async fetchJson(path) {{ return path.startsWith("/api/v2/titles/") ? title : {{ focus_id: "douban:42", nodes: [], edges: [] }}; }}, api: {{ async postV2() {{ return null; }} }} }});
+            configurePeople({{ root: personRoot, async fetchJson() {{ return person; }} }});
+            await renderTitleDetail("douban:42");
+            await renderPersonPage("person:1");
+            if (starts !== 0 || detailRoot.children.length !== 1 || personRoot.children.length !== 1) throw new Error("reduced motion did not synchronously commit detail and people views");
+            window.matchMedia = () => ({{ matches: false }});
+            await renderTitleDetail("douban:42");
+            await renderPersonPage("person:1");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (starts !== 2 || unhandled.length !== 0) throw new Error(`normal transition ready rejection leaked: ${{JSON.stringify({{ starts, unhandled }})}}`);
+            console.log(JSON.stringify({{ starts, unhandled, detail: detailRoot.children.length, person: personRoot.children.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["starts"])
+        self.assertEqual([], result["unhandled"])
+
+    def test_route_commit_focuses_and_announces_once_without_scrolling(self):
+        output = run_node_module(
+            f'''
+            const unhandled = []; process.on("unhandledRejection", (error) => unhandled.push(error.message));
+            const heading = {{ tagName: "H1", textContent: "Committed heading", attributes: new Map(), focusCalls: [], setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}, focus(options) {{ this.focusCalls.push(options); }} }};
+            const appView = {{ dataset: {{}}, children: [{{ id: "stable" }}], replaceChildren(...nodes) {{ this.children = nodes; }}, querySelector(selector) {{ return selector === "h1" ? heading : null; }}, setAttribute() {{}}, focus() {{ throw new Error("h1 should receive route focus"); }} }};
+            let starts = 0;
+            globalThis.window = {{ matchMedia: () => ({{ matches: false }}), scrollTo() {{ throw new Error("route commit must not scroll"); }} }};
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }}, startViewTransition(update) {{ starts += 1; update(); return {{ updateCallbackDone: Promise.resolve(), ready: Promise.reject(new Error("not ready")), finished: Promise.resolve() }}; }} }};
+            const {{ createAppRouteHandler, createExplorationRouteGate }} = await import("{module_url('js/app.js')}");
+            const store = {{ state: {{ activePath: "/title/one", recommendation: {{ channels: {{}} }} }}, getState() {{ return this.state; }}, dispatch(action) {{ if (action.type === "route/changed") this.state.activePath = action.route.path; }} }};
+            const renderer = (_id, options) => options.commit({{ id: "route-view" }}, {{ heading: "Committed heading" }});
+            const explorationGate = createExplorationRouteGate({{ root: appView, getActivePath: () => store.state.activePath, renderTitle: renderer, renderPerson: renderer }});
+            const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }}; const announcements = [];
+            const handler = createAppRouteHandler({{ appView, store, restoreGate: gate, explorationGate, universeGate: gate, prepare() {{}}, setNavigation() {{}}, setStatus() {{}}, announceRoute(message) {{ announcements.push(message); }} }});
+            await handler({{ name: "title", path: "/title/one", params: {{ id: "one" }} }});
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (heading.focusCalls.length !== 1 || heading.focusCalls[0]?.preventScroll !== true) throw new Error("route heading focus was not singular and scroll-safe");
+            if (announcements.length !== 1 || !announcements[0].includes("Committed heading")) throw new Error(`route announcement mismatch: ${{announcements}}`);
+            if (appView.children.length === 0 || unhandled.length !== 0 || starts !== 1) throw new Error("route recovery blanked content or leaked transition rejection");
+            console.log(JSON.stringify({{ focus: heading.focusCalls.length, announcements, starts, unhandled, child: appView.children[0].id }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["focus"])
+        self.assertEqual(1, len(result["announcements"]))
+        self.assertEqual([], result["unhandled"])
+
+    def test_task8_static_shell_breakpoints_safe_area_and_long_content_contract(self):
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
+        all_css = "\n".join(path.read_text(encoding="utf-8") for path in (UI_ROOT / "styles").glob("*.css"))
+
+        self.assertRegex(html, r'<link\s+rel="stylesheet"\s+href="/assets/v3/styles/responsive\.css"\s*/?>')
+        overlay = re.search(r'<div\s+id="overlay-root"([^>]*)>', html)
+        announcer = re.search(r'<div\s+id="a11y-announcer"([^>]*)>', html)
+        self.assertIsNotNone(overlay)
+        self.assertNotIn("aria-live", overlay.group(1))
+        self.assertIsNotNone(announcer)
+        self.assertIn('aria-live="polite"', announcer.group(1))
+        self.assertRegex(html, r'<a[^>]+class="skip-link"[^>]+href="#app-view"')
+        for breakpoint in (1200, 960, 720):
+            self.assertRegex(responsive, rf"@media\s*\(max-width:\s*{breakpoint}px\)")
+        mobile = re.search(r"@media\s*\(max-width:\s*720px\)\s*\{([\s\S]*)\}\s*$", responsive)
+        self.assertIsNotNone(mobile)
+        self.assertRegex(mobile.group(1), r"\.app-rail[\s\S]*display:\s*none")
+        self.assertRegex(mobile.group(1), r"\.bottom-nav[\s\S]*display:\s*grid")
+        self.assertIn("env(safe-area-inset-bottom)", mobile.group(1))
+        self.assertRegex(mobile.group(1), r"\.shell-content[\s\S]*padding-bottom:\s*calc\(")
+        self.assertNotRegex(all_css, r"body\s*\{[^}]*overflow-x:\s*hidden")
+        required_wraps = ("command-lens", "person-sheet", "detail", "tonight", "sync", "chip", "status")
+        for selector in required_wraps:
+            with self.subTest(selector=selector):
+                self.assertRegex(all_css, rf"[^{{}}]*{re.escape(selector)}[^{{}}]*\{{[^}}]*overflow-wrap:\s*anywhere")
+        declarations = re.findall(r"(?<![-\w])(?:transition|animation)\s*:\s*([^;]+);", responsive)
+        for declaration in declarations:
+            for item in declaration.split(","):
+                self.assertIn(item.strip().split(maxsplit=1)[0], {"transform", "opacity"})
 
 
 if __name__ == "__main__":

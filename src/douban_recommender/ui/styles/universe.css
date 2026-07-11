@@ -201,7 +201,7 @@
 .universe-empty__copy { max-width: 58ch; margin: 1.2rem auto 0; color: var(--muted); line-height: 1.7; }
 .universe-empty__action { justify-self: center; margin-top: 1.5rem; padding: 0.8rem 1.1rem; color: var(--signal); }
 
-@media (max-width: 1024px) {
+@media (max-width: 960px) {
   .universe-workspace { grid-template-columns: minmax(0, 1.25fr) minmax(18rem, 0.85fr); }
   .universe-header { grid-template-columns: 1fr; }
   .universe-focus { grid-column: 1; grid-row: auto; justify-self: start; }

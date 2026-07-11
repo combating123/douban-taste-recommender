@@ -1,0 +1,253 @@
+:root {
+  --bottom-nav-height: 0px;
+}
+
+#app-view,
+#command-lens-root,
+#overlay-root,
+.cinescope-shell,
+.shell-content,
+.top-bar,
+.app-rail,
+.bottom-nav,
+.tonight-page,
+.detail-page,
+.person-page,
+.universe-view,
+.space {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.a11y-announcer {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+.shell-content {
+  width: 100%;
+  padding-bottom: calc(clamp(1rem, 3vw, 3rem) + var(--bottom-nav-height));
+}
+
+.top-bar > *,
+.app-rail *,
+.bottom-nav *,
+.command-lens,
+.command-lens *,
+.intent-chip,
+.intent-chip *,
+.tonight-page,
+.tonight-page *,
+.detail-page,
+.detail-page *,
+.person-page,
+.person-page *,
+.person-sheet,
+.person-sheet *,
+.universe-view,
+.universe-view *,
+.space,
+.space *,
+.sync-panel,
+.sync-panel *,
+.shell-status,
+[role="status"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.command-lens,
+.person-sheet,
+.detail-hero,
+.detail-hero__content,
+.detail-poster,
+.tonight-batch-toolbar,
+.tonight-batch-controls,
+.universe-workspace,
+.relationship-list,
+.library-window,
+.sync-panel {
+  max-width: 100%;
+}
+
+.command-lens {
+  width: min(56rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  overscroll-behavior: contain;
+}
+
+.person-sheet-backdrop {
+  max-width: 100vw;
+  max-height: 100dvh;
+}
+
+.person-sheet {
+  height: min(100%, 52rem);
+  max-height: calc(100dvh - clamp(1rem, 4vw, 3rem));
+  overscroll-behavior: contain;
+}
+
+.tonight-channel,
+.tonight-count,
+.tonight-button,
+.command-lens__close,
+.command-lens__submit,
+.command-lens-trigger,
+.intent-chip__label,
+.intent-chip button,
+.person-card__role,
+.segmented-filter__button,
+.sync-submit,
+.sync-job__resume,
+.bottom-nav a {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.tonight-batch-controls,
+.tonight-hero__actions,
+.title-card__actions,
+.person-sheet__actions,
+.relationship-list__controls,
+.segmented-filter,
+.sync-options {
+  flex-wrap: wrap;
+}
+
+.detail-backdrop,
+.detail-poster,
+.media-frame,
+.universe-canvas,
+img,
+svg,
+canvas {
+  max-width: 100%;
+}
+
+@media (max-width: 1200px) {
+  .shell-content { padding-inline: clamp(1rem, 2.5vw, 2rem); }
+  .tonight-batch-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .tonight-batch-controls { justify-content: stretch; }
+  .tonight-reason { flex: 1 1 min(18rem, 100%); width: auto; }
+  .detail-score-grid,
+  .detail-facts__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detail-hero__content { grid-template-columns: minmax(9rem, 14rem) minmax(0, 1fr); margin-top: clamp(-8rem, -11vw, -5rem); }
+}
+
+@media (max-width: 960px) {
+  .top-bar { flex-wrap: wrap; }
+  .shell-status { flex: 1 1 18rem; }
+  .universe-workspace { grid-template-columns: minmax(0, 1fr); }
+  .universe-canvas-panel { min-height: 28rem; }
+  .universe-evidence { max-height: 34rem; border-top: 1px solid var(--line); border-left: 0; }
+  .universe-header { grid-template-columns: minmax(0, 1fr); }
+  .universe-focus { grid-column: 1; grid-row: auto; justify-self: start; }
+  .taste-groups { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --bottom-nav-height: calc(4.25rem + env(safe-area-inset-bottom));
+  }
+
+  .cinescope-shell,
+  .rail-collapsed .cinescope-shell,
+  .rail-hidden .cinescope-shell { grid-template-columns: minmax(0, 1fr); }
+
+  .app-rail,
+  .rail-restore { display: none; }
+
+  .shell-content {
+    padding: 1rem;
+    padding-bottom: calc(1rem + var(--bottom-nav-height));
+  }
+
+  .top-bar { align-items: flex-start; flex-direction: column; }
+  .shell-status { width: 100%; text-align: left; }
+
+  .bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    padding: 0.45rem 0.45rem calc(0.45rem + env(safe-area-inset-bottom));
+  }
+
+  .bottom-nav a {
+    min-height: 2.8rem;
+    display: grid;
+    place-items: center;
+  }
+
+  .command-lens {
+    top: max(0.5rem, env(safe-area-inset-top));
+    width: calc(100vw - 1rem);
+    max-height: calc(100dvh - max(1rem, env(safe-area-inset-top)) - env(safe-area-inset-bottom));
+  }
+
+  .command-lens__header,
+  .tonight-intro,
+  .space-header,
+  .title-shelf__heading { align-items: flex-start; flex-direction: column; }
+
+  .command-lens__close,
+  .command-lens__submit,
+  .tonight-button,
+  .sync-submit,
+  .sync-job__resume { width: 100%; }
+
+  .intent-chip { width: 100%; border-radius: 0.8rem; }
+  .intent-chip__label { flex: 1 1 auto; white-space: normal; }
+  .intent-chip__editor { width: 100%; min-width: 0; max-width: none; }
+
+  .tonight-hero { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .tonight-hero__media { width: min(13rem, 100%); padding-bottom: 0; }
+  .tonight-counts,
+  .detail-score-grid,
+  .detail-facts__grid,
+  .detail-relation-preview,
+  .taste-groups,
+  .sync-form { grid-template-columns: minmax(0, 1fr); }
+  .tonight-batch-controls { align-items: stretch; flex-direction: column; }
+  .tonight-reason { width: 100%; }
+
+  .detail-page,
+  .person-page,
+  .route-recovery { padding-inline: 0; }
+  .detail-hero__content { width: 96%; grid-template-columns: minmax(6.3rem, 8.5rem) minmax(0, 1fr); }
+  .detail-poster { min-width: 0; }
+  .detail-hero__summary,
+  .detail-verified-note { grid-column: 1 / -1; }
+
+  .person-sheet-backdrop { align-items: end; padding: 0; }
+  .person-sheet {
+    width: 100%;
+    height: min(92dvh, 48rem);
+    max-height: calc(100dvh - env(safe-area-inset-top));
+    padding-bottom: env(safe-area-inset-bottom);
+    border-radius: 1.25rem 1.25rem 0 0;
+  }
+  .person-identity,
+  .person-identity--compact { grid-template-columns: minmax(5.5rem, 6.3rem) minmax(0, 1fr); }
+
+  .universe-view { padding: 0; }
+  .universe-workspace { display: block; min-height: 0; overflow: visible; }
+  .universe-canvas-panel { display: none; }
+  .universe-evidence { max-height: none; overflow: visible; border-top: 0; }
+  .relationship-list__item { grid-template-columns: minmax(3.2rem, 3.8rem) minmax(0, 1fr); }
+
+  .space { width: 100%; max-width: 100%; margin-top: 2rem; }
+  .space-title { font-size: clamp(2rem, 14vw, 3.4rem); }
+  .library-window { width: 100%; max-width: 100%; height: 66vh; }
+  .segmented-filter__button { flex: 1 1 calc(50% - 0.5rem); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .parallax,
+  [data-parallax] { transform: none !important; }
+}

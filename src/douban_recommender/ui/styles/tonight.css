@@ -281,7 +281,7 @@
 .command-lens-trigger:hover,
 .command-lens-trigger:focus-visible { transform: translateY(-1px); opacity: 0.9; }
 
-@media (max-width: 1024px) {
+@media (max-width: 1200px) {
   .tonight-batch-toolbar { grid-template-columns: minmax(0, 1fr); }
   .tonight-batch-controls { justify-content: stretch; }
   .tonight-reason { flex: 1 1 12rem; width: auto; }

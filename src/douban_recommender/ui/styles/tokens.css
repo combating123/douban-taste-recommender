@@ -17,7 +17,7 @@
 * { box-sizing: border-box; }
 
 html,
-body { min-height: 100%; max-width: 100%; overflow-x: hidden; }
+body { min-height: 100%; max-width: 100%; }
 
 body {
   margin: 0;
@@ -33,6 +33,7 @@ a { color: inherit; }
 
 p,
 h1,
+.a11y-announcer,
 .shell-status,
 .noscript-message,
 .app-rail a { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }

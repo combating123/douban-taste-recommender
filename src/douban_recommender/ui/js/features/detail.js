@@ -313,13 +313,15 @@ async function swapPreparedView(root, view, isCurrent = () => true) {
     committed = true;
     return true;
   };
-  if (typeof document.startViewTransition !== "function") return update();
+  const reduceMotion = globalThis.window?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (reduceMotion || typeof document.startViewTransition !== "function") return update();
   let transition;
   try {
     transition = document.startViewTransition(update);
   } catch {
     return committed || update();
   }
+  if (transition?.ready) void Promise.resolve(transition.ready).catch(() => {});
   const updateDone = transition?.updateCallbackDone || transition?.finished;
   if (transition?.finished && transition.finished !== updateDone) void Promise.resolve(transition.finished).catch(() => {});
   if (!updateDone || typeof updateDone.then !== "function") return committed || update();

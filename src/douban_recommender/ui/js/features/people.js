@@ -1,6 +1,7 @@
 import { adaptPersonMedia } from "../core/media.js";
 import { renderMediaFrame } from "../components/media-frame.js";
 import { renderTitleCard, titleRouteForItem } from "../components/title-card.js";
+import { trapFocus } from "../core/focus.js";
 
 const SAFE_ROUTE_SEGMENT = /^[A-Za-z0-9:._~-]+$/;
 
@@ -202,42 +203,40 @@ export async function openPersonSheet(personId, originRect = null) {
   closeButton.setAttribute("aria-label", "关闭人物聚光灯");
   const body = element("div", "person-sheet__body");
   let close = () => {};
-  body.append(sheetContent(cleanId, fallbackPerson(cleanId), () => close()));
+  body.append(sheetContent(cleanId, fallbackPerson(cleanId), () => close({ restoreFocus: false })));
   sheet.append(closeButton, body);
   backdrop.append(sheet);
   overlayRoot.replaceChildren(backdrop);
 
   let closed = false;
+  let releaseSheetTrap = () => {};
   close = ({ restoreFocus = true } = {}) => {
     if (closed) return;
     closed = true;
     sheetGeneration += 1;
     fetchController.abort();
-    document.removeEventListener("keydown", onKeyDown);
+    releaseSheetTrap();
     backdrop.classList?.add("person-sheet-backdrop--leave");
     backdrop.remove();
     if (closeActiveSheet === close) closeActiveSheet = null;
     if (restoreFocus && canRestoreFocus(trigger)) trigger.focus();
-  };
-  const onKeyDown = (event) => {
-    if (event.key === "Escape") close();
   };
   closeActiveSheet = close;
   closeButton.addEventListener("click", close);
   backdrop.addEventListener("click", (event) => {
     if (event.target === backdrop) close();
   });
-  document.addEventListener("keydown", onKeyDown);
+  releaseSheetTrap = trapFocus(sheet, { onEscape: () => close() });
   closeButton.focus?.();
 
   try {
     const person = await dependencies.fetchJson(`/api/v2/people/${cleanId}`, { signal: fetchController.signal });
     if (closed || generation !== sheetGeneration) return null;
-    body.replaceChildren(sheetContent(cleanId, person, () => close()));
+    body.replaceChildren(sheetContent(cleanId, person, () => close({ restoreFocus: false })));
     return person;
   } catch {
     if (closed || generation !== sheetGeneration) return null;
-    body.replaceChildren(sheetFailureContent(cleanId, () => close()));
+    body.replaceChildren(sheetFailureContent(cleanId, () => close({ restoreFocus: false })));
     return null;
   }
 }
@@ -296,13 +295,15 @@ async function swapPreparedView(root, view, isCurrent = () => true) {
     committed = true;
     return true;
   };
-  if (typeof document.startViewTransition !== "function") return update();
+  const reduceMotion = globalThis.window?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (reduceMotion || typeof document.startViewTransition !== "function") return update();
   let transition;
   try {
     transition = document.startViewTransition(update);
   } catch {
     return committed || update();
   }
+  if (transition?.ready) void Promise.resolve(transition.ready).catch(() => {});
   const updateDone = transition?.updateCallbackDone || transition?.finished;
   if (transition?.finished && transition.finished !== updateDone) void Promise.resolve(transition.finished).catch(() => {});
   if (!updateDone || typeof updateDone.then !== "function") return committed || update();

@@ -2,7 +2,8 @@ import { renderRoutePlaceholder, setCurrentNavigation, setText } from "./core/do
 import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState } from "./core/store.js";
-import { configureCommandLens, openCommandLens, syncCommandLensState } from "./features/command-lens.js";
+import { announce } from "./core/focus.js";
+import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
 import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
@@ -281,7 +282,8 @@ function bindNavigation(router) {
 }
 
 export function prepareRouteChange() {
-  closePersonSheet();
+  closeCommandLens({ restoreFocus: false });
+  closePersonSheet({ restoreFocus: false });
   destroyUniverse();
 }
 
@@ -369,7 +371,8 @@ async function replacePreparedView(root, view, isCurrent = () => true) {
     committed = true;
     return true;
   };
-  if (typeof document.startViewTransition !== "function") return update();
+  const reduceMotion = globalThis.window?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (reduceMotion || typeof document.startViewTransition !== "function") return update();
 
   let transition;
   try {
@@ -377,6 +380,7 @@ async function replacePreparedView(root, view, isCurrent = () => true) {
   } catch {
     return committed || update();
   }
+  if (transition?.ready) void Promise.resolve(transition.ready).catch(() => {});
   const updateDone = transition?.updateCallbackDone || transition?.finished;
   if (transition?.finished && transition.finished !== updateDone) {
     void Promise.resolve(transition.finished).catch(() => {});
@@ -460,6 +464,7 @@ export function createAppRouteHandler({
   renderTasteView = renderTasteDna,
   renderHealthView = renderHealth,
   setStatus = () => {},
+  announceRoute = announce,
 } = {}) {
   let activeSpace = null;
   const disposeActiveSpace = () => {
@@ -517,6 +522,14 @@ export function createAppRouteHandler({
       renderPlaceholder(appView, { heading, description });
       setStatus(`CineScope 正在浏览：${heading}`);
     }
+    if (store.getState?.().activePath !== route.path) return false;
+    const focusTarget = appView.querySelector?.("h1") || appView;
+    if (focusTarget && typeof focusTarget.focus === "function") {
+      focusTarget.setAttribute?.("tabindex", "-1");
+      focusTarget.focus({ preventScroll: true });
+    }
+    announceRoute(textValue(focusTarget?.textContent, heading));
+    return true;
   };
   handler.dispose = () => {
     disposeActiveSpace();

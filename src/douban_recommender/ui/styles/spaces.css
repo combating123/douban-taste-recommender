@@ -196,7 +196,7 @@
   .library-window { height: 66vh; }
 }
 
-@media (max-width: 390px) {
+@media (max-width: 720px) {
   .space,
   .space-header,
   .segmented-filter,

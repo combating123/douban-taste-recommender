@@ -1,4 +1,5 @@
 import { postV2 } from "../core/api.js";
+import { trapFocus } from "../core/focus.js";
 
 const ARRAY_FIELDS = Object.freeze({
   media_type: "media_types",
@@ -23,6 +24,8 @@ let currentSessionId = null;
 let keyboardDocument = null;
 let intentGeneration = 0;
 let intentPending = false;
+let releaseLensTrap = null;
+let lensTrigger = null;
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -174,15 +177,25 @@ function acceptGroundedSession(session, message) {
   updateStatus(message, "success");
 }
 
-function closeCommandLens() {
+function canRestoreFocus(trigger) {
+  if (!trigger || typeof trigger.focus !== "function" || trigger.isConnected === false || trigger.disabled || trigger.hidden || trigger.inert) return false;
+  return trigger.getAttribute?.("aria-hidden") !== "true";
+}
+
+export function closeCommandLens({ restoreFocus = true } = {}) {
+  const trigger = lensTrigger;
   intentGeneration += 1;
   intentPending = false;
+  releaseLensTrap?.();
+  releaseLensTrap = null;
   dependencies.root?.replaceChildren();
   lens = null;
   intentInput = null;
   chipList = null;
   statusLine = null;
   submitButton = null;
+  lensTrigger = null;
+  if (restoreFocus && canRestoreFocus(trigger)) trigger.focus({ preventScroll: true });
 }
 
 function bindKeyboardShortcut() {
@@ -225,6 +238,9 @@ export function openCommandLens(initialText = "") {
   const root = dependencies.root || document.getElementById?.("command-lens-root");
   if (!root) return null;
   dependencies.root = root;
+  const trigger = lens ? lensTrigger : document.activeElement;
+  if (lens) closeCommandLens({ restoreFocus: false });
+  lensTrigger = trigger;
 
   lens = element("section", "command-lens command-lens--enter");
   lens.setAttribute("role", "dialog");
@@ -240,7 +256,7 @@ export function openCommandLens(initialText = "") {
   headingGroup.children[1].id = "command-lens-title";
   const close = element("button", "command-lens__close", "关闭");
   close.type = "button";
-  close.addEventListener("click", closeCommandLens);
+  close.addEventListener("click", () => closeCommandLens());
   header.append(headingGroup, close);
 
   const form = element("form", "command-lens__form");
@@ -269,6 +285,7 @@ export function openCommandLens(initialText = "") {
   statusLine.setAttribute("aria-live", "polite");
   lens.append(header, form, chipList, statusLine);
   root.replaceChildren(lens);
+  releaseLensTrap = trapFocus(lens, { onEscape: () => closeCommandLens() });
   intentInput.focus();
   return lens;
 }
