@@ -9,6 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from tests.test_ui_v3_contract import fake_dom_module_prelude
+
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_ROOT = ROOT / "src" / "douban_recommender" / "ui"
@@ -111,6 +113,142 @@ def browser_prelude(origin):
 
 
 class UiV3AuditTests(unittest.TestCase):
+    def test_audit_keeps_visually_rendered_aria_hidden_images_in_scope(self):
+        output = run_node_module(
+            f'''
+            const image = {{
+              tagName: "IMG", hidden: false, complete: true, naturalWidth: 0,
+              src: "https://cdn.example/media/private-aria-hidden.png?secret=query#hash",
+              clientWidth: 120, clientHeight: 180, scrollWidth: 120, scrollHeight: 180,
+              parentElement: null, classList: {{ contains() {{ return false; }} }},
+              closest(selector) {{ return selector === '[aria-hidden="true"]' ? this : null; }},
+              getClientRects() {{ return [{{ width: 120, height: 180 }}]; }},
+            }};
+            const overflow = {{
+              tagName: "DIV", id: "private-aria-overflow", hidden: false,
+              clientWidth: 100, clientHeight: 40, scrollWidth: 240, scrollHeight: 40,
+              parentElement: null, classList: {{ contains() {{ return false; }} }},
+              closest(selector) {{ return selector === '[aria-hidden="true"]' ? this : null; }},
+              getClientRects() {{ return [{{ width: 100, height: 40 }}]; }},
+            }};
+            const main = {{ textContent: "ready" }};
+            globalThis.document = {{
+              images: [image], activeElement: null,
+              querySelector(selector) {{ return selector === "#app-view" ? main : null; }},
+              querySelectorAll(selector) {{ return selector === "body *" ? [overflow] : []; }},
+            }};
+            globalThis.location = new URL("http://localhost/tonight");
+            globalThis.window = {{ location: globalThis.location, innerWidth: 390, innerHeight: 844, matchMedia() {{ return {{ matches: false }}; }} }};
+            globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible", overflowX: "visible" }});
+            const {{ runAudit }} = await import("{module_url('js/core/audit.js')}");
+            console.log(JSON.stringify(runAudit()));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, len(result["brokenImages"]))
+        self.assertEqual(1, len(result["externalImages"]))
+        self.assertEqual(1, len(result["overflowNodes"]))
+        self.assertNotIn("private-aria-hidden", json.dumps(result))
+        self.assertNotIn("private-aria-overflow", json.dumps(result))
+
+    def test_audit_checks_responsive_image_current_src_without_leaking_it(self):
+        output = run_node_module(
+            f'''
+            const image = {{
+              tagName: "IMG", hidden: false, complete: true, naturalWidth: 640,
+              src: "http://localhost/media/fallback.png",
+              currentSrc: "https://cdn.example/media/private-current.png?secret=query#hash",
+              clientWidth: 120, clientHeight: 180, scrollWidth: 120, scrollHeight: 180,
+              parentElement: null, classList: {{ contains() {{ return false; }} }},
+              closest() {{ return null; }}, getClientRects() {{ return [{{ width: 120, height: 180 }}]; }},
+            }};
+            globalThis.document = {{
+              images: [image], activeElement: null,
+              querySelector() {{ return {{ textContent: "ready" }}; }}, querySelectorAll() {{ return []; }},
+            }};
+            globalThis.location = new URL("http://localhost/tonight");
+            globalThis.window = {{ location: globalThis.location, innerWidth: 1280, innerHeight: 800, matchMedia() {{ return {{ matches: false }}; }} }};
+            globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible", overflowX: "visible" }});
+            const {{ runAudit }} = await import("{module_url('js/core/audit.js')}");
+            console.log(JSON.stringify(runAudit()));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, len(result["externalImages"]))
+        serialized = json.dumps(result)
+        self.assertNotIn("private-current", serialized)
+        self.assertNotIn("cdn.example", serialized)
+
+    def test_audit_uses_real_tab_index_and_excludes_inert_disabled_or_hidden_targets(self):
+        output = run_node_module(
+            f'''
+            const visibleStyle = {{ display: "block", visibility: "visible", overflowX: "visible" }};
+            function target(tagName, options = {{}}) {{
+              const node = {{
+                tagName: tagName.toUpperCase(), tabIndex: options.tabIndex ?? 0,
+                disabled: Boolean(options.disabled), hidden: Boolean(options.hidden), inert: Boolean(options.inert),
+                type: options.type || "", parentElement: null, children: [], attributes: new Map(),
+                getAttribute(name) {{ return this.attributes.get(name) ?? null; }},
+                hasAttribute(name) {{ return this.attributes.has(name); }},
+                closest(selector) {{
+                  if (selector === "[hidden]" && this.hidden) return this;
+                  if (selector === "[inert]" && this.inert) return this;
+                  return this.parentElement?.closest?.(selector) || null;
+                }},
+                getClientRects() {{ return this.hidden ? [] : [{{ width: 20, height: 20 }}]; }},
+              }};
+              if (options.contenteditable) node.attributes.set("contenteditable", "true");
+              if (options.disabled) node.attributes.set("disabled", "");
+              return node;
+            }}
+            function auditFor(focusTarget, activeElement = focusTarget) {{
+              const modal = {{
+                tagName: "SECTION", hidden: false, tabIndex: -1, parentElement: null, children: [focusTarget],
+                getAttribute(name) {{ return name === "aria-modal" ? "true" : (name === "role" ? "dialog" : null); }},
+                hasAttribute() {{ return false; }}, closest() {{ return null; }}, matches() {{ return false; }},
+                getClientRects() {{ return [{{ width: 320, height: 240 }}]; }},
+                querySelectorAll() {{ return this.children; }},
+                contains(node) {{ return node === this || node === focusTarget; }},
+              }};
+              focusTarget.parentElement = modal;
+              globalThis.document = {{
+                images: [], activeElement,
+                querySelector() {{ return {{ textContent: "ready" }}; }},
+                querySelectorAll(selector) {{ return selector.includes("dialog") ? [modal] : []; }},
+              }};
+              return runAudit();
+            }}
+            globalThis.location = new URL("http://localhost/tonight");
+            globalThis.window = {{ location: globalThis.location, innerWidth: 1024, innerHeight: 768, matchMedia() {{ return {{ matches: false }}; }} }};
+            globalThis.getComputedStyle = () => visibleStyle;
+            const {{ runAudit }} = await import("{module_url('js/core/audit.js')}");
+            const valid = [
+              auditFor(target("div", {{ contenteditable: true }})),
+              auditFor(target("summary")),
+              auditFor(target("iframe")),
+              auditFor(target("audio")),
+            ];
+            const inert = auditFor(target("div", {{ inert: true }}));
+            const outsideTarget = target("summary");
+            const outside = auditFor(outsideTarget, {{ tagName: "BUTTON", parentElement: null }});
+            const disabled = auditFor(target("button", {{ disabled: true }}));
+            const hidden = auditFor(target("input", {{ hidden: true }}));
+            console.log(JSON.stringify({{
+              valid: valid.map((audit) => audit.focusFailures.length),
+              inert: inert.focusFailures.length,
+              outside: outside.focusFailures.length,
+              disabled: disabled.focusFailures.length,
+              hidden: hidden.focusFailures.length,
+            }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual([0, 0, 0, 0], result["valid"])
+        self.assertEqual(1, result["inert"])
+        self.assertEqual(1, result["outside"])
+        self.assertEqual(1, result["disabled"])
+        self.assertEqual(1, result["hidden"])
+
     def test_browser_audit_executes_image_overflow_empty_main_and_focus_rules(self):
         output = run_node_module(
             f'''
@@ -375,6 +513,190 @@ class UiV3AuditTests(unittest.TestCase):
             posts[0]["body"],
         )
 
+    def test_acceptance_rejects_dot_title_segment_before_http_normalisation(self):
+        session = {
+            "id": "session-dot-title",
+            "channels": {
+                "电影": {"batch": {"items": [{"item_key": "."}]}},
+                "电视剧": {"batch": {"items": []}},
+                "动漫": {"batch": {"items": []}},
+            },
+        }
+
+        def responder(record, _index):
+            if record["method"] == "POST":
+                return 200, session, 0
+            return 200, {"people": []}, 0
+
+        with http_fixture(responder) as (origin, records):
+            output = run_node_module(
+                f'''
+                {browser_prelude(origin)}
+                const {{ installAcceptanceHook }} = await import("{module_url('js/core/acceptance.js')}");
+                const store = {{ getState() {{ return {{}}; }}, dispatch() {{ throw new Error("dot title dispatched"); }} }};
+                const uninstall = installAcceptanceHook({{ browser: window, store }});
+                let errorResult;
+                try {{ await window.__CINESCOPE_SEED_ACCEPTANCE__(); }} catch (error) {{
+                  errorResult = {{ code: error.code, message: error.message, stack: error.stack }};
+                }}
+                uninstall();
+                console.log(JSON.stringify(errorResult));
+                '''
+            )
+
+        result = json.loads(output)
+        self.assertEqual("CINESCOPE_ACCEPTANCE_NO_TITLE", result["code"])
+        self.assertEqual(result["code"], result["message"])
+        self.assertEqual(["/api/v2/recommend/sessions"], [unquote(urlsplit(record["path"]).path) for record in records])
+        self.assertNotIn(origin, json.dumps(result))
+
+    def test_acceptance_rejects_dot_dot_person_segment_before_http_normalisation(self):
+        session = {
+            "id": "session-dot-person",
+            "channels": {
+                "电影": {"batch": {"items": [{"item_key": "douban:1001"}]}},
+                "电视剧": {"batch": {"items": []}},
+                "动漫": {"batch": {"items": []}},
+            },
+        }
+
+        def responder(record, _index):
+            path = unquote(urlsplit(record["path"]).path)
+            if record["method"] == "POST":
+                return 200, session, 0
+            if path == "/api/v2/titles/douban:1001":
+                return 200, {"people": [{"id": ".."}]}, 0
+            return 200, {"id": "parent-endpoint-must-not-resolve"}, 0
+
+        with http_fixture(responder) as (origin, records):
+            output = run_node_module(
+                f'''
+                {browser_prelude(origin)}
+                const {{ installAcceptanceHook }} = await import("{module_url('js/core/acceptance.js')}");
+                const store = {{ getState() {{ return {{ recommendation: {{ sessionId: null }} }}; }}, dispatch() {{}} }};
+                const uninstall = installAcceptanceHook({{ browser: window, store }});
+                let result;
+                try {{
+                  result = {{ success: true, value: await window.__CINESCOPE_SEED_ACCEPTANCE__() }};
+                }} catch (error) {{
+                  result = {{ success: false, code: error.code, message: error.message, stack: error.stack }};
+                }}
+                uninstall();
+                console.log(JSON.stringify(result));
+                '''
+            )
+
+        result = json.loads(output)
+        self.assertFalse(result["success"])
+        self.assertEqual("CINESCOPE_ACCEPTANCE_NO_PERSON", result["code"])
+        self.assertEqual(result["code"], result["message"])
+        self.assertEqual(
+            ["/api/v2/recommend/sessions", "/api/v2/titles/douban:1001"],
+            [unquote(urlsplit(record["path"]).path) for record in records],
+        )
+        self.assertNotIn(origin, json.dumps(result))
+
+    def test_acceptance_treats_listener_throw_after_real_store_commit_as_cached_success(self):
+        session = {
+            "id": "session-listener-commit",
+            "intent": {"free_text": "raw-listener-private-text"},
+            "chips": [],
+            "channels": {
+                "电影": {"batch": {"id": "movie-listener-batch", "index": 0, "items": [{"item_key": "douban:2001", "title": "raw-listener-title"}]}},
+                "电视剧": {"batch": {"id": "series-listener-batch", "index": 0, "items": []}},
+                "动漫": {"batch": {"id": "anime-listener-batch", "index": 0, "items": []}},
+            },
+        }
+
+        def responder(record, _index):
+            path = unquote(urlsplit(record["path"]).path)
+            if record["method"] == "POST":
+                return 200, session, 0
+            if path == "/api/v2/titles/douban:2001":
+                return 200, {"people": [{"id": "person-listener"}]}, 0
+            if path == "/api/v2/people/person-listener":
+                return 200, {"id": "person-listener", "name": "raw-listener-person"}, 0
+            return 404, {"error": "unexpected-listener-fixture"}, 0
+
+        with http_fixture(responder) as (origin, records):
+            output = run_node_module(
+                f'''
+                {browser_prelude(origin)}
+                const values = new Map(); let writes = 0;
+                const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ writes += 1; values.set(key, String(value)); }} }};
+                const {{ createEmptyUiState, createStore, persistUiState, UI_STATE_KEY }} = await import("{module_url('js/core/store.js')}");
+                const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+                const {{ installAcceptanceHook }} = await import("{module_url('js/core/acceptance.js')}");
+                const store = createStore(createEmptyUiState(), reduceUiState);
+                store.subscribe((state, action) => {{
+                  persistUiState(state, storage);
+                  if (action.type === "recommendation/sessionReceived") throw new Error("listener-private-text");
+                }});
+                const uninstall = installAcceptanceHook({{ browser: window, store }});
+                const first = await window.__CINESCOPE_SEED_ACCEPTANCE__();
+                const second = await window.__CINESCOPE_SEED_ACCEPTANCE__();
+                const persisted = values.get(UI_STATE_KEY) || "";
+                uninstall();
+                console.log(JSON.stringify({{
+                  first, second, sameResult: first === second, writes, persisted,
+                  sessionId: store.getState().recommendation.sessionId,
+                }}));
+                '''
+            )
+
+        result = json.loads(output)
+        expected = {"sessionId": "session-listener-commit", "titleId": "douban:2001", "personId": "person-listener"}
+        self.assertEqual(expected, result["first"])
+        self.assertEqual(expected, result["second"])
+        self.assertTrue(result["sameResult"])
+        self.assertEqual(1, result["writes"])
+        self.assertEqual("session-listener-commit", result["sessionId"])
+        self.assertEqual(1, sum(record["method"] == "POST" for record in records))
+        for forbidden in ("raw-listener-private-text", "raw-listener-title", "raw-listener-person", "listener-private-text"):
+            self.assertNotIn(forbidden, result["persisted"])
+
+    def test_acceptance_reports_commit_failure_only_when_store_state_did_not_change(self):
+        session = {
+            "id": "session-uncommitted",
+            "channels": {
+                "电影": {"batch": {"items": [{"item_key": "douban:3001"}]}},
+                "电视剧": {"batch": {"items": []}},
+                "动漫": {"batch": {"items": []}},
+            },
+        }
+
+        def responder(record, _index):
+            path = unquote(urlsplit(record["path"]).path)
+            if record["method"] == "POST":
+                return 200, session, 0
+            if path == "/api/v2/titles/douban:3001":
+                return 200, {"people": [{"id": "person-uncommitted"}]}, 0
+            if path == "/api/v2/people/person-uncommitted":
+                return 200, {"id": "person-uncommitted"}, 0
+            return 404, {"error": "unexpected-uncommitted-fixture"}, 0
+
+        with http_fixture(responder) as (origin, _records):
+            output = run_node_module(
+                f'''
+                {browser_prelude(origin)}
+                const {{ installAcceptanceHook }} = await import("{module_url('js/core/acceptance.js')}");
+                const store = {{
+                  getState() {{ return {{ recommendation: {{ sessionId: null }} }}; }},
+                  dispatch() {{ throw new Error("reducer-private-failure"); }},
+                }};
+                const uninstall = installAcceptanceHook({{ browser: window, store }});
+                let result;
+                try {{ await window.__CINESCOPE_SEED_ACCEPTANCE__(); }} catch (error) {{ result = {{ code: error.code, message: error.message, stack: error.stack }}; }}
+                uninstall();
+                console.log(JSON.stringify(result));
+                '''
+            )
+
+        result = json.loads(output)
+        self.assertEqual("CINESCOPE_ACCEPTANCE_COMMIT_FAILED", result["code"])
+        self.assertEqual(result["code"], result["message"])
+        self.assertNotIn("reducer-private-failure", json.dumps(result))
+
     def test_acceptance_abort_generation_and_reinstall_prevent_stale_dispatch(self):
         post_count = 0
         post_lock = threading.Lock()
@@ -482,6 +804,61 @@ class UiV3AuditTests(unittest.TestCase):
         destroy_body = source[source.index("destroy() {") :]
         first_statement = destroy_body.split("{", 1)[1].strip().splitlines()[0].strip()
         self.assertEqual("uninstallBrowserHooks();", first_statement)
+
+    def test_app_runtime_hook_lifecycle_preserves_replacement_and_uninstalls_before_cleanup(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const nodes = new Map();
+            for (const [id, tag] of [["app-view", "main"], ["shell-status", "p"], ["command-lens-root", "div"], ["overlay-root", "div"], ["command-lens-trigger", "button"], ["rail-collapse-toggle", "button"], ["rail-hide-toggle", "button"], ["rail-restore", "button"], ["primary-rail", "aside"], ["a11y-announcer", "div"]]) {{
+              const node = new FakeElement(tag); node.id = id; nodes.set(id, node);
+            }}
+            document.body = new FakeElement("body"); document.body.classList = new FakeClassList(document.body); document.activeElement = document.body;
+            const documentListeners = new Map(); const cleanupSnapshots = []; let destroyPhase = "";
+            document.getElementById = (id) => nodes.get(id) || null;
+            document.querySelectorAll = () => [];
+            document.addEventListener = (type, listener) => {{ if (!documentListeners.has(type)) documentListeners.set(type, new Set()); documentListeners.get(type).add(listener); }};
+            document.removeEventListener = (type, listener) => {{
+              if (destroyPhase) cleanupSnapshots.push({{ phase: destroyPhase, surface: `document:${{type}}`, audit: window.__CINESCOPE_AUDIT__, seed: window.__CINESCOPE_SEED_ACCEPTANCE__ }});
+              documentListeners.get(type)?.delete(listener);
+            }};
+            const storage = new Map(); const windowListeners = new Map();
+            const browser = {{
+              location: new URL("http://localhost/missing"), scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }}, replaceState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return storage.get(key) ?? null; }}, setItem(key, value) {{ storage.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ if (!windowListeners.has(type)) windowListeners.set(type, new Set()); windowListeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{
+                if (destroyPhase) cleanupSnapshots.push({{ phase: destroyPhase, surface: `window:${{type}}`, audit: browser.__CINESCOPE_AUDIT__, seed: browser.__CINESCOPE_SEED_ACCEPTANCE__ }});
+                windowListeners.get(type)?.delete(listener);
+              }},
+              dispatchEvent(event) {{ for (const listener of [...(windowListeners.get(event.type) || [])]) listener(event); }},
+              requestAnimationFrame(callback) {{ callback(); return 1; }}, scrollTo() {{}}, matchMedia() {{ return {{ matches: false }}; }},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.location = browser.location; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame; globalThis.PopStateEvent = browser.PopStateEvent;
+            const {{ bootstrapCineScopeShell }} = await import("{module_url('js/app.js')}");
+            const first = bootstrapCineScopeShell(); await flush();
+            const firstAudit = browser.__CINESCOPE_AUDIT__; const firstSeed = browser.__CINESCOPE_SEED_ACCEPTANCE__;
+            if (typeof firstAudit !== "function" || typeof firstSeed !== "function") throw new Error("first bootstrap did not install hooks");
+            const second = bootstrapCineScopeShell(); await flush();
+            const secondAudit = browser.__CINESCOPE_AUDIT__; const secondSeed = browser.__CINESCOPE_SEED_ACCEPTANCE__;
+            if (secondAudit === firstAudit || secondSeed === firstSeed) throw new Error("replacement bootstrap reused owner refs");
+            destroyPhase = "old"; first.destroy(); destroyPhase = "";
+            if (browser.__CINESCOPE_AUDIT__ !== secondAudit || browser.__CINESCOPE_SEED_ACCEPTANCE__ !== secondSeed) throw new Error("old destroy deleted replacement globals");
+            destroyPhase = "replacement"; second.destroy(); destroyPhase = "";
+            if ("__CINESCOPE_AUDIT__" in browser || "__CINESCOPE_SEED_ACCEPTANCE__" in browser) throw new Error("replacement destroy left hooks installed");
+            const oldSnapshots = cleanupSnapshots.filter((entry) => entry.phase === "old");
+            const replacementSnapshots = cleanupSnapshots.filter((entry) => entry.phase === "replacement");
+            if (!oldSnapshots.length || oldSnapshots.some((entry) => entry.audit !== secondAudit || entry.seed !== secondSeed)) throw new Error("old destroy teardown ordering was not exact-owner safe");
+            if (!replacementSnapshots.length || replacementSnapshots.some((entry) => entry.audit !== undefined || entry.seed !== undefined)) throw new Error("replacement hooks were not removed before later cleanup");
+            console.log(JSON.stringify({{ oldSnapshots: oldSnapshots.length, replacementSnapshots: replacementSnapshots.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertGreater(result["oldSnapshots"], 0)
+        self.assertGreater(result["replacementSnapshots"], 0)
 
 
 if __name__ == "__main__":

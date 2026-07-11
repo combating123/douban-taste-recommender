@@ -53,7 +53,15 @@ async function request(owner, code, operation) {
 
 function safeId(value) {
   const clean = typeof value === "string" ? value.trim() : "";
-  return SAFE_ID.test(clean) ? clean : "";
+  return clean !== "." && clean !== ".." && SAFE_ID.test(clean) ? clean : "";
+}
+
+function sessionWasCommitted(store, sessionId) {
+  try {
+    return safeId(store.getState()?.recommendation?.sessionId) === sessionId;
+  } catch {
+    return false;
+  }
 }
 
 function candidateItems(session) {
@@ -100,7 +108,9 @@ async function seedAcceptance(owner) {
       if (!isCurrent(owner) || error?.code === "CINESCOPE_ACCEPTANCE_STALE") {
         throw acceptanceError("CINESCOPE_ACCEPTANCE_STALE");
       }
-      throw acceptanceError("CINESCOPE_ACCEPTANCE_COMMIT_FAILED");
+      if (!sessionWasCommitted(owner.store, sessionId)) {
+        throw acceptanceError("CINESCOPE_ACCEPTANCE_COMMIT_FAILED");
+      }
     }
     return Object.freeze({ sessionId, titleId, personId });
   }

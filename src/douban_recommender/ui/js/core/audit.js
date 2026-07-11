@@ -50,7 +50,7 @@ function computedStyle(node) {
 
 function isVisible(node) {
   if (!node || node.hidden) return false;
-  if (node.closest?.("[hidden]") || node.closest?.('[aria-hidden="true"]')) return false;
+  if (node.closest?.("[hidden]")) return false;
   const style = computedStyle(node);
   if (style.display === "none" || ["hidden", "collapse"].includes(style.visibility)) return false;
   if (typeof node.getClientRects === "function" && node.getClientRects().length === 0) return false;
@@ -96,7 +96,7 @@ function validMediaImage(image, locationLike) {
   const page = locationUrl(locationLike);
   if (!page) return false;
   try {
-    const source = new URL(image.src, page.href);
+    const source = new URL(image.currentSrc || image.src, page.href);
     return source.origin === page.origin && source.pathname.startsWith("/media/");
   } catch {
     return false;
@@ -104,7 +104,16 @@ function validMediaImage(image, locationLike) {
 }
 
 function isUsableFocusTarget(node) {
-  if (!isVisible(node) || node.disabled || node.hasAttribute?.("disabled") || node.getAttribute?.("aria-disabled") === "true") return false;
+  if (
+    !isVisible(node)
+    || node.inert
+    || node.closest?.("[inert]")
+    || node.disabled
+    || node.hasAttribute?.("disabled")
+    || node.getAttribute?.("aria-disabled") === "true"
+  ) return false;
+  const actualTabIndex = Number(node.tabIndex);
+  if (Number.isFinite(actualTabIndex)) return actualTabIndex >= 0;
   const tag = String(node.tagName || "").toLowerCase();
   if (["button", "select", "textarea"].includes(tag)) return true;
   if (tag === "input") return String(node.type || node.getAttribute?.("type") || "").toLowerCase() !== "hidden";
