@@ -140,12 +140,18 @@ function backendChannelsToState(session, previous = {}, { preserveOtherSessions 
     const rawCandidateCounts = session?.candidate_counts && typeof session.candidate_counts === "object"
       ? session.candidate_counts
       : {};
+    const hasExplicitUnknownTarget = Object.prototype.hasOwnProperty.call(rawCandidateCounts, "target_size")
+      && rawCandidateCounts.target_size === null;
     const candidateCounts = {
-      target_size: Number.isInteger(rawCandidateCounts.target_size) && rawCandidateCounts.target_size >= 0
-        ? rawCandidateCounts.target_size
-        : Number.isInteger(current.candidate_counts?.target_size) && current.candidate_counts.target_size >= 0
-          ? current.candidate_counts.target_size
-          : null,
+      target_size: hasExplicitUnknownTarget
+        ? null
+        : (
+          Number.isInteger(rawCandidateCounts.target_size) && rawCandidateCounts.target_size >= 0
+            ? rawCandidateCounts.target_size
+            : Number.isInteger(current.candidate_counts?.target_size) && current.candidate_counts.target_size >= 0
+              ? current.candidate_counts.target_size
+              : null
+        ),
       returned_size: Number.isInteger(rawCandidateCounts.returned_size) && rawCandidateCounts.returned_size >= 0
         ? rawCandidateCounts.returned_size
         : Number.isInteger(current.candidate_counts?.returned_size) && current.candidate_counts.returned_size >= 0

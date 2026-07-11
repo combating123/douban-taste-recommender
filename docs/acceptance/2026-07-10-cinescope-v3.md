@@ -196,3 +196,56 @@ Machine-readable and visual evidence:
 ### Privacy and remaining external limitation
 
 The Cookie field remained visibly empty. No Cookie was read from browser/session storage, a browser profile, disk, environment dumps, request headers, or persisted state; no storage was inspected to recover one. The accepted session was loaded through a same-origin API read and an allowlisted in-memory store dispatch only. Visible images remained fail-closed to same-origin `/media/*`. Public sync did not request authentication, so the visible `needs_cookie` resume branch could not be completed without a user-supplied Cookie; no Cookie was sourced or fabricated.
+
+## Task 5 upgrade-path re-review — explicit null precedence (2026-07-12)
+
+### Upgrade-path contract
+
+A previous Task 5 build could persist a same-session `candidate_counts.target_size` value of `0`. When the restored server payload explicitly says `target_size: null`, that present null is now authoritative and clears any cached numeric value. A missing `target_size` property still uses the existing safe same-session fallback, while a valid numeric server value such as `160` remains authoritative. Unknown is therefore preserved as `null` in state and `目标 —` in Tonight; it is never represented as `0`.
+
+The integration regression persists a same-session target of `0`, restores it through the real store projection, and then applies three server shapes in order:
+
+1. explicit `target_size: null` → all three channels become `null` and Tonight renders `目标 —`, never `目标 0`;
+2. exact `target_size: 160` → state and Tonight return to exact `160`;
+3. absent `target_size` after that exact response → the safe exact cached fallback remains `160`.
+
+The RED run failed with `explicit null did not clear cached target for movie: {"target_size":0,"returned_size":192}`. The minimal implementation only adds own-property-aware precedence for the explicit null case in `app.js`.
+
+### Recaptured final-code browser evidence
+
+- Evidence generated: `2026-07-11T20:30:59.282Z` (`2026-07-12 04:30:59 +08:00`).
+- Service: explicit-opt-in V3 on `127.0.0.1:7875`, data directory `output/task5-acceptance-data`.
+- Browser origin: `http://task5-upgrade-final2-20260712.localhost:7875`.
+- Exact-count matrix session: `7e5061e80be74395bb6a6b1ba876271e`, target `160`, returned `192`, anime batch `3`.
+- Legacy-dash browser session: `da5be0b35dd84973b9cb5a2419709a68`; it held a cached numeric target before reload, was deliberately downgraded on the server to omit historical candidate-count metadata, restored as API `target_size: null`, and visibly rendered `目标 —` with `实际返回 192`, pool `53`, matched `53`, visible `5`, batch `3`. The automated integration regression covers the specifically reported cached-`0` predecessor state.
+
+The same ten principal routes were recaptured at `1440x900`, `1280x800`, `1024x768`, and `390x844`. All 40 rows use final viewport screenshots and passed:
+
+```text
+row_count=40
+pass_count=40
+failure_count=0
+broken_images=0
+external_images=0
+overflow_nodes=0
+focus_failures=0
+empty_main_rows=0
+horizontal_scroll_rows=0
+mobile_rail_hidden_rows=10
+mobile_bottom_nav_visible_rows=10
+tonight_rows=16
+viewport_screenshots=40
+```
+
+At `/tonight/anime-series`, all four viewports again exposed the exact six-value line: `目标 160`, `实际返回 192`, `候选池 53`, `匹配 53`, `本批可见 5`, `当前批次 3`. The 390px Universe roster retained nine entries with a minimum entry width of `288px`, no document-level horizontal scroll, and no overflow finding.
+
+Evidence paths:
+
+- `output/task5-acceptance/task5-upgrade-path-final-evidence.json`
+- `output/task5-acceptance/upgrade-path-final-code-gate/evidence.json`
+- `output/task5-acceptance/upgrade-path-final-code-gate/<viewport>/*.png` — 40 final viewport screenshots
+- `output/task5-acceptance/upgrade-path-final-code-gate/focus/<viewport>-tonight-counts.png` — four exact-count crops
+- `output/task5-acceptance/upgrade-path-final-code-gate/focus/legacy-target-dash-final.png` — focused authoritative-null crop
+- `output/task5-acceptance/upgrade-path-final-code-gate/focus/upgrade-path-counts-contact-sheet.png` — reviewed exact/legacy contact sheet
+
+No new public sync was started for this upgrade-only re-review; the previously recorded `280 / 244 / 36 / 22 / 0` live result and its provenance remain unchanged. No Cookie was entered, sourced, or inspected. Browser Cookie/profile/storage data was not read, and no missing media was fabricated.

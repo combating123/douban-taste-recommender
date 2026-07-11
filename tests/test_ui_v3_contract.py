@@ -1140,6 +1140,80 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn("目标 160", result["exactVisible"])
         self.assertIsNone(result["restored"]["anime-series"]["candidate_counts"]["target_size"])
 
+    def test_same_session_target_presence_distinguishes_absent_null_and_exact(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const {{ createEmptyUiState, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const values = new Map();
+            const storage = {{
+              getItem(key) {{ return values.get(key) ?? null; }},
+              setItem(key, value) {{ values.set(key, String(value)); }},
+            }};
+            const channel = (pool) => ({{
+              pool_size: pool, matched_size: pool, visible_size: 5, active_batch: 3,
+              batch: {{ id: `upgrade-${{pool}}`, index: 3, items: [], pool_size: pool, matched_size: pool, visible_size: 5 }},
+            }});
+            const session = (candidateCounts) => ({{
+              id: "legacy-upgrade-session", candidate_counts: candidateCounts,
+              intent: {{}}, chips: [],
+              channels: {{ "电影": channel(85), "电视剧": channel(54), "动漫": channel(53) }},
+            }});
+
+            const cached = reduceUiState(createEmptyUiState(), {{
+              type: "recommendation/sessionReceived",
+              session: session({{ target_size: 0, returned_size: 192 }}),
+            }});
+            persistUiState(cached, storage);
+            const restored = restoreUiState(storage);
+            const routed = {{
+              ...restored,
+              activePath: "/tonight/anime-series",
+              recommendation: {{ ...restored.recommendation, activeChannel: "anime-series" }},
+            }};
+            const restoreAction = (candidateCounts) => ({{
+              type: "recommendation/sessionReceived", source: "restore",
+              expectedSessionId: "legacy-upgrade-session", channel: "anime-series",
+              route: "/tonight/anime-series", session: session(candidateCounts),
+            }});
+
+            const unknown = reduceUiState(routed, restoreAction({{ target_size: null, returned_size: 192 }}));
+            for (const slug of ["movie", "series", "anime-series"]) {{
+              const counts = unknown.recommendation.channels[slug].candidate_counts;
+              if (counts?.target_size !== null || counts?.returned_size !== 192) {{
+                throw new Error(`explicit null did not clear cached target for ${{slug}}: ${{JSON.stringify(counts)}}`);
+              }}
+            }}
+            const unknownVisible = renderTonight(unknown).textContent;
+            if (!unknownVisible.includes("目标 —") || unknownVisible.includes("目标 0")) {{
+              throw new Error(`explicit null rendered a cached zero: ${{unknownVisible}}`);
+            }}
+
+            const exact = reduceUiState(unknown, restoreAction({{ target_size: 160, returned_size: 192 }}));
+            const exactVisible = renderTonight(exact).textContent;
+            if (exact.recommendation.channels["anime-series"].candidate_counts.target_size !== 160 || !exactVisible.includes("目标 160")) {{
+              throw new Error(`exact server target was not authoritative: ${{exactVisible}}`);
+            }}
+            const absent = reduceUiState(exact, restoreAction({{ returned_size: 192 }}));
+            if (absent.recommendation.channels["anime-series"].candidate_counts.target_size !== 160) {{
+              throw new Error(`absent server target did not preserve the exact cached fallback: ${{JSON.stringify(absent.recommendation.channels)}}`);
+            }}
+            console.log(JSON.stringify({{
+              absent: absent.recommendation.channels["anime-series"].candidate_counts,
+              unknown: unknown.recommendation.channels["anime-series"].candidate_counts,
+              unknownVisible, exactVisible,
+            }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(160, result["absent"]["target_size"])
+        self.assertIsNone(result["unknown"]["target_size"])
+        self.assertIn("目标 —", result["unknownVisible"])
+        self.assertIn("目标 160", result["exactVisible"])
+
     def test_tonight_visibly_exposes_target_returned_channel_and_batch_counts(self):
         prelude = fake_dom_module_prelude()
         output = run_node_module(
