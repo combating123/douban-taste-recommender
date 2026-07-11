@@ -5,6 +5,8 @@ import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, 
 import { migrateLegacyClientState } from "./core/migrate.js";
 import { configureRecoveryBoundary, invalidateRecoveryRender, rememberLastStableState, renderSafely } from "./core/recovery.js";
 import { announce } from "./core/focus.js";
+import { installAuditHook } from "./core/audit.js";
+import { installAcceptanceHook } from "./core/acceptance.js";
 import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
@@ -747,12 +749,19 @@ export function bootstrapCineScopeShell() {
     onRoute: routeHandler,
   });
 
+  const uninstallAuditHook = installAuditHook();
+  const uninstallAcceptanceHook = installAcceptanceHook({ store, router });
+  const uninstallBrowserHooks = () => {
+    uninstallAcceptanceHook();
+    uninstallAuditHook();
+  };
   const unbindNavigation = bindNavigation(router);
   router.start();
   return {
     router,
     store,
     destroy() {
+      uninstallBrowserHooks();
       closeCommandLens({ restoreFocus: false });
       unbindCommandLensShortcut();
       routeHandler.dispose();
