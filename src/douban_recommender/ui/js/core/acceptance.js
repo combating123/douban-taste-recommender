@@ -3,7 +3,12 @@ import { isLocalHookLocation } from "./audit.js";
 import { stableTitleKey } from "../components/title-card.js";
 
 const SAFE_ID = /^[A-Za-z0-9:._~-]+$/;
-const CHANNEL_ORDER = [CHANNEL_KEYS.movie, CHANNEL_KEYS.series, CHANNEL_KEYS["anime-series"]];
+const CHANNEL_POINTERS = Object.freeze([
+  { slug: "movie", backend: CHANNEL_KEYS.movie },
+  { slug: "series", backend: CHANNEL_KEYS.series },
+  { slug: "anime-series", backend: CHANNEL_KEYS["anime-series"] },
+]);
+const CHANNEL_ORDER = CHANNEL_POINTERS.map((channel) => channel.backend);
 // postV2 injects the required schema_version: 2 into this deterministic payload.
 const PAYLOAD = Object.freeze({
   use_sample_ratings: true,
@@ -56,12 +61,25 @@ function safeId(value) {
   return clean !== "." && clean !== ".." && SAFE_ID.test(clean) ? clean : "";
 }
 
-function sessionWasCommitted(store, sessionId) {
-  try {
-    return safeId(store.getState()?.recommendation?.sessionId) === sessionId;
-  } catch {
-    return false;
+function sessionWasCommitted(beforeState, afterState, session) {
+  if (!afterState || afterState === beforeState) return false;
+  const sessionId = safeId(session?.id);
+  const recommendation = afterState.recommendation;
+  if (!sessionId || safeId(recommendation?.sessionId) !== sessionId) return false;
+  for (const { slug, backend } of CHANNEL_POINTERS) {
+    const expectedBatch = session?.channels?.[backend]?.batch;
+    const expectedBatchId = typeof expectedBatch?.id === "string" ? expectedBatch.id.trim() : "";
+    const actualChannel = recommendation?.channels?.[slug];
+    if (
+      !expectedBatchId
+      || !Number.isInteger(expectedBatch?.index)
+      || safeId(actualChannel?.sessionId) !== sessionId
+      || actualChannel?.batchIndex !== expectedBatch.index
+      || !Array.isArray(actualChannel?.batchIds)
+      || !actualChannel.batchIds.includes(expectedBatchId)
+    ) return false;
   }
+  return true;
 }
 
 function candidateItems(session) {
@@ -102,13 +120,25 @@ async function seedAcceptance(owner) {
       owner.api.getV2(`/api/v2/people/${encodeURIComponent(personId)}`, { signal: owner.controller.signal })
     ));
     requireCurrent(owner);
+    let beforeState;
+    try {
+      beforeState = owner.store.getState();
+    } catch {
+      throw acceptanceError("CINESCOPE_ACCEPTANCE_COMMIT_FAILED");
+    }
     try {
       owner.store.dispatch({ type: "recommendation/sessionReceived", session, source: "acceptance" });
     } catch (error) {
       if (!isCurrent(owner) || error?.code === "CINESCOPE_ACCEPTANCE_STALE") {
         throw acceptanceError("CINESCOPE_ACCEPTANCE_STALE");
       }
-      if (!sessionWasCommitted(owner.store, sessionId)) {
+      let afterState;
+      try {
+        afterState = owner.store.getState();
+      } catch {
+        afterState = null;
+      }
+      if (!sessionWasCommitted(beforeState, afterState, session)) {
         throw acceptanceError("CINESCOPE_ACCEPTANCE_COMMIT_FAILED");
       }
     }

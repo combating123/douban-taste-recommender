@@ -48,9 +48,41 @@ function computedStyle(node) {
   }
 }
 
+function elementChain(node) {
+  const chain = [];
+  const seen = new Set();
+  for (let current = node; current && !seen.has(current); current = current.parentElement) {
+    seen.add(current);
+    chain.push(current);
+  }
+  return chain;
+}
+
+function hasAttribute(node, name) {
+  try {
+    if (node?.hasAttribute?.(name)) return true;
+  } catch {
+    // Fall through to getAttribute for minimal DOM implementations.
+  }
+  try {
+    const value = node?.getAttribute?.(name);
+    return value !== null && value !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+function attributeEquals(node, name, expected) {
+  try {
+    return String(node?.getAttribute?.(name) ?? "").toLowerCase() === expected;
+  } catch {
+    return false;
+  }
+}
+
 function isVisible(node) {
   if (!node || node.hidden) return false;
-  if (node.closest?.("[hidden]")) return false;
+  if (elementChain(node).some((element) => element.hidden || hasAttribute(element, "hidden"))) return false;
   const style = computedStyle(node);
   if (style.display === "none" || ["hidden", "collapse"].includes(style.visibility)) return false;
   if (typeof node.getClientRects === "function" && node.getClientRects().length === 0) return false;
@@ -104,22 +136,21 @@ function validMediaImage(image, locationLike) {
 }
 
 function isUsableFocusTarget(node) {
-  if (
-    !isVisible(node)
-    || node.inert
-    || node.closest?.("[inert]")
-    || node.disabled
-    || node.hasAttribute?.("disabled")
-    || node.getAttribute?.("aria-disabled") === "true"
-  ) return false;
-  const actualTabIndex = Number(node.tabIndex);
-  if (Number.isFinite(actualTabIndex)) return actualTabIndex >= 0;
-  const tag = String(node.tagName || "").toLowerCase();
-  if (["button", "select", "textarea"].includes(tag)) return true;
-  if (tag === "input") return String(node.type || node.getAttribute?.("type") || "").toLowerCase() !== "hidden";
-  if (tag === "a" && Boolean(node.getAttribute?.("href") || node.href)) return true;
-  const tabindex = node.getAttribute?.("tabindex");
-  return tabindex !== null && Number(tabindex) >= 0;
+  if (!isVisible(node)) return false;
+  const chain = elementChain(node);
+  if (chain.some((element) => attributeEquals(element, "aria-hidden", "true"))) return false;
+  if (chain.some((element) => element.inert || hasAttribute(element, "inert"))) return false;
+  if (node.disabled || hasAttribute(node, "disabled")) return false;
+  try {
+    if (node.matches?.(":disabled")) return false;
+  } catch {
+    // Unsupported selectors fall back to conservative ancestor inspection.
+  }
+  if (chain.slice(1).some((element) => (
+    String(element.tagName || "").toLowerCase() === "fieldset"
+    && (element.disabled || hasAttribute(element, "disabled"))
+  ))) return false;
+  return Number.isFinite(node.tabIndex) && node.tabIndex >= 0;
 }
 
 function modalDialogs(documentRef) {

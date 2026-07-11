@@ -249,6 +249,67 @@ class UiV3AuditTests(unittest.TestCase):
         self.assertEqual(1, result["disabled"])
         self.assertEqual(1, result["hidden"])
 
+    def test_audit_focus_eligibility_excludes_aria_hidden_and_disabled_fieldset_subtrees(self):
+        output = run_node_module(
+            f'''
+            function element(tagName, options = {{}}) {{
+              const attributes = new Map(Object.entries(options.attributes || {{}}));
+              return {{
+                tagName: tagName.toUpperCase(), tabIndex: options.tabIndex ?? -1,
+                disabled: Boolean(options.disabled), hidden: Boolean(options.hidden), inert: Boolean(options.inert),
+                parentElement: null, children: [], attributes,
+                append(...nodes) {{ for (const node of nodes) {{ this.children.push(node); node.parentElement = this; }} }},
+                getAttribute(name) {{ return attributes.get(name) ?? null; }},
+                hasAttribute(name) {{ return attributes.has(name); }},
+                getClientRects() {{ return this.hidden ? [] : [{{ width: 20, height: 20 }}]; }},
+              }};
+            }}
+            function modalAudit(root, focusTarget, image = null) {{
+              const modal = element("section", {{ attributes: {{ role: "dialog", "aria-modal": "true" }} }});
+              modal.append(root);
+              const descendants = [];
+              const visit = (node) => {{ for (const child of node.children || []) {{ descendants.push(child); visit(child); }} }};
+              visit(modal);
+              modal.querySelectorAll = () => descendants;
+              modal.contains = (node) => {{ for (let current = node; current; current = current.parentElement) if (current === modal) return true; return false; }};
+              globalThis.document = {{
+                images: image ? [image] : [], activeElement: focusTarget,
+                querySelector() {{ return {{ textContent: "ready" }}; }},
+                querySelectorAll(selector) {{ return selector.includes("dialog") ? [modal] : []; }},
+              }};
+              return runAudit();
+            }}
+            globalThis.location = new URL("http://localhost/tonight");
+            globalThis.window = {{ location: globalThis.location, innerWidth: 390, innerHeight: 844, matchMedia() {{ return {{ matches: false }}; }} }};
+            globalThis.getComputedStyle = () => ({{ display: "block", visibility: "visible", overflowX: "visible" }});
+            const {{ runAudit }} = await import("{module_url('js/core/audit.js')}");
+
+            const ariaWrapper = element("div", {{ attributes: {{ "aria-hidden": "true" }} }});
+            const ariaFocusable = element("button", {{ tabIndex: 0 }}); ariaWrapper.append(ariaFocusable);
+            const ariaImage = element("img", {{ attributes: {{ "aria-hidden": "true" }} }});
+            Object.assign(ariaImage, {{ complete: true, naturalWidth: 0, src: "https://cdn.example/media/private-focus-regression.png", currentSrc: "", clientWidth: 90, clientHeight: 130, scrollWidth: 90, scrollHeight: 130, classList: {{ contains() {{ return false; }} }} }});
+            const ariaAudit = modalAudit(ariaWrapper, ariaFocusable, ariaImage);
+
+            const fieldset = element("fieldset", {{ attributes: {{ disabled: "" }}, disabled: true }});
+            const fieldsetFocusable = element("input", {{ tabIndex: 0 }});
+            fieldsetFocusable.matches = () => {{ throw new Error("selector unsupported"); }};
+            fieldset.append(fieldsetFocusable);
+            const fieldsetAudit = modalAudit(fieldset, fieldsetFocusable);
+
+            console.log(JSON.stringify({{
+              ariaFocusFailures: ariaAudit.focusFailures.length,
+              ariaBrokenImages: ariaAudit.brokenImages.length,
+              ariaExternalImages: ariaAudit.externalImages.length,
+              fieldsetFocusFailures: fieldsetAudit.focusFailures.length,
+            }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["ariaFocusFailures"])
+        self.assertEqual(1, result["fieldsetFocusFailures"])
+        self.assertEqual(1, result["ariaBrokenImages"])
+        self.assertEqual(1, result["ariaExternalImages"])
+
     def test_browser_audit_executes_image_overflow_empty_main_and_focus_rules(self):
         output = run_node_module(
             f'''
@@ -265,6 +326,7 @@ class UiV3AuditTests(unittest.TestCase):
                 this.id = options.id || ""; this.hidden = Boolean(options.hidden);
                 this.textContent = options.textContent || ""; this.src = options.src || "";
                 this.complete = options.complete ?? true; this.naturalWidth = options.naturalWidth ?? 640;
+                this.tabIndex = options.tabIndex ?? (this.tagName === "BUTTON" ? 0 : -1);
                 this.clientWidth = options.clientWidth ?? 320; this.clientHeight = options.clientHeight ?? 180;
                 this.scrollWidth = options.scrollWidth ?? this.clientWidth; this.scrollHeight = options.scrollHeight ?? this.clientHeight;
                 this._rectVisible = options.rectVisible ?? true;
@@ -659,9 +721,9 @@ class UiV3AuditTests(unittest.TestCase):
         session = {
             "id": "session-uncommitted",
             "channels": {
-                "电影": {"batch": {"items": [{"item_key": "douban:3001"}]}},
-                "电视剧": {"batch": {"items": []}},
-                "动漫": {"batch": {"items": []}},
+                "电影": {"batch": {"id": "movie-uncommitted", "index": 1, "items": [{"item_key": "douban:3001"}]}},
+                "电视剧": {"batch": {"id": "series-uncommitted", "index": 2, "items": []}},
+                "动漫": {"batch": {"id": "anime-uncommitted", "index": 3, "items": []}},
             },
         }
 
@@ -675,26 +737,41 @@ class UiV3AuditTests(unittest.TestCase):
                 return 200, {"id": "person-uncommitted"}, 0
             return 404, {"error": "unexpected-uncommitted-fixture"}, 0
 
-        with http_fixture(responder) as (origin, _records):
+        with http_fixture(responder) as (origin, records):
             output = run_node_module(
                 f'''
                 {browser_prelude(origin)}
                 const {{ installAcceptanceHook }} = await import("{module_url('js/core/acceptance.js')}");
-                const store = {{
-                  getState() {{ return {{ recommendation: {{ sessionId: null }} }}; }},
-                  dispatch() {{ throw new Error("reducer-private-failure"); }},
-                }};
+                const {{ createStore }} = await import("{module_url('js/core/store.js')}");
+                const initialState = {{ recommendation: {{
+                  sessionId: "session-uncommitted",
+                  channels: {{
+                    movie: {{ sessionId: "session-uncommitted", batchIndex: 1, batchIds: ["movie-uncommitted"] }},
+                    series: {{ sessionId: "session-uncommitted", batchIndex: 2, batchIds: ["series-uncommitted"] }},
+                    "anime-series": {{ sessionId: "session-uncommitted", batchIndex: 3, batchIds: ["anime-uncommitted"] }},
+                  }},
+                }} }};
+                const store = createStore(initialState, () => {{ throw new Error("reducer-private-failure"); }});
                 const uninstall = installAcceptanceHook({{ browser: window, store }});
-                let result;
-                try {{ await window.__CINESCOPE_SEED_ACCEPTANCE__(); }} catch (error) {{ result = {{ code: error.code, message: error.message, stack: error.stack }}; }}
+                const attempt = async () => {{
+                  try {{ return {{ success: true, value: await window.__CINESCOPE_SEED_ACCEPTANCE__() }}; }}
+                  catch (error) {{ return {{ success: false, code: error.code, message: error.message, stack: error.stack }}; }}
+                }};
+                const first = await attempt(); const second = await attempt();
                 uninstall();
-                console.log(JSON.stringify(result));
+                console.log(JSON.stringify({{ first, second, unchanged: store.getState() === initialState }}));
                 '''
             )
 
         result = json.loads(output)
-        self.assertEqual("CINESCOPE_ACCEPTANCE_COMMIT_FAILED", result["code"])
-        self.assertEqual(result["code"], result["message"])
+        self.assertFalse(result["first"]["success"])
+        self.assertFalse(result["second"]["success"])
+        self.assertEqual("CINESCOPE_ACCEPTANCE_COMMIT_FAILED", result["first"]["code"])
+        self.assertEqual("CINESCOPE_ACCEPTANCE_COMMIT_FAILED", result["second"]["code"])
+        self.assertEqual(result["first"]["code"], result["first"]["message"])
+        self.assertEqual(result["second"]["code"], result["second"]["message"])
+        self.assertTrue(result["unchanged"])
+        self.assertEqual(2, sum(record["method"] == "POST" for record in records))
         self.assertNotIn("reducer-private-failure", json.dumps(result))
 
     def test_acceptance_abort_generation_and_reinstall_prevent_stale_dispatch(self):
