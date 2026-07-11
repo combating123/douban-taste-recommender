@@ -64,7 +64,7 @@
 }
 
 #app-view h1[tabindex="-1"] {
-  overflow-wrap: normal;
+  overflow-wrap: break-word;
   word-break: normal;
   text-wrap: balance;
 }

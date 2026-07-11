@@ -3483,7 +3483,8 @@ class UiV3ContractTests(unittest.TestCase):
         route_heading = re.search(r'#app-view\s+h1\[tabindex="-1"\]\s*\{([^}]*)\}', responsive)
         self.assertIsNotNone(route_heading)
         self.assertRegex(route_heading.group(1), r"text-wrap\s*:\s*balance")
-        self.assertRegex(route_heading.group(1), r"overflow-wrap\s*:\s*normal")
+        self.assertRegex(route_heading.group(1), r"overflow-wrap\s*:\s*break-word")
+        self.assertRegex(route_heading.group(1), r"word-break\s*:\s*normal")
 
         tonight_title = re.search(r"\.tonight-intro__title\s*\{([^}]*)\}", tonight)
         self.assertIsNotNone(tonight_title)
@@ -3501,6 +3502,24 @@ class UiV3ContractTests(unittest.TestCase):
         )
         self.assertNotIn("innerHTML", source)
         self.assertNotIn('createElement("link")', source)
+
+    def test_route_title_contract_breaks_long_continuous_text_before_horizontal_overflow(self):
+        responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
+        route_heading = re.search(r'#app-view\s+h1\[tabindex="-1"\]\s*\{([^}]*)\}', responsive)
+        self.assertIsNotNone(route_heading)
+
+        declarations = route_heading.group(1)
+        title_without_break_opportunities = "InterstellarDirectorCutRestoredEdition" * 24
+        has_emergency_wrap = re.search(
+            r"(?:overflow-wrap\s*:\s*(?:break-word|anywhere)|word-break\s*:\s*(?:break-all|break-word))",
+            declarations,
+        )
+
+        self.assertGreater(len(title_without_break_opportunities), 390)
+        self.assertIsNotNone(
+            has_emergency_wrap,
+            "A route title with no whitespace must have emergency wrapping rather than overflow its mobile container.",
+        )
 
     def test_detail_stylesheet_is_static_cinematic_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
