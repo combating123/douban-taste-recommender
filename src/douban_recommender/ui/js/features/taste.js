@@ -21,7 +21,7 @@ function stableItemKey(value) {
 }
 
 function scoreText(value) {
-  return Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "—";
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
 }
 
 function signalCard(signal) {

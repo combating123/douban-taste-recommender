@@ -55,6 +55,11 @@ function defaultObserver(callback) {
   return new IntersectionObserver(callback, { rootMargin: "600px 0px" });
 }
 
+function defaultResizeObserver(callback) {
+  if (typeof globalThis.ResizeObserver !== "function") return null;
+  return new ResizeObserver(callback);
+}
+
 function frameScheduler(callback) {
   const request = globalThis.requestAnimationFrame || ((next) => setTimeout(next, 0));
   return request(callback);
@@ -69,9 +74,11 @@ export function createLibraryController({
   root,
   fetchJson = getV2,
   createObserver = defaultObserver,
+  createResizeObserver = defaultResizeObserver,
   requestFrame = frameScheduler,
   cancelFrame = frameCanceller,
   onFilterChange = () => {},
+  windowTarget = globalThis.window,
 } = {}) {
   if (!root) throw new TypeError("Library requires a root element");
 
@@ -83,7 +90,14 @@ export function createLibraryController({
   let loading = false;
   let disposed = false;
   let observer = null;
+  let resizeObserver = null;
+  let usingWindowResize = false;
   let rafId = null;
+  let pendingAnchorIndex = null;
+  let currentColumns = 1;
+  let anchorItemKey = "";
+  const requestedCursors = new Set();
+  const seenCursors = new Set();
   let renderedItemCount = 0;
   let topSpacerHeight = 0;
   let bottomSpacerHeight = 0;
@@ -129,11 +143,18 @@ export function createLibraryController({
   function renderWindow() {
     if (disposed) return;
     const columns = columnsFor(Number(viewport.clientWidth) || 0);
+    if (pendingAnchorIndex !== null && columns !== currentColumns) {
+      viewport.scrollTop = Math.floor(pendingAnchorIndex / columns) * ROW_HEIGHT;
+    }
+    pendingAnchorIndex = null;
+    currentColumns = columns;
     const totalRows = Math.ceil(items.length / columns);
     const scrollTop = Math.max(0, Number(viewport.scrollTop) || 0);
     const viewportHeight = Math.max(1, Number(viewport.clientHeight) || 520);
     const firstRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN_ROWS);
     const lastRow = Math.min(totalRows, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN_ROWS);
+    const anchorIndex = Math.min(items.length - 1, Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) * columns));
+    anchorItemKey = items.length ? safeItemKey(items[anchorIndex]?.item_key) : "";
     topSpacerHeight = firstRow * ROW_HEIGHT;
     bottomSpacerHeight = Math.max(0, (totalRows - lastRow) * ROW_HEIGHT);
     topSpacer.style.height = `${topSpacerHeight}px`;
@@ -162,12 +183,27 @@ export function createLibraryController({
     });
   }
 
+  function onResize() {
+    if (disposed) return;
+    const oldColumns = currentColumns || columnsFor(Number(viewport.clientWidth) || 0);
+    pendingAnchorIndex = items.length
+      ? Math.min(items.length - 1, Math.max(0, Math.floor((Number(viewport.scrollTop) || 0) / ROW_HEIGHT) * oldColumns))
+      : 0;
+    scheduleWindowRender();
+  }
+
   viewport.addEventListener("scroll", scheduleWindowRender);
 
   async function loadPage({ reset = false } = {}) {
     if (disposed || loading || (!reset && !nextCursor)) return null;
     const requestGeneration = generation;
     const cursor = reset ? null : nextCursor;
+    if (cursor && requestedCursors.has(cursor)) {
+      nextCursor = null;
+      renderWindow();
+      return null;
+    }
+    if (cursor) requestedCursors.add(cursor);
     const controller = new AbortController();
     activeFetch?.abort();
     activeFetch = controller;
@@ -181,14 +217,21 @@ export function createLibraryController({
       const incoming = Array.isArray(payload?.items) ? payload.items : [];
       const merged = reset ? [] : [...items];
       const seen = new Set(merged.map((item) => safeItemKey(item?.item_key)).filter(Boolean));
+      let addedCount = 0;
       for (const item of incoming) {
         const key = safeItemKey(item?.item_key);
         if (!key || seen.has(key)) continue;
         seen.add(key);
         merged.push(item);
+        addedCount += 1;
       }
       items = merged;
-      nextCursor = typeof payload?.next_cursor === "string" && payload.next_cursor ? payload.next_cursor : null;
+      if (cursor) seenCursors.add(cursor);
+      const candidateCursor = typeof payload?.next_cursor === "string" && payload.next_cursor ? payload.next_cursor : null;
+      nextCursor = candidateCursor && !requestedCursors.has(candidateCursor) && !seenCursors.has(candidateCursor)
+        ? candidateCursor
+        : null;
+      if (candidateCursor === cursor && addedCount === 0) nextCursor = null;
       return payload;
     } catch (error) {
       if (controller.signal.aborted || disposed || generation !== requestGeneration) return null;
@@ -211,6 +254,8 @@ export function createLibraryController({
     state = FILTER_KEYS.has(nextState) ? nextState : "all";
     items = [];
     nextCursor = null;
+    requestedCursors.clear();
+    seenCursors.clear();
     viewport.scrollTop = 0;
     updateFilterButtons();
     renderWindow();
@@ -222,6 +267,12 @@ export function createLibraryController({
       if (entries.some((entry) => entry?.isIntersecting)) void loadPage();
     });
     observer?.observe?.(sentinel);
+    resizeObserver = createResizeObserver?.(onResize) || null;
+    if (resizeObserver) resizeObserver.observe?.(viewport);
+    else if (windowTarget?.addEventListener) {
+      windowTarget.addEventListener("resize", onResize);
+      usingWindowResize = true;
+    }
     return loadPage({ reset: true });
   }
 
@@ -241,6 +292,10 @@ export function createLibraryController({
     activeFetch = null;
     observer?.disconnect?.();
     observer = null;
+    resizeObserver?.disconnect?.();
+    resizeObserver = null;
+    if (usingWindowResize) windowTarget?.removeEventListener?.("resize", onResize);
+    usingWindowResize = false;
     viewport.removeEventListener("scroll", scheduleWindowRender);
     if (rafId !== null) cancelFrame(rafId);
     rafId = null;
@@ -257,6 +312,8 @@ export function createLibraryController({
       itemKeys: items.map((item) => safeItemKey(item?.item_key)).filter(Boolean),
       nextCursor,
       renderedItemCount,
+      columns: currentColumns,
+      anchorItemKey,
       topSpacer: topSpacerHeight,
       bottomSpacer: bottomSpacerHeight,
       disposed,

@@ -9,12 +9,16 @@ function element(tagName, className, text = "") {
 }
 
 function bytesText(value) {
-  const bytes = Number(value);
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return "—";
+  const bytes = value;
   if (bytes < 1024) return `${Math.floor(bytes)} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function countText(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? String(value) : "—";
 }
 
 function metric(label, value, detail = "") {
@@ -28,7 +32,7 @@ function renderMediaHealth(root, payload) {
   root.replaceChildren();
   const assets = payload?.assets && typeof payload.assets === "object" ? payload.assets : {};
   root.append(
-    metric("本地素材", Number.isFinite(Number(assets.total)) ? String(Number(assets.total)) : "—", bytesText(assets.bytes)),
+    metric("本地素材", countText(assets.total), bytesText(assets.bytes)),
     metric("交付边界", payload?.delivery === "local-only" ? "仅本地" : "—", payload?.delivery || "尚未提供"),
     metric("Provider latency", "—", "尚未提供"),
     metric("Provider backoff", "—", "尚未提供"),
@@ -39,7 +43,7 @@ function renderMediaHealth(root, payload) {
   jobCard.append(element("span", "health-metric__label", "媒体任务状态"));
   const entries = Object.entries(jobs);
   if (entries.length) {
-    for (const [state, count] of entries) jobCard.append(element("span", "health-job-state", `${state} ${Number(count) || 0}`));
+    for (const [state, count] of entries) jobCard.append(element("span", "health-job-state", `${state} ${countText(count)}`));
   } else {
     jobCard.append(element("span", "health-metric__detail", "尚无媒体任务"));
   }
@@ -105,6 +109,7 @@ export function renderHealth(root, {
       disposed = true;
       controller.abort();
       sync.dispose();
+      if (activeController === api) activeController = null;
     },
   };
   activeController = api;
@@ -112,6 +117,9 @@ export function renderHealth(root, {
 }
 
 export function destroyHealth() {
-  activeController?.dispose();
-  activeController = null;
+  if (!activeController) return false;
+  const controller = activeController;
+  controller.dispose();
+  if (activeController === controller) activeController = null;
+  return true;
 }

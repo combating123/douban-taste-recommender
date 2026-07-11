@@ -2546,8 +2546,9 @@ class UiV3ContractTests(unittest.TestCase):
             const rawPublic = JSON.stringify({{ snapshots: publicStates, controller: controller.snapshot() }});
             if (rawPublic.includes("tab-secret") || rawPublic.includes("ck=hidden") || rawPublic.includes("profile-secret") || rawPublic.toLowerCase().includes("cookie")) throw new Error("cookie escaped into public persistence snapshots");
             if (sessionValues.get("cinescope.sync.cookie.tab") !== "bid=tab-secret; ck=hidden") throw new Error("same-tab cookie was not retained in sessionStorage");
+            const visibleCopy = root.textContent;
             controller.dispose();
-            console.log(JSON.stringify({{ post: {{ path: posts[0].path, maxPages: posts[0].payload.max_pages }}, publicStates, text: root.textContent, timers: timers.size }}));
+            console.log(JSON.stringify({{ post: {{ path: posts[0].path, maxPages: posts[0].payload.max_pages }}, publicStates, text: visibleCopy, timers: timers.size }}));
             '''
         )
         result = json.loads(output)
@@ -2585,18 +2586,234 @@ class UiV3ContractTests(unittest.TestCase):
             const resumable = controller.acceptJob({{ id: "job-b", state: "needs_cookie", user_id: "272", counts: {{ items: 0 }}, stopped_reason: "需要 Cookie", diagnostics: [{{ status: "wish", start: 15, classification: "login_required", message: "HTTP 403" }}] }});
             if (!resumable.canResume) throw new Error("real resumable diagnostics did not expose resume");
             await controller.resume("job-b");
-            if (!root.textContent.includes("HTTP 400") || !root.textContent.includes("no failed pages")) throw new Error("resume 400 was not visible");
+            if (!root.textContent.includes("HTTP 400") || !root.textContent.includes("请求不可恢复")) throw new Error("resume 400 was not visible");
 
+            const beforeDisposeSnapshot = controller.snapshot(); const visibleError = root.textContent;
             const pending = controller.refreshJob("job-c"); await flush();
             controller.dispose();
             if (!requests.at(-1).options.signal.aborted || timers.size !== 0) throw new Error("unmount leaked polling fetch or timer");
             requests.at(-1).resolve({{ id: "job-c", state: "running", user_id: "272" }}); await pending;
-            console.log(JSON.stringify({{ requests: requests.length, cleared: cleared.length, snapshot: controller.snapshot(), text: root.textContent }}));
+            console.log(JSON.stringify({{ requests: requests.length, cleared: cleared.length, snapshot: beforeDisposeSnapshot, text: visibleError }}));
             '''
         )
         result = json.loads(output)
         self.assertEqual("complete", result["snapshot"]["jobs"]["job-a"]["state"])
         self.assertIn("HTTP 400", result["text"])
+
+    def test_task7_dispose_clears_health_singleton_secret_elements_and_aborts_mutations(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const sessionValues = new Map([["cinescope.sync.cookie.tab", "dispose-secret"]]);
+            const storage = {{ getItem(key) {{ return sessionValues.get(key) ?? null; }}, setItem(key, value) {{ sessionValues.set(key, String(value)); }}, removeItem(key) {{ sessionValues.delete(key); }} }};
+            const posts = []; const emissions = [];
+            const postJson = (path, payload, options = {{}}) => new Promise((resolve) => posts.push({{ path, payload, options, resolve }}));
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const syncRoot = new FakeElement("div");
+            const sync = renderSyncPanel(syncRoot, {{ storage, postJson, fetchJson: async () => ({{}}), onStateChange(state) {{ emissions.push(JSON.parse(JSON.stringify(state))); }} }});
+            sync.elements.profile.value = "272042071";
+            sync.elements.cookie.value = "dispose-secret";
+            const startPending = sync.start(); await flush();
+            sync.acceptJob({{ id: "resume-source", state: "needs_cookie", user_id: "272042071", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }}, diagnostics: [{{ status: "collect", start: 0, classification: "login_required" }}] }});
+            const resumePending = sync.resume("resume-source"); await flush();
+            if (posts.length !== 2 || !posts.every((call) => call.options.signal && !call.options.signal.aborted)) throw new Error("start/resume did not receive controlled signals");
+            const detachedSecret = sync.elements.cookie;
+            const emissionsBeforeDispose = emissions.length;
+            sync.dispose();
+            if (!posts.every((call) => call.options.signal.aborted)) throw new Error("dispose did not abort start/resume requests");
+            if (detachedSecret.value !== "" || sync.elements !== null) throw new Error("disposed element API still exposed the cookie");
+            if (syncRoot.textContent.includes("dispose-secret") || syncRoot.children.length !== 0) throw new Error("disposed sync DOM retained secret-bearing nodes");
+            if (sessionValues.get("cinescope.sync.cookie.tab") !== "dispose-secret") throw new Error("route dispose removed the same-tab session cookie");
+            posts[0].resolve({{ job_id: "late-start", state: "queued" }}); posts[1].resolve({{ job_id: "late-resume", state: "queued" }});
+            await Promise.all([startPending, resumePending]);
+            const disposedSnapshot = sync.snapshot();
+            if (emissions.length !== emissionsBeforeDispose || disposedSnapshot.knownJobIds.length || Object.keys(disposedSnapshot.jobs).length) throw new Error("late mutation wrote state after dispose");
+
+            const {{ renderHealth, destroyHealth }} = await import("{module_url('js/features/health.js')}");
+            const health = renderHealth(new FakeElement("main"), {{ fetchJson: async (path) => path === "/api/v2/media/health" ? {{ assets: {{}}, jobs: {{}}, delivery: "local-only" }} : {{ id: "none", state: "unknown" }}, postJson }});
+            await health.ready; health.dispose();
+            if (destroyHealth() !== false) throw new Error("health dispose left the module singleton active");
+            console.log(JSON.stringify({{ signals: posts.map((call) => call.options.signal.aborted), disposedSnapshot, session: sessionValues.get("cinescope.sync.cookie.tab"), emissions: emissions.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual([True, True], result["signals"])
+        self.assertEqual("dispose-secret", result["session"])
+        self.assertEqual([], result["disposedSnapshot"]["knownJobIds"])
+
+    def test_task7_job_payload_schema_allowlist_never_retains_free_form_secrets(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            controller.elements.cookie.value = "old-cookie-secret";
+            controller.acceptJob({{
+              id: "malicious-job", user_id: "old-cookie-secret", state: "old-cookie-secret",
+              counts: {{ items: "0", collect_count: -1, wish_count: 1.5, pages_ok: null, pages_failed: 0 }},
+              stopped_reason: "old-cookie-secret", errors: ["old-cookie-secret"],
+              diagnostics: [{{ status: "old-cookie-secret", start: 0, classification: "old-cookie-secret", message: "old-cookie-secret" }}],
+            }});
+            controller.elements.cookie.value = "new-cookie-secret";
+            controller.acceptJob({{
+              id: "known-job", user_id: "272042071", state: "needs_cookie",
+              counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }},
+              stopped_reason: "new-cookie-secret", errors: ["new-cookie-secret"],
+              diagnostics: [{{ status: "collect", start: 0, classification: "login_required", message: "new-cookie-secret" }}],
+            }});
+            controller.elements.cookie.value = "";
+            const snapshot = controller.snapshot(); const raw = JSON.stringify(snapshot); const text = root.textContent;
+            for (const secret of ["old-cookie-secret", "new-cookie-secret"]) if (raw.includes(secret) || text.includes(secret)) throw new Error(`secret retained after cookie changed: ${{secret}}`);
+            const malicious = snapshot.jobs["malicious-job"];
+            if (malicious.user_id !== "" || malicious.state !== "unknown" || malicious.counts !== null) throw new Error("malicious identity/state/counts escaped schema allowlist");
+            if (malicious.diagnostics[0].status !== "unknown" || malicious.diagnostics[0].classification !== "unknown") throw new Error("malicious diagnostic enums escaped allowlist");
+            if (!text.includes("豆瓣需要登录态")) throw new Error("known classification did not map to fixed copy");
+            controller.dispose();
+            console.log(JSON.stringify({{ malicious, known: snapshot.jobs["known-job"], text }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("unknown", result["malicious"]["state"])
+        self.assertIsNone(result["malicious"]["counts"])
+        self.assertIn("豆瓣需要登录态", result["text"])
+
+    def test_task7_library_resize_anchor_and_repeated_cursor_guard(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = []; const rafs = new Map(); let rafId = 0; const resizeObservers = [];
+            class FakeResizeObserver {{ constructor(callback) {{ this.callback = callback; this.disconnected = false; resizeObservers.push(this); }} observe(target) {{ this.target = target; }} disconnect() {{ this.disconnected = true; }} }}
+            const fetchJson = (path, options = {{}}) => new Promise((resolve) => requests.push({{ path, options, resolve }}));
+            const requestFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            const cancelFrame = (id) => rafs.delete(id);
+            const item = (index) => ({{ item_key: `douban:R${{index}}`, title: `Resize ${{index}}`, poster: {{ url: "", media_status: "missing" }} }});
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson, createResizeObserver: (callback) => new FakeResizeObserver(callback), requestFrame, cancelFrame }});
+            const ready = controller.mount({{ state: "all" }}); await flush();
+            requests[0].resolve({{ items: Array.from({{ length: 80 }}, (_v, index) => item(index)), next_cursor: "repeat-cursor" }}); await ready;
+            const viewport = root.querySelector('[data-role="library-window"]');
+            viewport.scrollTop = 840; viewport.dispatchEvent({{ type: "scroll" }}); let frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
+            const before = controller.snapshot();
+            if (before.columns !== 4 || before.anchorItemKey !== "douban:R8") throw new Error(`unexpected desktop anchor ${{JSON.stringify(before)}}`);
+            viewport.clientWidth = 390; resizeObservers[0].callback([{{ target: viewport, contentRect: {{ width: 390 }} }}]);
+            if (rafs.size !== 1) throw new Error("resize was not merged through the existing RAF");
+            frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
+            const mobile = controller.snapshot();
+            if (mobile.columns !== 1 || mobile.anchorItemKey !== "douban:R8" || mobile.renderedItemCount === before.renderedItemCount) throw new Error(`resize did not preserve anchor/update window: ${{JSON.stringify(mobile)}}`);
+
+            const next = controller.loadNext(); await flush();
+            if (!requests[1].path.includes("cursor=repeat-cursor")) throw new Error("next cursor was not requested");
+            requests[1].resolve({{ items: Array.from({{ length: 24 }}, (_v, index) => item(index)), next_cursor: "repeat-cursor" }}); await next;
+            const guarded = controller.snapshot();
+            if (guarded.nextCursor !== null) throw new Error("non-advancing duplicate cursor remained active");
+            await controller.loadNext(); await flush();
+            if (requests.length !== 2) throw new Error("sentinel repeated a seen cursor page");
+            controller.dispose();
+            const disposed = controller.snapshot(); viewport.clientWidth = 1000; resizeObservers[0].callback([{{ target: viewport, contentRect: {{ width: 1000 }} }}]);
+            if (!resizeObservers[0].disconnected || rafs.size || controller.snapshot().columns !== disposed.columns) throw new Error("disposed resize observer still mutated layout");
+            console.log(JSON.stringify({{ before, mobile, guarded, disposed, requests: requests.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(4, result["before"]["columns"])
+        self.assertEqual(1, result["mobile"]["columns"])
+        self.assertEqual("douban:R8", result["mobile"]["anchorItemKey"])
+        self.assertEqual(2, result["requests"])
+
+    def test_task7_missing_numeric_values_remain_unknown_and_empty_counts_are_incomplete(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ renderTasteDna }} = await import("{module_url('js/features/taste.js')}");
+            const tasteRoot = new FakeElement("main");
+            const taste = renderTasteDna(tasteRoot, {{ fetchJson: async () => ({{ groups: {{ stable: [{{ feature: "Null score", score: null }}], conflicting: [{{ feature: "Missing score" }}], recent: [], negative: [], unexplored: [] }} }}) }}); await taste.ready;
+            if (!tasteRoot.textContent.includes("信号分数 —") || tasteRoot.textContent.includes("信号分数 0.00")) throw new Error("missing taste score became zero");
+
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const healthRoot = new FakeElement("main");
+            const health = renderHealth(healthRoot, {{ fetchJson: async (path) => path === "/api/v2/media/health" ? {{ assets: {{ total: null, bytes: null }}, jobs: {{ queued: null }}, delivery: "local-only" }} : ({{}}), postJson: async () => ({{}}) }}); await health.ready;
+            const healthText = healthRoot.textContent;
+            if (healthText.includes("0 B") || healthText.includes("queued 0") || !healthText.includes("queued —")) throw new Error("missing health values became zero");
+
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const syncRoot = new FakeElement("div"); const sync = renderSyncPanel(syncRoot, {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            sync.acceptJob({{ id: "empty-counts", state: "complete", user_id: "272042071", counts: {{}} }});
+            const job = sync.snapshot().jobs["empty-counts"];
+            if (!job.incomplete || syncRoot.textContent.includes("同步完成")) throw new Error("complete with empty counts was shown as success");
+            taste.dispose(); health.dispose(); sync.dispose();
+            console.log(JSON.stringify({{ taste: tasteRoot.textContent, health: healthText, job }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["job"]["incomplete"])
+        self.assertIn("queued —", result["health"])
+
+    def test_task7_profile_and_options_emit_immediately_but_cookie_edits_never_emit(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const emissions = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const controller = renderSyncPanel(new FakeElement("div"), {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}), onStateChange(state) {{ emissions.push(JSON.parse(JSON.stringify(state))); }} }});
+            controller.elements.profile.value = "272042071"; controller.elements.profile.dispatchEvent({{ type: "input" }});
+            controller.elements.includeWish.checked = false; controller.elements.includeWish.dispatchEvent({{ type: "change" }});
+            controller.elements.includeDo.checked = true; controller.elements.includeDo.dispatchEvent({{ type: "change" }});
+            const beforeCookie = emissions.length;
+            controller.elements.cookie.value = "never-persist"; controller.elements.cookie.dispatchEvent({{ type: "input" }});
+            if (emissions.length !== beforeCookie || beforeCookie !== 3) throw new Error("edit emission policy was wrong");
+            const last = emissions.at(-1);
+            if (last.profile !== "272042071" || last.options.includeWish !== false || last.options.includeDo !== true || JSON.stringify(emissions).includes("never-persist")) throw new Error("public edit state was incomplete or secret-bearing");
+            const detachedProfile = controller.elements.profile; controller.dispose(); detachedProfile.value = "after-dispose"; detachedProfile.dispatchEvent({{ type: "input" }});
+            if (emissions.length !== beforeCookie) throw new Error("disposed edit listener still emitted state");
+            console.log(JSON.stringify({{ emissions }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, len(result["emissions"]))
+        self.assertTrue(result["emissions"][-1]["options"]["includeDo"])
+
+    def test_task7_polling_retries_network_and_5xx_but_stops_on_400_404(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = []; const timers = new Map(); let timerId = 0;
+            const fetchJson = (path, options = {{}}) => new Promise((resolve, reject) => requests.push({{ path, options, resolve, reject }}));
+            const setTimer = (callback, delay) => {{ const id = ++timerId; timers.set(id, {{ callback, delay }}); return id; }};
+            const clearTimer = (id) => timers.delete(id);
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{ knownJobIds: ["retry-job"], fetchJson, postJson: async () => ({{}}), setTimer, clearTimer, pollInterval: 100 }});
+            await flush(); requests[0].reject(new Error("offline secret text")); await flush();
+            if (timers.size !== 1) throw new Error("network error did not keep one retry timer");
+            let timerEntry = [...timers.entries()][0]; let timer = timerEntry[1]; const firstDelay = timer.delay; timers.delete(timerEntry[0]); timer.callback(); await flush();
+            const serverError = new Error("server secret text"); serverError.status = 500; requests[1].reject(serverError); await flush();
+            if (timers.size !== 1) throw new Error("500 did not keep one retry timer");
+            timerEntry = [...timers.entries()][0]; timer = timerEntry[1]; const secondDelay = timer.delay; if (secondDelay <= firstDelay) throw new Error("retry backoff did not increase"); timers.delete(timerEntry[0]); timer.callback(); await flush();
+            requests[2].resolve({{ id: "retry-job", state: "running", user_id: "272042071", counts: {{ items: 1, collect_count: 1, wish_count: 0, pages_ok: 1, pages_failed: 0 }} }}); await flush();
+            if (timers.size !== 1) throw new Error("successful running poll lost its single timer");
+
+            controller.acceptJob({{ id: "bad-400", state: "running", user_id: "272042071", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 0 }} }});
+            const bad400 = controller.refreshJob("bad-400"); await flush(); const error400 = new Error("secret 400"); error400.status = 400; requests[3].reject(error400); await bad400;
+            controller.acceptJob({{ id: "bad-404", state: "running", user_id: "272042071", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 0 }} }});
+            const bad404 = controller.refreshJob("bad-404"); await flush(); const error404 = new Error("secret 404"); error404.status = 404; requests[4].reject(error404); await bad404;
+            const text = root.textContent;
+            if (text.includes("secret 400") || text.includes("secret 404") || !text.includes("HTTP 404") || timers.size !== 1) throw new Error("non-retryable polling error was leaked or retried");
+            controller.dispose();
+            console.log(JSON.stringify({{ firstDelay, secondDelay, timers: timers.size, text, requests: requests.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertGreater(result["secondDelay"], result["firstDelay"])
+        self.assertEqual(5, result["requests"])
+        self.assertIn("HTTP 404", result["text"])
 
     def test_task7_state_routes_static_css_and_390_overflow_contract(self):
         output = run_node_module(
