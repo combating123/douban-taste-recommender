@@ -22,6 +22,7 @@ const STOP_REASON_COPY = new Map([
 const REQUIRED_COUNTS = ["items", "collect_count", "wish_count", "pages_ok", "pages_failed"];
 const SAFE_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SAFE_USER_ID = /^\d{1,20}$/;
+const SAFE_PROFILE_ID = /^[A-Za-z0-9._~-]{1,128}$/;
 
 function element(tagName, className, text = "") {
   const node = document.createElement(tagName);
@@ -51,7 +52,7 @@ function safeUserId(value) {
 
 function publicProfile(value) {
   const text = typeof value === "string" ? value.trim() : "";
-  if (SAFE_USER_ID.test(text)) return text;
+  if (SAFE_PROFILE_ID.test(text)) return text;
   try {
     const url = new URL(text);
     if (url.protocol !== "https:" || !/(^|\.)douban\.com$/i.test(url.hostname)) return "";

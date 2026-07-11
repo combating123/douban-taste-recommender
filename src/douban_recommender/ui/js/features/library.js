@@ -96,7 +96,7 @@ export function createLibraryController({
   let pendingAnchorIndex = null;
   let currentColumns = 1;
   let anchorItemKey = "";
-  const requestedCursors = new Set();
+  const inFlightCursors = new Set();
   const seenCursors = new Set();
   let renderedItemCount = 0;
   let topSpacerHeight = 0;
@@ -198,12 +198,12 @@ export function createLibraryController({
     if (disposed || loading || (!reset && !nextCursor)) return null;
     const requestGeneration = generation;
     const cursor = reset ? null : nextCursor;
-    if (cursor && requestedCursors.has(cursor)) {
+    if (cursor && (inFlightCursors.has(cursor) || seenCursors.has(cursor))) {
       nextCursor = null;
       renderWindow();
       return null;
     }
-    if (cursor) requestedCursors.add(cursor);
+    if (cursor) inFlightCursors.add(cursor);
     const controller = new AbortController();
     activeFetch?.abort();
     activeFetch = controller;
@@ -228,16 +228,18 @@ export function createLibraryController({
       items = merged;
       if (cursor) seenCursors.add(cursor);
       const candidateCursor = typeof payload?.next_cursor === "string" && payload.next_cursor ? payload.next_cursor : null;
-      nextCursor = candidateCursor && !requestedCursors.has(candidateCursor) && !seenCursors.has(candidateCursor)
+      nextCursor = candidateCursor && !seenCursors.has(candidateCursor)
         ? candidateCursor
         : null;
       if (candidateCursor === cursor && addedCount === 0) nextCursor = null;
       return payload;
     } catch (error) {
+      if (cursor && generation === requestGeneration && !disposed) inFlightCursors.delete(cursor);
       if (controller.signal.aborted || disposed || generation !== requestGeneration) return null;
       summary.textContent = "片库暂时无法读取，请稍后重试。";
       return null;
     } finally {
+      if (cursor) inFlightCursors.delete(cursor);
       if (activeFetch === controller) activeFetch = null;
       if (!disposed && generation === requestGeneration) {
         loading = false;
@@ -254,7 +256,7 @@ export function createLibraryController({
     state = FILTER_KEYS.has(nextState) ? nextState : "all";
     items = [];
     nextCursor = null;
-    requestedCursors.clear();
+    inFlightCursors.clear();
     seenCursors.clear();
     viewport.scrollTop = 0;
     updateFilterButtons();

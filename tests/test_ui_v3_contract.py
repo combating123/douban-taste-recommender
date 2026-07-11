@@ -2725,6 +2725,66 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("douban:R8", result["mobile"]["anchorItemKey"])
         self.assertEqual(2, result["requests"])
 
+    def test_task7_library_failed_cursor_retries_then_successful_cycle_stops(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = [];
+            const fetchJson = (path, options = {{}}) => new Promise((resolve, reject) => requests.push({{ path, options, resolve, reject }}));
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson, createResizeObserver: () => null, windowTarget: null }});
+            const ready = controller.mount({{ state: "all" }}); await flush();
+            requests[0].resolve({{ items: [{{ item_key: "douban:A", title: "A", poster: {{ url: "", media_status: "missing" }} }}], next_cursor: "cursor-a" }}); await ready;
+            const failed = controller.loadNext(); await flush();
+            if (!requests[1].path.includes("cursor=cursor-a")) throw new Error("first cursor request missing");
+            const duplicateInflight = controller.loadNext(); await flush();
+            if (requests.length !== 2) throw new Error("concurrent loadNext duplicated the in-flight cursor");
+            requests[1].reject(new Error("temporary network failure")); await Promise.all([failed, duplicateInflight]);
+            if (controller.snapshot().nextCursor !== "cursor-a") throw new Error("temporary failure discarded the retry cursor");
+            const retried = controller.loadNext(); await flush();
+            if (requests.length !== 3 || !requests[2].path.includes("cursor=cursor-a")) throw new Error("failed cursor was not retried");
+            requests[2].resolve({{ items: [{{ item_key: "douban:A", title: "A duplicate", poster: {{ url: "", media_status: "missing" }} }}], next_cursor: "cursor-a" }}); await retried;
+            if (controller.snapshot().nextCursor !== null) throw new Error("successful non-advancing cursor cycle remained active");
+            await controller.loadNext(); await flush();
+            if (requests.length !== 3) throw new Error("successful cursor cycle requested again");
+            controller.dispose();
+            console.log(JSON.stringify({{ requests: requests.map((request) => request.path), snapshot: controller.snapshot() }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, len(result["requests"]))
+        self.assertIsNone(result["snapshot"]["nextCursor"])
+
+    def test_task7_library_window_resize_fallback_reflows_and_dispose_unbinds(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const windowListeners = new Map(); const rafs = new Map(); let rafId = 0;
+            const windowTarget = {{ addEventListener(type, listener) {{ windowListeners.set(type, listener); }}, removeEventListener(type, listener) {{ if (windowListeners.get(type) === listener) windowListeners.delete(type); }} }};
+            const requestFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => ({{ items: Array.from({{ length: 40 }}, (_v, index) => ({{ item_key: `douban:F${{index}}`, title: `F${{index}}`, poster: {{ url: "", media_status: "missing" }} }})), next_cursor: null }}), createResizeObserver: () => null, windowTarget, requestFrame, cancelFrame(id) {{ rafs.delete(id); }} }});
+            await controller.mount({{ state: "all" }});
+            const viewport = root.querySelector('[data-role="library-window"]');
+            if (controller.snapshot().columns !== 4 || typeof windowListeners.get("resize") !== "function") throw new Error("window resize fallback was not installed");
+            viewport.clientWidth = 390; windowListeners.get("resize")();
+            const frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
+            if (controller.snapshot().columns !== 1) throw new Error("window resize fallback did not reflow columns");
+            controller.dispose(); const disposedColumns = controller.snapshot().columns;
+            if (windowListeners.has("resize")) throw new Error("dispose did not remove window resize fallback");
+            viewport.clientWidth = 1000;
+            if (rafs.size || controller.snapshot().columns !== disposedColumns) throw new Error("disposed fallback still changed layout");
+            console.log(JSON.stringify({{ columns: disposedColumns, listeners: windowListeners.size, rafs: rafs.size }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["columns"])
+        self.assertEqual(0, result["listeners"])
+
     def test_task7_missing_numeric_values_remain_unknown_and_empty_counts_are_incomplete(self):
         prelude = fake_dom_module_prelude()
         output = run_node_module(
@@ -2778,6 +2838,40 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(3, len(result["emissions"]))
         self.assertTrue(result["emissions"][-1]["options"]["includeDo"])
+
+    def test_task7_custom_douban_id_starts_and_store_round_trips_without_query_secrets(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const posts = []; const emissions = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{ fetchJson: async () => ({{}}), postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ job_id: "custom-job", state: "queued", user_id: "untrusted-custom-id" }}; }}, onStateChange(state) {{ emissions.push(JSON.parse(JSON.stringify(state))); }}, setTimer() {{ return 1; }}, clearTimer() {{}} }});
+            controller.elements.profile.value = "my.douban_user-1";
+            const started = await controller.start();
+            if (!started || posts[0].payload.user !== "my.douban_user-1" || controller.snapshot().profile !== "my.douban_user-1") throw new Error("safe custom Douban ID was rejected");
+            if (started.user_id !== "") throw new Error("untrusted job response user_id was relaxed with input validation");
+
+            const {{ persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const values = new Map(); const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            persistUiState({{ activePath: "/health", sync: {{ profile: controller.snapshot().profile, options: controller.snapshot().options, knownJobIds: [] }} }}, storage);
+            const restored = restoreUiState(storage);
+            if (restored.sync.profile !== "my.douban_user-1") throw new Error("custom ID did not survive store round-trip");
+
+            controller.elements.profile.value = "bad/id?cookie=query-secret";
+            const rejected = await controller.start();
+            if (rejected !== null || posts.length !== 1 || JSON.stringify(controller.snapshot()).includes("query-secret")) throw new Error("illegal direct ID or query secret was accepted");
+            controller.elements.profile.value = "https://www.douban.com/people/my.douban_user-1/?cookie=query-secret";
+            await controller.start();
+            if (posts[1].payload.user !== "https://www.douban.com/people/my.douban_user-1/" || JSON.stringify(controller.snapshot()).includes("query-secret")) throw new Error("profile URL query secret was not normalized away");
+            controller.dispose();
+            console.log(JSON.stringify({{ posts: posts.map((call) => call.payload.user), restored: restored.sync.profile, emissions }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("my.douban_user-1", result["posts"][0])
+        self.assertEqual("my.douban_user-1", result["restored"])
 
     def test_task7_polling_retries_network_and_5xx_but_stops_on_400_404(self):
         prelude = fake_dom_module_prelude()
