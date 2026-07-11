@@ -249,3 +249,70 @@ Evidence paths:
 - `output/task5-acceptance/upgrade-path-final-code-gate/focus/upgrade-path-counts-contact-sheet.png` — reviewed exact/legacy contact sheet
 
 No new public sync was started for this upgrade-only re-review; the previously recorded `280 / 244 / 36 / 22 / 0` live result and its provenance remain unchanged. No Cookie was entered, sourced, or inspected. Browser Cookie/profile/storage data was not read, and no missing media was fabricated.
+
+## Rollout Task 6 — performance and media coverage gate (2026-07-12)
+
+### Service, fixture, and static contracts
+
+- V3 remained explicit opt-in: `CINESCOPE_UI_VERSION=v3`; the default legacy rollback path was not changed.
+- Dedicated service: `127.0.0.1:7886`; dedicated data directory: `output/task6-acceptance-data`.
+- The Task 6 database was a byte-identical copy of `output/task5-acceptance-data/cinescope.db` at startup; both SHA-256 values were `28952d34cdbe43af03b3e1cec1d6b79d8bf9c172022699c15aca4466827f2700`.
+- Accepted session `ecbb40ee00384b0c82dcad30559df1d4` was reused through a same-origin API read and the allowlisted reducer/persistence write path. The automation did not inspect Cookie data, an existing browser profile, any pre-existing local/session storage value, or source secrets; it wrote only the allowlisted UI-state projection needed for full-document reload restoration.
+- Detail fixture: `/title/douban:1291879` (`罗生门`).
+- `tests/test_performance_contract.py` added five dedicated static/scope contracts. They all passed on their first run (`5 passed`), characterizing behavior already present at the required base commit: `MAX_INITIAL_CARDS=9`, `casts.slice(0, 8)` with directors, priority-0 portrait prefetch, decoded same-origin `/media/*` insertion, and exact diagnostics scopes. There was therefore no invented RED and no production behavior change.
+
+### Warm-cache full-document reload measurements at 1440×900
+
+Measurement used a fresh Task 6 Chrome profile with cache enabled. `Page.addScriptToEvaluateOnNewDocument` installed buffered `PerformanceObserver` collectors for `largest-contentful-paint` and `longtask` before priming or measuring. Each route was primed once, then measured through three `Page.reload` full-document reloads; every measured `PerformanceNavigationTiming.type` was `reload`. DOM readiness was checked separately and was not substituted for LCP.
+
+| Route | Warm LCP runs (ms) | Warm DCL runs (ms) | Same-origin `/media/*` transfer bytes | `/media/*` encoded body bytes | Long tasks / maximum | Gate |
+|---|---|---|---:|---:|---|---|
+| `/tonight` | `44 / 32 / 32` (max `44`) | `14.1 / 14.0 / 14.5` (max `14.5`) | `0 / 0 / 0` | `0 / 0 / 0` | `0 / 0 ms` | PASS |
+| `/title/douban:1291879` | `32 / 36 / 24` (max `36`) | `14.4 / 15.2 / 13.2` (max `15.2`) | `0 / 0 / 0` | `0 / 0 / 0` | `0 / 0 ms` | PASS |
+
+- Gate: every warm LCP was `<=2500 ms`; no observed long task exceeded `200 ms`.
+- The `/tonight` LCP candidate was the final Tonight intro heading. The detail reload LCP candidate was the initial shell heading; the final detail DOM was independently required to settle before evidence capture. The recorded values are observer LCP values, not DOM-ready proxies.
+- Zero `/media/*` requests and zero bytes reflect the fixture's actual zero ready media assets; they are not a claim that real media was compressed or hidden.
+- Since all measured gates passed, Task 6 made no production performance change and triggered no RED/GREEN optimization cycle.
+
+### Rendered browser media coverage and designed fallbacks
+
+Scope: one representative settled warm reload from each audited route for coverage, plus all six measured reloads for browser failure totals. A “missing image element failure” means a rendered media frame marked `ready` without an `<img>`, or a frame still marked `loading` after settle. A designed CSS fallback is reported separately and is not treated as a failure.
+
+| Route / kind | Rendered occurrences | Real decoded `<img>` | Designed fallback | Real coverage |
+|---|---:|---:|---:|---:|
+| `/tonight` posters | 15 | 0 | 15 | 0% |
+| Detail posters | 9 | 0 | 9 | 0% |
+| Detail portraits | 4 | 0 | 4 | 0% |
+| Detail backdrop | 1 | 0 | 1 | 0% |
+| **Combined posters** | **24** | **0** | **24** | **0%** |
+| **Combined portraits** | **4** | **0** | **4** | **0%** |
+
+- All poster, portrait, and backdrop fallback status labels were exactly `本地素材缺失`.
+- `/tonight` designed poster labels (15 occurrences; 14 unique labels because the hero repeats one shelf title): `天元突破红莲螺岩 · 作品海报`, `完美的日子 · 作品海报`, `怪物 · 作品海报`, `教父 · 作品海报`, `杀人回忆 · 作品海报`, `消失的爱人 · 作品海报`, `灵笼 · 作品海报`, `爱，死亡和机器人 · 作品海报`, `美丽人生 · 作品海报`, `花样年华 · 作品海报`, `重庆森林 · 作品海报`, `降世神通：最后的气宗 · 作品海报`, `降临 · 作品海报`, `雾山五行 · 作品海报`.
+- Detail designed poster labels: `七武士 · 作品海报`, `信号 · 作品海报`, `奇巧计程车 · 作品海报`, `控方证人 · 作品海报`, `河边的错误 · 作品海报`, `漫长的季节 · 作品海报`, `罗生门 · 作品海报`, `致命魔术 · 作品海报`, `隐秘的角落 · 作品海报`.
+- Detail designed portrait labels: `三船敏郎 · 人物肖像`, `京町子 · 人物肖像`, `志村乔 · 人物肖像`, `黑泽明 · 人物肖像`; designed backdrop label: `罗生门 · 作品背景`.
+- Across all six measured reloads: broken visible images `0`, external/non-`/media/*` visible images `0`, pending visible images `0`, and missing-image-element failures `0`. The built-in browser audit also reported broken images `0` and external images `0` on every run.
+- The insertion contract remains unchanged: a visible `<img>` must be same-origin `/media/*` and only replaces its fallback after load, `decode()`, and `naturalWidth > 0`.
+
+### Diagnostics scopes and identity canary
+
+The post-measurement `/api/v2/diagnostics` response reported:
+
+- Stored media totals: `assets_total=0`, `bytes=0`.
+- Bounded recent-batch poster audit: `total=256`, `ready=0`, `degraded=0`, `ambiguous=0`, `missing=256`.
+- Audit window scope: `recent_recommendation_batches`; ordering `created_at_desc_then_id_desc`; `batch_limit=32`; `row_limit=256`; `selected_batches=32`; `rows_audited=256`; `truncated=true`.
+- Wrong-identity count: `0`, with exact scope `global_historical_identity_rejected_hard_conflicts`.
+- Attribution limit: `recommendation_media_identity_attribution=unavailable_without_stable_foreign_key`. The wrong-identity value is a global historical hard-conflict canary and is not attributed to the visible session. The bounded media totals are likewise a recent-batch window, not a visible-page-only total.
+
+The required zero browser failures and zero wrong-identity canaries passed. Real poster and portrait coverage remained zero and is reported directly rather than disguised by the designed fallbacks.
+
+### Machine-readable evidence
+
+- `output/task6-acceptance/service.json` — dedicated service, data copy hashes, and zero copied media files.
+- `output/task6-acceptance/fixture.json` — accepted session and detail fixture summary.
+- `output/task6-acceptance/performance.json` — raw observer entries, navigation timing, resource timing, CDP media events, per-run browser media audits, and gates.
+- `output/task6-acceptance/diagnostics.json` — raw post-measurement diagnostics response.
+- `output/task6-acceptance/acceptance-summary.json` — aggregate metrics, coverage, failures, and exact scope statements.
+- `output/task6-acceptance/evidence-validation.json` — machine validation of all required gates and non-fabrication assertions.
+- `output/task6-acceptance/measure-performance.mjs` — the exact CDP measurement harness used for the final evidence.
