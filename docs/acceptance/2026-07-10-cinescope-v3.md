@@ -316,3 +316,53 @@ The required zero browser failures and zero wrong-identity canaries passed. Real
 - `output/task6-acceptance/acceptance-summary.json` — aggregate metrics, coverage, failures, and exact scope statements.
 - `output/task6-acceptance/evidence-validation.json` — machine validation of all required gates and non-fabrication assertions.
 - `output/task6-acceptance/measure-performance.mjs` — the exact CDP measurement harness used for the final evidence.
+
+## Task 6 review closure — route-specific meaningful paint (2026-07-12)
+
+The original Task 6 detail LCP entries were valid browser LCP entries but identified only the generic initial `#shell-title`. They did not, by themselves, timestamp the first meaningful detail paint. Fresh evidence therefore retains standard LCP while adding a route-specific pre-navigation observer; the standard detail LCP is no longer used alone to claim meaningful detail readiness.
+
+### Pre-navigation method
+
+The CDP harness still installs through `Page.addScriptToEvaluateOnNewDocument` before prime or measured navigation. In the same injected source it now:
+
+1. watches for the intended committed route root and keeps a frame-level detector active while CSS entry animation progresses;
+2. requires the exact final route, non-empty intended content, positive rendered geometry, matching route identity, required copy/sections, and route-specific content children;
+3. records `routeCommitMs` at the first valid visible route-root commit;
+4. revalidates the route after two `requestAnimationFrame` callbacks and records `routeContentPaintMs` as the meaningful painted-route proxy;
+5. records `routeSettleMs` only when the same proof remains valid, `document.readyState=complete`, no element is `aria-busy=true`, no media frame remains `loading`, and route-root opacity is at least `0.99`.
+
+Route proofs:
+
+- Tonight: root `.tonight-page`; identity `.tonight-intro__title` = `今晚，只看值得开始的。`; required copy includes `目标 160` and `实际返回 192`; required route structures are present; `.title-card` count is `14`; final route is `/tonight`.
+- Detail: root `.detail-page`; identity `.detail-hero__title` = `罗生门`; required copy includes `罗生门`, `演职人员`, and `本地关联`; `#overview`, `#people`, and `#relations` are present; `.person-card` count is `4`; final route is `/title/douban:1291879`.
+- Every paint proof records the exact selector, text/identity proof, required-text and required-selector results, final route, content count, computed style, and bounding rect. Tonight rects were `1266.625×2017.703125`; detail rects were `1266.625×3079.984375`, all with positive visible geometry.
+
+### Fresh warm-cache full-reload evidence
+
+Each route was primed once and then measured through three cache-enabled `Page.reload` full-document reloads at `1440×900`. All measured navigation types were `reload`.
+
+| Route / metric | Raw runs (ms) | Min | Median | Max | Gate |
+|---|---|---:|---:|---:|---|
+| `/tonight` standard LCP | `32 / 32 / 32` | 32.0 | 32.0 | 32.0 | PASS |
+| `/tonight` route commit | `67.6 / 61.5 / 74.1` | 61.5 | 67.6 | 74.1 | proof present |
+| `/tonight` route-content paint | `71.7 / 64.2 / 80.2` | 64.2 | 71.7 | 80.2 | PASS |
+| `/tonight` route settle | `71.7 / 64.3 / 80.4` | 64.3 | 71.7 | 80.4 | PASS |
+| Detail standard LCP | `24 / 36 / 32` | 24.0 | 32.0 | 36.0 | browser LCP retained |
+| Detail route commit | `78.4 / 99.9 / 86.8` | 78.4 | 86.8 | 99.9 | proof present |
+| Detail route-content paint | `94.3 / 116.0 / 103.0` | 94.3 | 103.0 | 116.0 | PASS |
+| Detail route settle | `317.6 / 339.1 / 325.8` | 317.6 | 325.8 | 339.1 | PASS |
+
+- Meaningful route-content paint gate: every run `<=2500 ms`.
+- Route settle gate: every run `<=2500 ms`.
+- Existing long-task gate: six runs, maximum `0 ms`, therefore no task above `200 ms`.
+- Standard LCP gate remains passing, but all three detail LCP candidates remain `H1#shell-title`; no detail LCP candidate was fabricated or relabeled.
+- Detail paint proofs captured the first visible entry-animation frames at opacity about `0.074`; settle proofs were separately delayed until opacity about `0.992`, with document complete, no busy state, and zero loading media frames.
+- The new methodology passed without exposing a production bottleneck, so no production regression or implementation change was made.
+
+### Unchanged coverage and scopes
+
+- Same-origin `/media/*` requests, transfer bytes, and encoded body bytes remained `0`; the fixture still has zero ready media assets.
+- Real coverage remains posters `0/24`, portraits `0/4`, backdrop `0/1`; all are honestly reported designed CSS fallbacks.
+- Browser broken/external/pending/missing-image-element failures remain `0` across all six runs.
+- Diagnostics remain `assets_total=0`, `bytes=0`; bounded recent-batch poster audit `0 ready / 256 missing`; wrong-identity canary `0` with scope `global_historical_identity_rejected_hard_conflicts` and no visible-session attribution.
+- `output/task6-acceptance/evidence-validation.json` schema 2 contains 25 passing checks, including required route selector/identity/timestamps/geometry, ordering, content-paint and settle budgets, honest shell LCP retention, raw summary statistics, zero media fabrication, and exact diagnostics scopes.
