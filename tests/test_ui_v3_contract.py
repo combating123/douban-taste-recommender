@@ -2007,6 +2007,91 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertGreaterEqual(result["contexts"], 1)
         self.assertTrue(result["aborted"])
 
+    def test_universe_expansion_merge_schedules_one_visible_canvas_redraw(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.style = {{ setProperty() {{}} }}; this.listeners = new Map();
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              getBoundingClientRect() {{ return {{ left: 0, top: 0, width: 800, height: 500 }}; }}
+              getContext() {{ return this.tagName === "CANVAS" ? context2d : null; }}
+              hasPointerCapture() {{ return false; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const drawCalls = [];
+            const context2d = new Proxy({{}}, {{
+              get(target, key) {{ return (...args) => drawCalls.push([key, ...args]); }},
+              set() {{ return true; }},
+            }});
+            const observers = [];
+            globalThis.IntersectionObserver = class {{
+              constructor(callback) {{ this.callback = callback; observers.push(this); }}
+              observe(target) {{ this.target = target; }} disconnect() {{}}
+            }};
+            delete globalThis.ResizeObserver;
+            const rafs = new Map(); let rafId = 0;
+            globalThis.requestAnimationFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            globalThis.cancelAnimationFrame = (id) => rafs.delete(id);
+            globalThis.document = {{ activeElement: null, createElement: (tag) => new FakeElement(tag) }};
+            globalThis.window = {{ devicePixelRatio: 1, addEventListener() {{}}, removeEventListener() {{}}, matchMedia: () => ({{ matches: true }}) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            let resolveExpansion; const contexts = [];
+            const {{ configureUniverse, destroyUniverse, expandNode, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            configureUniverse({{
+              fetchJson() {{ return new Promise((resolve) => {{ resolveExpansion = resolve; }}); }},
+              onContextChange(context) {{ contexts.push(context); }},
+            }});
+            const container = new FakeElement("main");
+            const view = renderUniverse(container, {{
+              focus_id: "item:A",
+              nodes: [{{ id: "item:A", title: "A" }}, {{ id: "item:B", title: "B" }}],
+              edges: [{{ source: "item:A", target: "item:B", score: 0.9, reasons: ["A-B"] }}],
+            }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const canvas = collect(view).find((node) => node.tagName === "CANVAS");
+            observers[0].callback([{{ isIntersecting: true, target: canvas }}]);
+            const initialFrame = [...rafs.entries()][0];
+            if (!initialFrame || rafs.size !== 1) throw new Error("visible canvas did not schedule initial draw");
+            rafs.delete(initialFrame[0]); initialFrame[1](16);
+            if (rafs.size !== 0) throw new Error("initial static canvas RAF did not drain");
+            drawCalls.length = 0;
+
+            const expansion = expandNode("item:B");
+            resolveExpansion({{
+              focus_id: "item:B",
+              nodes: [{{ id: "item:B", title: "B" }}, {{ id: "item:C", title: "C" }}],
+              edges: [{{ source: "item:B", target: "item:C", score: 0.8, reasons: ["B-C"] }}],
+            }});
+            await expansion;
+            if (rafs.size !== 1) throw new Error(`expansion merge scheduled ${{rafs.size}} redraws instead of one`);
+            if (contexts.length !== 1 || contexts[0].universeFocusId !== "item:B" || contexts[0].expandedIds.join(",") !== "item:B") throw new Error("expansion context was not persisted exactly once");
+
+            const redraw = [...rafs.entries()][0]; rafs.delete(redraw[0]); redraw[1](32);
+            const labels = drawCalls.filter((call) => call[0] === "fillText").map((call) => call[1]);
+            const edgeDraws = drawCalls.filter((call) => call[0] === "lineTo").length;
+            if (!labels.includes("C") || edgeDraws < 2) throw new Error(`redraw omitted merged node/edge: labels=${{labels}} edges=${{edgeDraws}}`);
+            if (rafs.size !== 0) throw new Error("static expansion redraw left a RAF queued");
+            destroyUniverse();
+            console.log(JSON.stringify({{ redraws: 1, labels, edgeDraws, contexts: contexts.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["redraws"])
+        self.assertIn("C", result["labels"])
+        self.assertGreaterEqual(result["edgeDraws"], 2)
+        self.assertEqual(1, result["contexts"])
+
     def test_universe_focus_controls_persist_only_real_changes_and_pointer_cancel_never_expands(self):
         output = run_node_module(
             f'''

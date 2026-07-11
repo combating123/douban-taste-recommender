@@ -257,6 +257,7 @@ function rebuildSemanticView(state) {
   state.limitNote.textContent = state.limitMessage;
   state.limitNote.hidden = !state.limitMessage;
   syncFocusState(state);
+  scheduleDraw(state);
 }
 
 function syncFocusState(state) {
