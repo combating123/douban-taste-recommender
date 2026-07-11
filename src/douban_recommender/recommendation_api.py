@@ -666,7 +666,7 @@ class RecommendationApi:
                 include_movies=bool(payload.get("include_movies", True)),
                 include_series=bool(payload.get("include_series", True)),
                 include_anime=bool(payload.get("include_anime", True)),
-                target_total=max(30, _to_int(payload.get("limit"), 120, 1, 300)),
+                target_total=self._candidate_target(payload),
             )
         apply_curated_people_photos(apply_curated_posters(candidates))
         deduped: dict[str, MediaItem] = {}
@@ -699,7 +699,16 @@ class RecommendationApi:
                 "pool_size": pool_size,
                 "matched_size": len(ranked_items),
             }
+        candidate_counts = {
+            "target_size": self._candidate_target(payload),
+            "returned_size": sum(int(state.get("pool_size") or 0) for state in ranked_by_channel.values()),
+        }
+        for state in ranked_by_channel.values():
+            state["candidate_counts"] = candidate_counts
         return ranked_by_channel
+
+    def _candidate_target(self, payload: dict[str, Any]) -> int:
+        return max(30, _to_int(payload.get("limit"), 120, 1, 300))
 
     def _batch_sizes(self, payload: dict[str, Any]) -> dict[str, int]:
         default_size = _to_int(payload.get("batch_size") or payload.get("visible_size"), 9, 1, 24)
@@ -739,6 +748,15 @@ class RecommendationApi:
             state = dict(restored.channels.get(channel) or {})
             batch = self._service_call(self.session_service.current_batch, session.id, channel)
             channels[channel] = self._serialize_channel(channel, state, batch)
+        candidate_counts = next(
+            (
+                dict(state.get("candidate_counts"))
+                for state in restored.channels.values()
+                if isinstance(state, dict) and isinstance(state.get("candidate_counts"), dict)
+            ),
+            {},
+        )
+        candidate_counts["returned_size"] = sum(channel["pool_size"] for channel in channels.values())
         return {
             "schema_version": SCHEMA_VERSION,
             "id": restored.id,
@@ -746,6 +764,7 @@ class RecommendationApi:
             "status": restored.status,
             "intent": restored.intent.to_dict(),
             "chips": [asdict(chip) for chip in intent_to_chips(restored.intent)],
+            "candidate_counts": candidate_counts,
             "channels": channels,
             "restore": self._restore_metadata(restored.channels),
             "created_at": restored.created_at,

@@ -268,7 +268,7 @@ export function renderSyncPanel(root, {
       const title = element("h3", "sync-job__title", job.user_id ? `用户 ${job.user_id}` : `任务 ${job.id}`);
       const stateNode = element("p", "sync-job__state", statusCopy(job));
       const counts = job.counts
-        ? element("p", "sync-job__counts", `条目 ${job.counts.items} · 成功页 ${job.counts.pages_ok} · 失败页 ${job.counts.pages_failed}`)
+        ? element("p", "sync-job__counts", `条目 ${job.counts.items} · 看过 ${job.counts.collect_count} · 想看 ${job.counts.wish_count} · 成功页 ${job.counts.pages_ok} · 失败页 ${job.counts.pages_failed}`)
         : element("p", "sync-job__counts", "结果数值未提供");
       card.append(title, stateNode, counts);
       if (job.stopped_reason) card.append(element("p", "sync-job__reason", job.stopped_reason));

@@ -122,6 +122,14 @@ function sanitizeBatchIds(ids) {
   return ids.slice(0, 200).filter((value) => isSafeText(value, 256));
 }
 
+function sanitizeCandidateCounts(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    target_size: optionalCount(source.target_size) ?? 0,
+    returned_size: optionalCount(source.returned_size) ?? 0,
+  };
+}
+
 function sanitizeChannels(channels) {
   const source = channels && typeof channels === "object" ? channels : {};
   return Object.fromEntries(CHANNEL_SLUGS.map((slug) => {
@@ -131,6 +139,7 @@ function sanitizeChannels(channels) {
       : 0;
     return [slug, {
       sessionId: safeText(channel.sessionId, "", 256) || null,
+      candidate_counts: sanitizeCandidateCounts(channel.candidate_counts),
       batchIndex,
       batchIds: sanitizeBatchIds(channel.batchIds),
     }];

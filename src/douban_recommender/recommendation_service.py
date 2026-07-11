@@ -337,15 +337,18 @@ class RecommendationSessionService:
                 raw_items = value.get("items") or []
                 pool_size = int(value.get("pool_size") or len(raw_items))
                 matched_size = int(value.get("matched_size") or len(raw_items))
+                candidate_counts = _scrub_dict(value.get("candidate_counts"))
             else:
                 raw_items = value or []
                 pool_size = len(raw_items)
                 matched_size = len(raw_items)
+                candidate_counts = {}
             items = [item for raw in raw_items for item in [_scrub_dict(_serialize_item(raw))] if item]
             channels[str(channel)] = {
                 "items": items,
                 "pool_size": max(pool_size, len(items)),
                 "matched_size": max(matched_size, len(items)),
+                "candidate_counts": candidate_counts,
                 "batch_size": max(1, int(batch_size_by_channel.get(channel) or 9)),
                 "cursor": 0,
                 "active_batch": 0,

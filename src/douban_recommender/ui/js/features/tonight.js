@@ -150,14 +150,20 @@ function renderHero(recommendation, channel) {
 
 function renderBatchToolbar(recommendation, channel) {
   const state = channelState(recommendation, channel);
+  const candidateCounts = state.candidate_counts && typeof state.candidate_counts === "object"
+    ? state.candidate_counts
+    : {};
   const toolbar = element("section", "tonight-batch-toolbar");
   toolbar.setAttribute("aria-label", `${channel.label}批次工具栏`);
 
   const counts = element("div", "tonight-counts");
   counts.append(
+    renderCount("目标", candidateCounts.target_size, "target"),
+    renderCount("实际返回", candidateCounts.returned_size, "returned"),
     renderCount("候选池", countValue(state, "pool_size"), "pool"),
     renderCount("匹配", countValue(state, "matched_size"), "matched"),
     renderCount("本批可见", countValue(state, "visible_size"), "visible"),
+    renderCount("当前批次", state.active_batch || state.batch?.index, "batch"),
   );
 
   const controls = element("div", "tonight-batch-controls");

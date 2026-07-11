@@ -408,6 +408,32 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertGreater(anime["pool_size"], anime["matched_size"])
         self.assertGreater(anime["matched_size"], anime["visible_size"])
 
+    def test_160_target_session_exposes_target_returned_and_channel_counts(self):
+        response = self.post_json(
+            "/api/v2/recommend/sessions",
+            self.session_payload(
+                candidates_csv="",
+                use_sample_candidates=True,
+                rated_items=[],
+                batch_size=24,
+                limit=160,
+            ),
+        )
+
+        self.assertIn("candidate_counts", response)
+        counts = response["candidate_counts"]
+        self.assertEqual(counts["target_size"], 160)
+        self.assertEqual(
+            counts["returned_size"],
+            sum(channel["pool_size"] for channel in response["channels"].values()),
+        )
+        for channel in response["channels"].values():
+            self.assertLessEqual(channel["matched_size"], channel["pool_size"])
+            self.assertLessEqual(channel["visible_size"], channel["matched_size"])
+
+        restored = self.get_json(f"/api/v2/recommend/sessions/{response['id']}")
+        self.assertEqual(restored["candidate_counts"], counts)
+
     def test_session_response_returns_grounded_intent_chips(self):
         created = self.create_session(intent_text="90分钟内的悬疑电影")
 

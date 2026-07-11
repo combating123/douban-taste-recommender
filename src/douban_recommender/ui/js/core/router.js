@@ -85,9 +85,12 @@ export function navigate(path, state = {}) {
   browser.dispatchEvent(event);
 }
 
-export function createRouter(routes, { onRoute } = {}) {
+export function createRouter(routes, { onRoute, onScrollSaved } = {}) {
   if (!Array.isArray(routes)) throw new TypeError("createRouter requires a route list");
   if (typeof onRoute !== "function") throw new TypeError("createRouter requires an onRoute callback");
+  if (onScrollSaved !== undefined && typeof onScrollSaved !== "function") {
+    throw new TypeError("createRouter onScrollSaved must be a function");
+  }
 
   const compiledRoutes = routes.map(compileRoute);
   let currentRoute = null;
@@ -111,7 +114,8 @@ export function createRouter(routes, { onRoute } = {}) {
       && currentRoute.path !== nextRoute.path
       && pendingDeparturePath !== currentRoute.path
     ) {
-      saveScroll(currentRoute.path, browser.scrollY);
+      if (onScrollSaved) onScrollSaved(currentRoute.path, browser.scrollY);
+      else saveScroll(currentRoute.path, browser.scrollY);
       pendingDeparturePath = currentRoute.path;
     }
 

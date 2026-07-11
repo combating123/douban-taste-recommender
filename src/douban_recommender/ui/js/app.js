@@ -137,6 +137,17 @@ function backendChannelsToState(session, previous = {}, { preserveOtherSessions 
     }
     const sameSession = previousChannel.sessionId === session?.id;
     const current = sameSession ? previousChannel : { sessionId: session?.id || null, batchIndex: 0, batchIds: [] };
+    const rawCandidateCounts = session?.candidate_counts && typeof session.candidate_counts === "object"
+      ? session.candidate_counts
+      : {};
+    const candidateCounts = {
+      target_size: Number.isInteger(rawCandidateCounts.target_size) && rawCandidateCounts.target_size >= 0
+        ? rawCandidateCounts.target_size
+        : current.candidate_counts?.target_size,
+      returned_size: Number.isInteger(rawCandidateCounts.returned_size) && rawCandidateCounts.returned_size >= 0
+        ? rawCandidateCounts.returned_size
+        : current.candidate_counts?.returned_size,
+    };
     const incoming = session?.channels?.[backend] && typeof session.channels[backend] === "object"
       ? session.channels[backend]
       : {};
@@ -147,6 +158,7 @@ function backendChannelsToState(session, previous = {}, { preserveOtherSessions 
       ...current,
       ...incoming,
       sessionId: typeof session?.id === "string" ? session.id : current.sessionId,
+      candidate_counts: candidateCounts,
       batchIndex: Number.isInteger(batch.index) ? batch.index : current.batchIndex || 0,
       batchIds: batchIds.slice(-50),
     };
@@ -181,6 +193,14 @@ export function reduceUiState(state, action) {
           ? { ...state.recommendation, activeChannel: channelSlug(action.route) }
           : state.recommendation,
       };
+    case "route/scrollSaved": {
+      const path = typeof action.path === "string" && action.path.startsWith("/") && !action.path.startsWith("//")
+        ? action.path
+        : "";
+      if (!path) return state;
+      const y = Number.isFinite(action.y) && action.y >= 0 ? Math.floor(action.y) : 0;
+      return { ...state, scrollByRoute: { ...state.scrollByRoute, [path]: y } };
+    }
     case "rail/changed":
       return { ...state, rail: { mode: action.mode } };
     case "library/filterChanged":
@@ -747,6 +767,7 @@ export function bootstrapCineScopeShell() {
   });
   router = createRouter(APP_ROUTES, {
     onRoute: routeHandler,
+    onScrollSaved: (path, y) => store.dispatch({ type: "route/scrollSaved", path, y }),
   });
 
   const uninstallAuditHook = installAuditHook();

@@ -843,6 +843,54 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(88, result["scrollY"])
         self.assertNotIn("scroll:777", result["events"])
 
+    def test_router_scroll_save_updates_store_before_route_persistence(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ createRouter }} = await import("{module_url('js/core/router.js')}");
+            const {{ createEmptyUiState, createStore, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const values = new Map();
+            const listeners = new Map();
+            const browser = {{
+              location: {{ pathname: "/tonight/anime-series" }}, scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ listeners.set(type, listener); }}, removeEventListener(type) {{ listeners.delete(type); }},
+              dispatchEvent(event) {{ return listeners.get(event.type)?.(event); }},
+              requestAnimationFrame(callback) {{ callback(); return 1; }},
+              scrollTo(options) {{ this.scrollY = options.top; }},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser); globalThis.PopStateEvent = browser.PopStateEvent;
+
+            const store = createStore(createEmptyUiState(), reduceUiState);
+            store.subscribe((state) => persistUiState(state, browser.localStorage));
+            const router = createRouter([
+              {{ pattern: "/tonight/:channel", name: "tonight-channel" }},
+              {{ pattern: "/title/:id", name: "title" }},
+            ], {{
+              onScrollSaved(path, y) {{ store.dispatch({{ type: "route/scrollSaved", path, y }}); }},
+              onRoute(route) {{ store.dispatch({{ type: "route/changed", route }}); return true; }},
+            }});
+
+            await router.start();
+            browser.scrollY = 900;
+            await router.navigate("/title/douban:1938084");
+            browser.scrollY = 300;
+            await router.navigate("/tonight/anime-series");
+            const persisted = restoreUiState(browser.localStorage);
+            if (store.getState().scrollByRoute["/tonight/anime-series"] !== 900) throw new Error(`store lost outgoing scroll: ${{JSON.stringify(store.getState().scrollByRoute)}}`);
+            if (persisted.scrollByRoute["/tonight/anime-series"] !== 900) throw new Error(`storage lost outgoing scroll: ${{JSON.stringify(persisted.scrollByRoute)}}`);
+            if (browser.scrollY !== 900) throw new Error(`return navigation restored ${{browser.scrollY}} instead of 900`);
+            console.log(JSON.stringify({{ scrollY: browser.scrollY, store: store.getState().scrollByRoute, persisted: persisted.scrollByRoute }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(900, result["scrollY"])
+        self.assertEqual(900, result["persisted"]["/tonight/anime-series"])
+
     def test_tonight_renders_distinct_counts_three_shelves_and_batch_requests(self):
         output = run_node_module(
             f'''
@@ -947,6 +995,75 @@ class UiV3ContractTests(unittest.TestCase):
         rendered = json.loads(output)
         self.assertEqual([9, 8, 7], rendered["shelfSizes"])
         self.assertEqual("太相似", rendered["calls"][0]["payload"]["reason"])
+
+    def test_session_candidate_counts_flow_into_channels_and_persist(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ createEmptyUiState, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const values = new Map();
+            const storage = {{
+              getItem(key) {{ return values.get(key) ?? null; }},
+              setItem(key, value) {{ values.set(key, String(value)); }},
+            }};
+            const channel = (pool) => ({{
+              pool_size: pool, matched_size: pool - 1, visible_size: 5, active_batch: 3,
+              batch: {{ id: `batch-${{pool}}`, index: 3, items: [], pool_size: pool, matched_size: pool - 1, visible_size: 5 }},
+            }});
+            const session = {{
+              id: "session-160",
+              candidate_counts: {{ target_size: 160, returned_size: 192 }},
+              intent: {{}}, chips: [],
+              channels: {{ "电影": channel(85), "电视剧": channel(54), "动漫": channel(53) }},
+            }};
+            const received = reduceUiState(createEmptyUiState(), {{ type: "recommendation/sessionReceived", session }});
+            for (const slug of ["movie", "series", "anime-series"]) {{
+              const counts = received.recommendation.channels[slug].candidate_counts;
+              if (counts?.target_size !== 160 || counts?.returned_size !== 192) {{
+                throw new Error(`session candidate counts did not enter ${{slug}} state: ${{JSON.stringify(counts)}}`);
+              }}
+            }}
+            persistUiState(received, storage);
+            const restored = restoreUiState(storage);
+            const restoredCounts = restored.recommendation.channels["anime-series"].candidate_counts;
+            if (restoredCounts?.target_size !== 160 || restoredCounts?.returned_size !== 192) {{
+              throw new Error(`candidate counts did not survive persistence: ${{JSON.stringify(restoredCounts)}}`);
+            }}
+            console.log(JSON.stringify({{ received: received.recommendation.channels, restored: restored.recommendation.channels }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(160, result["restored"]["anime-series"]["candidate_counts"]["target_size"])
+        self.assertEqual(192, result["restored"]["anime-series"]["candidate_counts"]["returned_size"])
+
+    def test_tonight_visibly_exposes_target_returned_channel_and_batch_counts(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const state = {{
+              recommendation: {{
+                sessionId: "session-160", activeChannel: "anime-series",
+                channels: {{
+                  movie: {{ candidate_counts: {{ target_size: 160, returned_size: 192 }}, pool_size: 85, matched_size: 84, visible_size: 24, active_batch: 1, batch: {{ index: 1, items: [] }} }},
+                  series: {{ candidate_counts: {{ target_size: 160, returned_size: 192 }}, pool_size: 54, matched_size: 54, visible_size: 24, active_batch: 1, batch: {{ index: 1, items: [] }} }},
+                  "anime-series": {{ candidate_counts: {{ target_size: 160, returned_size: 192 }}, pool_size: 53, matched_size: 53, visible_size: 5, active_batch: 3, batch: {{ index: 3, items: [] }} }},
+                }},
+              }},
+            }};
+            const visible = renderTonight(state).textContent;
+            for (const expected of ["目标 160", "实际返回 192", "候选池 53", "匹配 53", "本批可见 5", "当前批次 3"]) {{
+              if (!visible.includes(expected)) throw new Error(`missing visible recommendation count: ${{expected}} in ${{visible}}`);
+            }}
+            console.log(JSON.stringify({{ visible }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("目标 160", result["visible"])
+        self.assertIn("当前批次 3", result["visible"])
 
     def test_command_lens_uses_only_server_chips_and_ctrl_k(self):
         output = run_node_module(
@@ -3037,6 +3154,31 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(250, result["post"]["maxPages"])
         self.assertIn("默认自动翻页到末页", result["text"])
+
+    def test_sync_job_visibly_distinguishes_collect_wish_and_page_counts(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            controller.acceptJob({{
+              id: "live-job", state: "complete", user_id: "272042071",
+              counts: {{ items: 280, collect_count: 244, wish_count: 36, pages_ok: 22, pages_failed: 0 }},
+              stopped_reason: "已到达空白分页", diagnostics: [],
+            }});
+            const visible = root.textContent;
+            for (const expected of ["条目 280", "看过 244", "想看 36", "成功页 22", "失败页 0", "已到达列表末页"]) {{
+              if (!visible.includes(expected)) throw new Error(`missing visible sync evidence: ${{expected}}`);
+            }}
+            controller.dispose();
+            console.log(JSON.stringify({{ visible }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("看过 244", result["visible"])
+        self.assertIn("想看 36", result["visible"])
 
     def test_sync_polling_dedupes_latest_wins_cleans_up_and_shows_resume_400(self):
         prelude = fake_dom_module_prelude()
