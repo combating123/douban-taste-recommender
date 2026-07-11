@@ -2916,7 +2916,54 @@ class UiV3ContractTests(unittest.TestCase):
         )
         result = json.loads(output)
         self.assertIn("/api/v2/media/health", result["calls"])
+        self.assertIn("/api/v2/diagnostics", result["calls"])
         self.assertIn("/api/v2/sync/jobs/restored", result["calls"])
+
+    def test_health_merges_runtime_diagnostics_and_aborts_stale_parallel_reads(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = [];
+            const fetchJson = (path, options = {{}}) => new Promise((resolve, reject) => requests.push({{ path, options, resolve, reject }}));
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const root = new FakeElement("main");
+            const first = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}) }});
+            await Promise.resolve();
+            const firstMedia = requests.find((request) => request.path === "/api/v2/media/health");
+            const firstDiagnostics = requests.find((request) => request.path === "/api/v2/diagnostics");
+            if (!firstMedia || !firstDiagnostics) throw new Error("health reads were not started in parallel");
+            firstDiagnostics.resolve({{
+              app_version: "9.8.7",
+              cache_bytes: 8192,
+              provider_attempt_health: {{ basis: "historical_attempts", attempts_total: 7, status_counts: {{ ready: 3, provider_error: 1 }} }},
+              persistent_queue_states: {{ queued: 4, degraded: 2 }},
+              media_audit: {{ total: 10, ready: 6, degraded: 2, ambiguous: 1, missing: 1, wrong_identity_candidates: 1 }},
+            }});
+            firstMedia.resolve({{ assets: {{ total: 12, bytes: 4096 }}, jobs: {{ queued: 2 }}, delivery: "local-only" }});
+            await first.ready;
+            const mergedText = root.textContent;
+            if (!mergedText.includes("8 KB") || !mergedText.includes("7") || !mergedText.includes("历史 attempts")) throw new Error("diagnostics metrics were not merged");
+            if (!mergedText.includes("6 / 10") || !mergedText.includes("错图候选 1")) throw new Error("media audit was not rendered from real fields");
+
+            const second = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}) }});
+            await Promise.resolve();
+            const stale = requests.slice(2);
+            if (stale.length !== 2 || stale.some((request) => !["/api/v2/media/health", "/api/v2/diagnostics"].includes(request.path))) throw new Error("second parallel reads missing");
+            second.dispose();
+            if (stale.some((request) => !request.options.signal?.aborted)) throw new Error("dispose did not abort both health reads");
+            const beforeLate = root.textContent;
+            for (const request of stale) request.resolve(request.path.endsWith("diagnostics") ? {{ cache_bytes: 999999, media_audit: {{ total: 99, ready: 99 }} }} : {{ assets: {{ total: 99, bytes: 99 }} }});
+            await second.ready;
+            if (root.textContent !== beforeLate || root.textContent.includes("999999")) throw new Error("late stale health response mutated the DOM");
+            first.dispose();
+            console.log(JSON.stringify({{ paths: requests.map((request) => request.path), mergedText, staleAborted: stale.every((request) => request.options.signal.aborted) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["paths"].count("/api/v2/media/health"))
+        self.assertEqual(2, result["paths"].count("/api/v2/diagnostics"))
+        self.assertTrue(result["staleAborted"])
 
     def test_sync_cookie_stays_in_tab_session_and_public_snapshots_use_auto_pagination(self):
         prelude = fake_dom_module_prelude()

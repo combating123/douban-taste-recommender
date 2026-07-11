@@ -17,6 +17,8 @@ from .candidate_planner import build_candidate_plan
 from .catalog_api import CatalogApi, CatalogApiError, build_default_catalog_api
 from .crawler import crawl_user_collections, normalize_douban_user_id, redact_cookie_from_message
 from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
+from .database import AppDatabase
+from .diagnostics import build_diagnostics, unknown_diagnostics
 from .douban_sources import enrich_media_items, enrich_missing_posters_from_subject_suggest, enrich_missing_posters_from_web_sources, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .douban_sources import needs_external_poster_rescue, poster_source_config_from_dict
 from .douban_sources import build_url_opener
@@ -26,6 +28,7 @@ from .models import MediaItem, is_safe_route_segment
 from .profiler import build_taste_profile
 from .recommendation_api import RecommendationApi, RecommendationApiError, build_default_recommendation_api
 from .recommender import recommend
+from .runtime_paths import resolve_database_path
 from .serialization import media_item_from_dict, media_item_to_dict
 from .storage import CacheStore, default_cache_dir
 from .sync_api import SyncApi, build_default_sync_api
@@ -129,6 +132,16 @@ def get_catalog_api() -> CatalogApi:
         if CATALOG_API is None:
             CATALOG_API = build_default_catalog_api()
     return CATALOG_API
+
+
+def get_runtime_diagnostics() -> dict[str, object]:
+    try:
+        return build_diagnostics(
+            db=AppDatabase(resolve_database_path()),
+            cache_dir=CACHE.cache_dir,
+        )
+    except Exception:
+        return unknown_diagnostics()
 
 
 def catalog_error_payload(message: str) -> dict[str, object]:
@@ -730,6 +743,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/v2/media/health":
                 self.send_json(get_media_api().health())
+            elif path == "/api/v2/diagnostics":
+                self.send_json(get_runtime_diagnostics())
             elif path.startswith("/api/v2/media/jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 data = get_media_api().get_job(job_id)
