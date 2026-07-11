@@ -70,6 +70,60 @@ def fake_recovery_dom():
     '''
 
 
+def timed_recovery_dom():
+    return r'''
+      const observedMutations = [];
+      class FakeMutationObserver {
+        constructor(callback) { this.callback = callback; this.root = null; this.active = false; observedMutations.push(this); }
+        observe(root, options) { this.root = root; this.options = options; this.active = true; root.observers.add(this); }
+        disconnect() { this.active = false; this.root?.observers.delete(this); this.root = null; }
+      }
+      class FakeElement {
+        constructor(tagName, id = "") {
+          this.tagName = String(tagName).toUpperCase(); this.id = id; this.children = [];
+          this.parentNode = null; this.dataset = {}; this.attributes = new Map();
+          this.listeners = new Map(); this.textContent = ""; this.className = ""; this.type = "";
+          this.observers = new Set(); this.focusCalls = [];
+        }
+        append(...nodes) { nodes.forEach((node) => { this.children.push(node); node.parentNode = this; }); }
+        replaceChildren(...nodes) {
+          this.children.forEach((node) => { node.parentNode = null; });
+          this.children = []; this.append(...nodes);
+          for (const observer of [...this.observers]) {
+            queueMicrotask(() => { if (observer.active) observer.callback([{ type: "childList", target: this }], observer); });
+          }
+        }
+        setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        getAttribute(name) { return this.attributes.get(name) ?? null; }
+        addEventListener(type, listener) { this.listeners.set(type, listener); }
+        querySelector(selector) {
+          const wanted = selector.toUpperCase();
+          const visit = (node) => {
+            for (const child of node.children || []) {
+              if (child.tagName === wanted) return child;
+              const nested = visit(child); if (nested) return nested;
+            }
+            return null;
+          };
+          return visit(this);
+        }
+        focus(options) { this.focusCalls.push(options); }
+      }
+      const appView = new FakeElement("main", "app-view");
+      globalThis.MutationObserver = FakeMutationObserver;
+      const bodyClasses = new Set();
+      globalThis.document = {
+        readyState: "loading", body: { classList: { toggle(name, enabled) { if (enabled) bodyClasses.add(name); else bodyClasses.delete(name); } } },
+        createElement(tagName) { return new FakeElement(tagName); },
+        getElementById(id) { return id === "app-view" ? appView : null; },
+        addEventListener() {}, querySelectorAll() { return []; },
+      };
+      globalThis.window = { matchMedia() { return { matches: true }; } };
+      const deferred = () => { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+      const flushMicrotasks = async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve(); };
+    '''
+
+
 class UiV3MigrationTests(unittest.TestCase):
     def test_migration_projects_only_safe_fields_and_filters_legacy_artifacts(self):
         result = run_node_module(
@@ -261,6 +315,106 @@ class UiV3MigrationTests(unittest.TestCase):
         for forbidden in ("secret", "Cookie", "http://", "https://", "rawError"):
             self.assertNotIn(forbidden, diagnostic_text)
 
+    def test_pending_clear_then_reject_restores_previous_dom_before_fallback_and_nonempty_commit_wins(self):
+        result = run_node_module(
+            f'''
+            {timed_recovery_dom()}
+            console.error = () => {{}};
+            const {{ configureRecoveryBoundary, rememberLastStableState, renderSafely }} = await import("{module_url('js/core/recovery.js')}");
+            let currentPath = "/library";
+            configureRecoveryBoundary({{ root: appView, getCurrentPath: () => currentPath }});
+            rememberLastStableState({{ activePath: currentPath, activeParams: {{}}, scrollByRoute: {{}}, rail: {{ mode: "expanded" }}, recommendation: {{ channels: {{}} }}, candidateTray: {{ context: {{}} }}, library: {{ state: "all" }}, sync: {{}} }});
+            const stable = document.createElement("section"); stable.textContent = "previous stable"; appView.replaceChildren(stable);
+
+            const rejection = deferred();
+            const pendingFailure = renderSafely({{ path: currentPath }}, async () => {{
+              appView.replaceChildren();
+              await rejection.promise;
+              throw new Error("late failure");
+            }});
+            await flushMicrotasks();
+            const duringFailure = appView.children.map((node) => node.textContent);
+            rejection.resolve();
+            const failed = await pendingFailure;
+            const afterFailure = appView.children[0]?.querySelector?.("button")?.textContent || appView.querySelector("button")?.textContent || "";
+
+            appView.replaceChildren(stable);
+            const success = deferred();
+            const nextView = document.createElement("section"); nextView.textContent = "complete view";
+            const pendingSuccess = renderSafely({{ path: currentPath }}, async () => {{
+              appView.replaceChildren();
+              await success.promise;
+              appView.replaceChildren(nextView);
+              return "done";
+            }});
+            await flushMicrotasks();
+            const duringSuccess = appView.children.map((node) => node.textContent);
+            success.resolve();
+            const succeeded = await pendingSuccess;
+            await flushMicrotasks();
+            console.log(JSON.stringify({{
+              duringFailure, failed, afterFailure, duringSuccess, succeeded,
+              finalText: appView.children[0]?.textContent,
+              observersDisconnected: observedMutations.every((observer) => !observer.active),
+            }}));
+            '''
+        )
+        self.assertEqual(["previous stable"], result["duringFailure"])
+        self.assertTrue(result["failed"]["recovered"])
+        self.assertEqual("恢复上次稳定状态", result["afterFailure"])
+        self.assertEqual(["previous stable"], result["duringSuccess"])
+        self.assertTrue(result["succeeded"]["ok"])
+        self.assertEqual("complete view", result["finalText"])
+        self.assertTrue(result["observersDisconnected"])
+
+    def test_microtask_fallback_guards_pending_blank_and_dispose_or_stale_observer_never_writes(self):
+        result = run_node_module(
+            f'''
+            {timed_recovery_dom()}
+            console.error = () => {{}};
+            const {{ configureRecoveryBoundary, renderSafely }} = await import("{module_url('js/core/recovery.js')}");
+            const {{ createAppRouteHandler }} = await import("{module_url('js/app.js')}");
+            let currentPath = "/title/old";
+            configureRecoveryBoundary({{ root: appView, getCurrentPath: () => currentPath }});
+            const stable = document.createElement("section"); stable.textContent = "old stable"; appView.replaceChildren(stable);
+
+            delete globalThis.MutationObserver;
+            const fallbackDeferred = deferred();
+            const fallbackRender = renderSafely({{ path: currentPath }}, async () => {{ appView.replaceChildren(); await fallbackDeferred.promise; }});
+            await flushMicrotasks();
+            const microtaskRestored = appView.children[0]?.textContent;
+            fallbackDeferred.resolve(); await fallbackRender;
+
+            globalThis.MutationObserver = FakeMutationObserver;
+            const staleDeferred = deferred();
+            const state = {{ activePath: "/library", activeParams: {{}}, recommendation: {{ channels: {{}} }}, scrollByRoute: {{}}, rail: {{ mode: "expanded" }}, candidateTray: {{ context: {{}} }}, library: {{ state: "all" }}, sync: {{}} }};
+            const store = {{ getState() {{ return state; }}, dispatch(action) {{ if (action.type === "route/changed") state.activePath = action.route.path; }} }};
+            const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
+            const handler = createAppRouteHandler({{
+              appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate,
+              prepare() {{}}, setNavigation() {{}}, setStatus() {{}}, announceRoute() {{}},
+              async renderTasteView() {{ appView.replaceChildren(); await staleDeferred.promise; throw new Error("stale"); }},
+            }});
+            const staleRender = handler({{ name: "taste", path: "/taste", params: {{}} }});
+            await flushMicrotasks();
+            handler.dispose();
+            state.activePath = "/library";
+            const fresh = document.createElement("section"); fresh.textContent = "fresh route"; appView.replaceChildren(fresh);
+            await flushMicrotasks();
+            staleDeferred.resolve();
+            const staleResult = await staleRender;
+            await flushMicrotasks();
+            console.log(JSON.stringify({{
+              microtaskRestored, staleResult, finalText: appView.children[0]?.textContent,
+              observersDisconnected: observedMutations.every((observer) => !observer.active),
+            }}));
+            '''
+        )
+        self.assertEqual("old stable", result["microtaskRestored"])
+        self.assertFalse(result["staleResult"])
+        self.assertEqual("fresh route", result["finalText"])
+        self.assertTrue(result["observersDisconnected"])
+
     def test_stale_recovery_does_not_overwrite_new_route(self):
         result = run_node_module(
             f'''
@@ -310,28 +464,134 @@ class UiV3MigrationTests(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual("safe_user", result["stable"]["sync"]["profile"])
 
-    def test_app_route_boundary_handles_sync_and_async_renderer_failures_without_double_announcement(self):
+    def test_failed_route_restores_runtime_persistence_router_and_retry_to_previous_stable(self):
+        result = run_node_module(
+            f'''
+            {timed_recovery_dom()}
+            console.error = () => {{}};
+            const values = new Map();
+            globalThis.localStorage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            const browserListeners = new Map(); const scrolls = [];
+            Object.assign(window, {{
+              location: {{ pathname: "/library" }}, scrollY: 345,
+              history: {{
+                state: null, scrollRestoration: "auto",
+                pushState(state, _title, path) {{ this.state = state; window.location.pathname = path; }},
+                replaceState(state, _title, path) {{ this.state = state; window.location.pathname = path; }},
+              }},
+              addEventListener(type, listener) {{ browserListeners.set(type, listener); }},
+              removeEventListener(type, listener) {{ if (browserListeners.get(type) === listener) browserListeners.delete(type); }},
+              dispatchEvent(event) {{ browserListeners.get(event.type)?.(event); }},
+              requestAnimationFrame(callback) {{ callback(); }},
+              scrollTo(options) {{ scrolls.push(options.top); this.scrollY = options.top; }},
+            }});
+            const {{ configureRecoveryBoundary }} = await import("{module_url('js/core/recovery.js')}");
+            const {{ createEmptyUiState, createStore, persistUiState, restoreUiState, UI_STATE_KEY }} = await import("{module_url('js/core/store.js')}");
+            const {{ createRouter }} = await import("{module_url('js/core/router.js')}");
+            const {{ createAppRouteHandler, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const initial = createEmptyUiState(); initial.activePath = "/library"; initial.library.state = "wish"; initial.scrollByRoute["/library"] = 345;
+            persistUiState(initial);
+            const store = createStore(restoreUiState(), reduceUiState);
+            const unsubscribe = store.subscribe((state) => persistUiState(state));
+            const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
+            const announcements = []; const retryPaths = []; let router; let retryPromise = Promise.resolve(null);
+            configureRecoveryBoundary({{ root: appView, getCurrentPath: () => store.getState().activePath, onRetry(stable) {{ retryPaths.push(stable.activePath); retryPromise = router.navigate(stable.activePath); }} }});
+            const handler = createAppRouteHandler({{
+              appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate, prepare() {{}}, setNavigation() {{}}, setStatus() {{}},
+              renderLibraryView(root) {{ const view = document.createElement("section"); const heading = document.createElement("h1"); heading.textContent = "Library"; view.append(heading); root.replaceChildren(view); return {{ dispose() {{}} }}; }},
+              async renderTasteView(root) {{
+                root.replaceChildren();
+                store.dispatch({{ type: "candidateTray/nodeAdded", itemId: "douban:failed" }});
+                store.dispatch({{ type: "commandLens/grounded", draft: "failed draft", chips: [{{ key: "failed", label: "failed", value: "failed" }}] }});
+                store.dispatch({{ type: "recommendation/sessionReceived", session: {{ id: "failed-session", channels: {{}}, chips: [] }}, source: "create" }});
+                await Promise.resolve();
+                throw new Error("async fail");
+              }},
+              announceRoute(message) {{ announcements.push(message); }},
+            }});
+            router = createRouter([{{ pattern: "/library", name: "library" }}, {{ pattern: "/taste", name: "taste" }}], {{ onRoute: handler }});
+            await router.start(); announcements.length = 0; appView.focusCalls.length = 0;
+            const failedResult = await router.navigate("/taste", {{ raw: "https://evil.example", token: "must-drop" }});
+            await flushMicrotasks();
+            const currentRouteAfterFailure = router.currentRoute?.path;
+            const browserPathAfterFailure = window.location.pathname;
+            const browserStateAfterFailure = window.history.state;
+            const recoveryAnnouncements = [...announcements];
+            const focusAfterFailure = appView.focusCalls.length;
+            const scrollYAfterFailure = window.scrollY;
+            const scrollsAfterFailure = [...scrolls];
+            const persistedAfterFailure = JSON.parse(values.get(UI_STATE_KEY));
+            const refreshed = restoreUiState();
+            const button = appView.querySelector("button"); button.listeners.get("click")({{ preventDefault() {{}} }});
+            const afterRetry = await retryPromise;
+            unsubscribe();
+            console.log(JSON.stringify({{
+              failedResult, currentRouteAfterFailure, browserPathAfterFailure, browserStateAfterFailure,
+              runtimePath: store.getState().activePath, persistedPath: persistedAfterFailure.activePath, refreshedPath: refreshed.activePath,
+              persistedLibrary: persistedAfterFailure.library.state, retryPaths, afterRetry: afterRetry?.path,
+              runtimeCandidateIds: store.getState().candidateTray.itemIds,
+              persistedCandidateIds: persistedAfterFailure.candidateTray.itemIds,
+              runtimeDraft: store.getState().commandLens.draft,
+              persistedDraft: persistedAfterFailure.commandLens.draft,
+              runtimeSessionId: store.getState().recommendation.sessionId,
+              persistedSessionId: persistedAfterFailure.recommendation.sessionId,
+              recoveryAnnouncements, focusAfterFailure, scrollYAfterFailure, scrollsAfterFailure, announcements, scrolls, childCount: appView.children.length,
+            }}));
+            '''
+        )
+        self.assertIsNone(result["failedResult"])
+        self.assertEqual("/library", result["currentRouteAfterFailure"])
+        self.assertEqual("/library", result["browserPathAfterFailure"])
+        self.assertEqual({}, result["browserStateAfterFailure"])
+        self.assertEqual("/library", result["runtimePath"])
+        self.assertEqual("/library", result["persistedPath"])
+        self.assertEqual("/library", result["refreshedPath"])
+        self.assertEqual("wish", result["persistedLibrary"])
+        self.assertEqual([], result["runtimeCandidateIds"])
+        self.assertEqual([], result["persistedCandidateIds"])
+        self.assertEqual("", result["runtimeDraft"])
+        self.assertEqual("", result["persistedDraft"])
+        self.assertIsNone(result["runtimeSessionId"])
+        self.assertIsNone(result["persistedSessionId"])
+        self.assertEqual(["/library"], result["retryPaths"])
+        self.assertEqual("/library", result["afterRetry"])
+        self.assertGreater(result["childCount"], 0)
+        self.assertEqual(1, len(result["recoveryAnnouncements"]))
+        self.assertIn("恢复", result["recoveryAnnouncements"][0])
+        self.assertEqual(0, result["focusAfterFailure"])
+        self.assertEqual(345, result["scrollYAfterFailure"])
+        self.assertEqual([345], result["scrollsAfterFailure"])
+
+    def test_safe_routes_reject_embedded_external_url_text_in_store_recovery_scroll_and_diagnostics(self):
         result = run_node_module(
             f'''
             {fake_recovery_dom()}
-            const {{ configureRecoveryBoundary, rememberLastStableState }} = await import("{module_url('js/core/recovery.js')}");
-            const {{ createAppRouteHandler }} = await import("{module_url('js/app.js')}");
-            const stableNode = document.createElement("section"); stableNode.textContent = "stable"; appView.replaceChildren(stableNode);
-            const state = {{ activePath: "/library", activeParams: {{}}, recommendation: {{ channels: {{}} }}, scrollByRoute: {{}}, rail: {{ mode: "expanded" }}, library: {{ state: "all" }}, sync: {{}} }};
-            const store = {{ getState() {{ return state; }}, dispatch(action) {{ if (action.type === "route/changed") {{ state.activePath = action.route.path; state.activeParams = action.route.params; }} }} }};
-            const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
-            const announcements = []; configureRecoveryBoundary({{ root: appView, getCurrentPath: () => state.activePath }}); rememberLastStableState(state);
-            const syncHandler = createAppRouteHandler({{ appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate, prepare() {{}}, setNavigation() {{}}, renderLibraryView() {{ throw new Error("sync"); }}, announceRoute(message) {{ announcements.push(message); }} }});
-            const syncResult = await syncHandler({{ name: "library", path: "/library", params: {{}} }});
-            const asyncHandler = createAppRouteHandler({{ appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate, prepare() {{}}, setNavigation() {{}}, renderTasteView() {{ return Promise.reject(new Error("async")); }}, announceRoute(message) {{ announcements.push(message); }} }});
-            const asyncResult = await asyncHandler({{ name: "taste", path: "/taste", params: {{}} }});
-            console.log(JSON.stringify({{ syncResult, asyncResult, childCount: appView.children.length, announcements }}));
+            const diagnostics = []; console.error = (...args) => diagnostics.push(args);
+            const {{ normalizeUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ configureRecoveryBoundary, rememberLastStableState, renderSafely, restoreLastStableState }} = await import("{module_url('js/core/recovery.js')}");
+            const evil = "/title/https://evil.example/x"; const protocolRelative = "/title//evil.example/x"; const safe = "/title/douban:123";
+            const normalized = normalizeUiState({{ activePath: evil, scrollByRoute: {{ [evil]: 100, [protocolRelative]: 150, [safe]: 200 }} }});
+            const safeNormalized = normalizeUiState({{ activePath: safe }});
+            let currentPath = evil; configureRecoveryBoundary({{ root: appView, getCurrentPath: () => currentPath }});
+            rememberLastStableState({{ activePath: evil, activeParams: {{ id: "douban:123" }}, scrollByRoute: {{ [evil]: 100, [safe]: 200 }}, rail: {{ mode: "expanded" }}, recommendation: {{ channels: {{}} }}, candidateTray: {{ context: {{}} }}, library: {{ state: "all" }}, sync: {{}} }});
+            const invalidStable = restoreLastStableState();
+            rememberLastStableState({{ activePath: safe, activeParams: {{ id: "douban:123" }}, scrollByRoute: {{ [safe]: 200 }}, rail: {{ mode: "expanded" }}, recommendation: {{ channels: {{}} }}, candidateTray: {{ context: {{}} }}, library: {{ state: "all" }}, sync: {{}} }});
+            const safeStable = restoreLastStableState();
+            await renderSafely({{ path: evil }}, () => {{ throw new Error("failed"); }});
+            console.log(JSON.stringify({{ normalized, safeNormalized, invalidStable, safeStable, diagnostics }}));
             '''
         )
-        self.assertTrue(result["syncResult"])
-        self.assertTrue(result["asyncResult"])
-        self.assertGreater(result["childCount"], 0)
-        self.assertEqual(2, len(result["announcements"]))
+        self.assertIsNone(result["normalized"]["activePath"])
+        self.assertNotIn("/title/https://evil.example/x", result["normalized"]["scrollByRoute"])
+        self.assertNotIn("/title//evil.example/x", result["normalized"]["scrollByRoute"])
+        self.assertEqual(200, result["normalized"]["scrollByRoute"]["/title/douban:123"])
+        self.assertEqual("/title/douban:123", result["safeNormalized"]["activePath"])
+        self.assertIsNone(result["invalidStable"])
+        self.assertEqual("/title/douban:123", result["safeStable"]["activePath"])
+        diagnostic_text = json.dumps(result["diagnostics"], ensure_ascii=False)
+        self.assertNotIn("evil.example", diagnostic_text)
+        self.assertNotIn("https://", diagnostic_text)
+        self.assertIsNone(result["diagnostics"][0][1]["route"])
 
     def test_bootstrap_runs_migration_before_restore_store_and_router(self):
         source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")

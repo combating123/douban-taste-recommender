@@ -1,4 +1,5 @@
 const SAFE_PATH = /^\/(?!\/)[^?#]{0,511}$/;
+const EXTERNAL_URL_IN_PATH = /(?:https?:\/\/|\/\/)/i;
 const SAFE_ID = /^[A-Za-z0-9:._~-]{1,256}$/;
 const SAFE_PARAM_KEY = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const CHANNELS = ["movie", "series", "anime-series"];
@@ -13,13 +14,14 @@ let boundary = {
   onRetry: () => {},
 };
 const renderGenerations = new WeakMap();
+const activeObservers = new WeakMap();
 
 function clone(value) {
   return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
 function safePath(value) {
-  return typeof value === "string" && SAFE_PATH.test(value) ? value : null;
+  return typeof value === "string" && SAFE_PATH.test(value) && !EXTERNAL_URL_IN_PATH.test(value) ? value : null;
 }
 
 function safeId(value, maxLength = 256) {
@@ -172,19 +174,47 @@ function recoveryPanel(stableState) {
   return panel;
 }
 
-export function renderRecoveryBoundary(error, stableState) {
+function commitRecoveryBoundary(error, stableState, recoveryRoot) {
   void error;
-  const root = boundary.root ?? globalThis.document?.getElementById?.("app-view") ?? null;
   const safeStable = stableState ? sanitizeStableState(stableState) : restoreLastStableState();
   const panel = recoveryPanel(safeStable);
-  if (root?.replaceChildren) root.replaceChildren(panel);
+  if (recoveryRoot?.replaceChildren) recoveryRoot.replaceChildren(panel);
   return panel;
+}
+
+export function renderRecoveryBoundary(error, stableState) {
+  const root = boundary.root ?? globalThis.document?.getElementById?.("app-view") ?? null;
+  return commitRecoveryBoundary(error, stableState, root);
 }
 
 function rootChildren(root) {
   if (!root) return [];
   if (root.childNodes && typeof root.childNodes[Symbol.iterator] === "function") return [...root.childNodes];
   return Array.isArray(root.children) ? [...root.children] : [];
+}
+
+function disconnectObserver(root, observer = activeObservers.get(root)) {
+  if (!observer) return;
+  try {
+    observer.disconnect();
+  } catch {
+    // A broken observer must not block route disposal or recovery.
+  }
+  if (activeObservers.get(root) === observer) activeObservers.delete(root);
+}
+
+export function invalidateRecoveryRender(root = boundary.root) {
+  if (!root) return;
+  renderGenerations.set(root, (renderGenerations.get(root) || 0) + 1);
+  disconnectObserver(root);
+}
+
+function scheduleMicrotask(callback) {
+  if (typeof globalThis.queueMicrotask === "function") {
+    globalThis.queueMicrotask(callback);
+    return;
+  }
+  void Promise.resolve().then(callback);
 }
 
 function reportRecovery(path) {
@@ -207,23 +237,50 @@ export async function renderSafely(route, renderer, options = {}) {
   const previousNodes = rootChildren(root);
   const previousStable = restoreLastStableState() || sanitizeStableState(getStableState?.() || {});
   const generation = root ? (renderGenerations.get(root) || 0) + 1 : 1;
-  if (root) renderGenerations.set(root, generation);
+  if (root) {
+    disconnectObserver(root);
+    renderGenerations.set(root, generation);
+  }
+  let pending = true;
   const isCurrent = () => (
     (!root || renderGenerations.get(root) === generation)
     && (!expectedPath || getCurrentPath?.() === expectedPath)
   );
+  const restorePendingBlank = () => {
+    if (!pending || !root || !isCurrent() || rootChildren(root).length || !previousNodes.length) return false;
+    root.replaceChildren(...previousNodes);
+    return true;
+  };
+  let observer = null;
+  const MutationObserverClass = globalThis.MutationObserver ?? globalThis.window?.MutationObserver;
+  if (root && typeof MutationObserverClass === "function") {
+    try {
+      observer = new MutationObserverClass(restorePendingBlank);
+      observer.observe(root, { childList: true });
+      activeObservers.set(root, observer);
+    } catch {
+      observer = null;
+    }
+  }
 
   try {
-    const value = await Promise.resolve().then(renderer);
+    const renderPromise = Promise.resolve().then(renderer);
+    scheduleMicrotask(restorePendingBlank);
+    const value = await renderPromise;
     if (!isCurrent()) return { ok: false, recovered: false, stale: true, value: null };
+    pending = false;
     const state = getStableState?.();
     if (state) rememberLastStableState(state);
     return { ok: true, recovered: false, stale: false, value };
   } catch (error) {
     if (!isCurrent()) return { ok: false, recovered: false, stale: true, value: null };
+    pending = false;
     reportRecovery(expectedPath);
     if (root && rootChildren(root).length === 0 && previousNodes.length) root.replaceChildren(...previousNodes);
-    renderRecoveryBoundary(error, previousStable);
-    return { ok: false, recovered: true, stale: false, value: null };
+    commitRecoveryBoundary(error, previousStable, root);
+    return { ok: false, recovered: true, stale: false, value: null, previousStable };
+  } finally {
+    pending = false;
+    if (root) disconnectObserver(root, observer);
   }
 }

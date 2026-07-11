@@ -6,6 +6,7 @@ const RAIL_MODES = new Set(["expanded", "collapsed", "hidden"]);
 const LIBRARY_STATES = new Set(["all", "watched", "wish", "wanted", "candidate", "rated", "collect", "ready", "hidden", "archived"]);
 const SENSITIVE_KEY = /(?:cookie|api[_-]?key|authorization|headers?|token|secret|password)/i;
 const EXTERNAL_URL = /^(?:https?:)?\/\//i;
+const EXTERNAL_URL_IN_PATH = /(?:https?:\/\/|\/\/)/i;
 const SENSITIVE_ASSIGNMENT = /\b(?:auth(?:orization)?|cookie|session(?:id)?|sid|token|api[\s_-]?key|apikey|jwt|private[\s_-]?key|password|secret|credential|subscription|access[\s_-]?token|refresh[\s_-]?token)\b\s*[:=]\s*[^\s,;]+/i;
 const DOUBAN_COOKIE_ASSIGNMENT = /(?:^|[\s;,])(?:bid|dbcl2|ck|push_noty_num|push_doumail_num)\s*[:=]/i;
 const BEARER_SECRET = /\bbearer\s+[A-Za-z0-9._~+/=-]{6,}/i;
@@ -72,7 +73,10 @@ export function sanitizeNonSensitiveText(value, fallback = "", maxLength = 512) 
 const safeText = sanitizeNonSensitiveText;
 
 function isSafePath(value) {
-  return typeof value === "string" && value.startsWith("/") && value.length <= 512 && !EXTERNAL_URL.test(value);
+  return typeof value === "string"
+    && value.startsWith("/")
+    && value.length <= 512
+    && !EXTERNAL_URL_IN_PATH.test(value);
 }
 
 function isSafeKey(key) {

@@ -3,7 +3,7 @@ import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, sanitizeNonSensitiveText, sanitizeNonSensitiveValue } from "./core/store.js";
 import { migrateLegacyClientState } from "./core/migrate.js";
-import { configureRecoveryBoundary, rememberLastStableState, renderSafely } from "./core/recovery.js";
+import { configureRecoveryBoundary, invalidateRecoveryRender, rememberLastStableState, renderSafely } from "./core/recovery.js";
 import { announce } from "./core/focus.js";
 import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
@@ -194,6 +194,8 @@ export function reduceUiState(state, action) {
       };
     case "recovery/restored": {
       const stable = action.state && typeof action.state === "object" ? action.state : {};
+      const activeChannel = stable.recommendation?.activeChannel || "movie";
+      const channels = stable.recommendation?.channels || state.recommendation.channels;
       return {
         ...state,
         activePath: stable.activePath || state.activePath,
@@ -201,11 +203,11 @@ export function reduceUiState(state, action) {
         scrollByRoute: stable.scrollByRoute || {},
         rail: stable.rail || { mode: "expanded" },
         recommendation: {
-          ...state.recommendation,
-          activeChannel: stable.recommendation?.activeChannel || "movie",
-          channels: stable.recommendation?.channels || state.recommendation.channels,
+          sessionId: channels?.[activeChannel]?.sessionId || null,
+          activeChannel,
+          channels,
         },
-        candidateTray: { ...state.candidateTray, context: stable.candidateTray?.context || {} },
+        candidateTray: { itemIds: [], context: stable.candidateTray?.context || {} },
         commandLens: { draft: "", chips: [] },
         library: stable.library || { state: "all" },
         sync: stable.sync || state.sync,
@@ -593,6 +595,23 @@ export function createAppRouteHandler({
       getStableState: () => store.getState?.() || null,
     });
     if (renderResult.stale || store.getState?.().activePath !== route.path) return false;
+    if (renderResult.recovered) {
+      const stableState = renderResult.previousStable;
+      if (stableState?.activePath) {
+        store.dispatch({ type: "recovery/restored", state: stableState });
+        persistUiState(store.getState());
+        applyRailMode(store.getState().rail.mode);
+        appView.dataset.route = stableState.activePath;
+        setNavigation(stableState.activePath.startsWith("/tonight") ? "/tonight" : stableState.activePath);
+        const browser = globalThis.window;
+        if (browser?.history?.replaceState) {
+          browser.history.replaceState({}, "", stableState.activePath);
+        }
+      }
+      setStatus("CineScope 已进入恢复状态");
+      announceRoute("恢复：已保留上次稳定页面");
+      return false;
+    }
     const focusTarget = appView.querySelector?.("h1") || appView;
     if (focusTarget && typeof focusTarget.focus === "function") {
       focusTarget.setAttribute?.("tabindex", "-1");
@@ -602,6 +621,7 @@ export function createAppRouteHandler({
     return true;
   };
   handler.dispose = () => {
+    invalidateRecoveryRender(appView);
     disposeActiveSpace();
     restoreGate.invalidate();
     explorationGate.invalidate();
