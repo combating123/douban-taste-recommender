@@ -309,6 +309,19 @@ export function createUniverseRouteGate({
   return { invalidate, render: renderRoute };
 }
 
+export function createUniverseExplorer({ store, navigate = () => {} } = {}) {
+  return (id) => {
+    const focusId = stableUniverseId(id);
+    if (!focusId || !store?.getState || !store?.dispatch) return false;
+    const previous = store.getState().candidateTray?.context || {};
+    store.dispatch({
+      type: "universe/contextChanged",
+      context: { universeFocusId: focusId, expandedIds: Array.isArray(previous.expandedIds) ? previous.expandedIds : [] },
+    });
+    return navigate("/universe");
+  };
+}
+
 function explorationRecovery(route, retry) {
   if (typeof document.createElement !== "function") return { className: "route-recovery", route: route.path };
   const panel = document.createElement("section");
@@ -417,6 +430,47 @@ export function createExplorationRouteGate({
   return { invalidate, render };
 }
 
+export function createAppRouteHandler({
+  appView,
+  store,
+  restoreGate,
+  explorationGate,
+  universeGate,
+  prepare = prepareRouteChange,
+  setNavigation = setCurrentNavigation,
+  renderTonightView = renderTonight,
+  renderPlaceholder = renderRoutePlaceholder,
+  setStatus = () => {},
+} = {}) {
+  return async (route) => {
+    prepare();
+    store.dispatch({ type: "route/changed", route });
+    appView.dataset.route = route.path;
+    setNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
+    const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
+    if (route.path.startsWith("/tonight")) {
+      universeGate.invalidate();
+      explorationGate.invalidate();
+      renderTonightView(store.getState());
+      await restoreGate.restore(route, heading);
+    } else if (route.name === "title" || route.name === "person") {
+      universeGate.invalidate();
+      restoreGate.invalidate();
+      await explorationGate.render(route, heading);
+    } else if (route.name === "universe") {
+      restoreGate.invalidate();
+      explorationGate.invalidate();
+      await universeGate.render();
+    } else {
+      universeGate.invalidate();
+      restoreGate.invalidate();
+      explorationGate.invalidate();
+      renderPlaceholder(appView, { heading, description });
+      setStatus(`CineScope 正在浏览：${heading}`);
+    }
+  };
+}
+
 export function bootstrapCineScopeShell() {
   const appView = document.getElementById("app-view");
   const status = document.getElementById("shell-status");
@@ -455,20 +509,12 @@ export function bootstrapCineScopeShell() {
     },
   });
   let router = null;
+  const exploreUniverse = createUniverseExplorer({ store, navigate: (path) => router?.navigate(path) });
   configureDetail({
     root: appView,
     api: { postV2 },
     openPersonSheet,
-    onExploreUniverse: (id) => {
-      const focusId = stableUniverseId(id);
-      if (!focusId) return;
-      const previous = store.getState().candidateTray?.context || {};
-      store.dispatch({
-        type: "universe/contextChanged",
-        context: { universeFocusId: focusId, expandedIds: Array.isArray(previous.expandedIds) ? previous.expandedIds : [] },
-      });
-      router?.navigate("/universe");
-    },
+    onExploreUniverse: exploreUniverse,
   });
   const explorationGate = createExplorationRouteGate({
     root: appView,
@@ -495,43 +541,14 @@ export function bootstrapCineScopeShell() {
   document.getElementById("rail-restore")?.addEventListener("click", () => setRailMode("expanded"));
 
   router = createRouter(APP_ROUTES, {
-    onRoute: async (route) => {
-      prepareRouteChange();
-      store.dispatch({ type: "route/changed", route });
-      if (route.name === "title") {
-        const focusId = stableUniverseId(route.params?.id);
-        if (focusId) {
-          const previous = store.getState().candidateTray?.context || {};
-          store.dispatch({
-            type: "universe/contextChanged",
-            context: { universeFocusId: focusId, expandedIds: Array.isArray(previous.expandedIds) ? previous.expandedIds : [] },
-          });
-        }
-      }
-      appView.dataset.route = route.path;
-      setCurrentNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
-      const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
-      if (route.path.startsWith("/tonight")) {
-        universeGate.invalidate();
-        explorationGate.invalidate();
-        renderTonight(store.getState());
-        await restoreGate.restore(route, heading);
-      } else if (route.name === "title" || route.name === "person") {
-        universeGate.invalidate();
-        restoreGate.invalidate();
-        await explorationGate.render(route, heading);
-      } else if (route.name === "universe") {
-        restoreGate.invalidate();
-        explorationGate.invalidate();
-        await universeGate.render();
-      } else {
-        universeGate.invalidate();
-        restoreGate.invalidate();
-        explorationGate.invalidate();
-        renderRoutePlaceholder(appView, { heading, description });
-        setText(status, `CineScope 正在浏览：${heading}`);
-      }
-    },
+    onRoute: createAppRouteHandler({
+      appView,
+      store,
+      restoreGate,
+      explorationGate,
+      universeGate,
+      setStatus: (message) => setText(status, message),
+    }),
   });
 
   bindNavigation(router);

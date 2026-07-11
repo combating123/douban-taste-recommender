@@ -2007,6 +2007,199 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertGreaterEqual(result["contexts"], 1)
         self.assertTrue(result["aborted"])
 
+    def test_universe_focus_controls_persist_only_real_changes_and_pointer_cancel_never_expands(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map();
+                this.dataset = {{}}; this.className = ""; this.textContent = ""; this.style = {{ setProperty() {{}} }};
+                this.listeners = new Map(); this.pointerCapture = null;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              dispatch(type, event = {{}}) {{ for (const listener of this.listeners.get(type) ?? []) listener({{ target: this, currentTarget: this, ...event }}); }}
+              focus() {{ document.activeElement = this; }}
+              getBoundingClientRect() {{ return {{ left: 0, top: 0, width: 800, height: 500 }}; }}
+              getContext() {{ return this.tagName === "CANVAS" ? new Proxy({{}}, {{ get: () => () => {{}} }}) : null; }}
+              setPointerCapture(id) {{ this.pointerCapture = id; }}
+              hasPointerCapture(id) {{ return this.pointerCapture === id; }}
+              releasePointerCapture(id) {{ if (this.pointerCapture === id) this.pointerCapture = null; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ activeElement: null, createElement: (tag) => new FakeElement(tag) }};
+            globalThis.window = {{ devicePixelRatio: 1, addEventListener() {{}}, removeEventListener() {{}}, matchMedia: () => ({{ matches: true }}) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            globalThis.requestAnimationFrame = () => 1; globalThis.cancelAnimationFrame = () => {{}};
+            globalThis.IntersectionObserver = class {{ constructor(callback) {{ this.callback = callback; }} observe(target) {{ this.target = target; }} disconnect() {{}} }};
+            delete globalThis.ResizeObserver;
+
+            const contexts = []; const requests = [];
+            const {{ configureUniverse, destroyUniverse, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            configureUniverse({{
+              fetchJson(path, options) {{ requests.push({{ path, options }}); return new Promise(() => {{}}); }},
+              onContextChange(context) {{ contexts.push(context); }},
+            }});
+            const container = new FakeElement("main");
+            const view = renderUniverse(container, {{
+              focus_id: "item:A",
+              nodes: [{{ id: "item:A", title: "A" }}, {{ id: "item:B", title: "B" }}, {{ id: "item:C", title: "C" }}],
+              edges: [
+                {{ source: "item:A", target: "item:B", score: 0.9, reasons: ["A-B"] }},
+                {{ source: "item:A", target: "item:C", score: 0.8, reasons: ["A-C"] }},
+              ],
+            }});
+            if (contexts.length !== 0) throw new Error("initial render wrote unchanged universe context");
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const all = collect(view); const canvas = all.find((node) => node.tagName === "CANVAS");
+            const nodeC = all.find((node) => node.dataset.nodeId === "item:C");
+            const relationFocus = all.find((node) => node.className.includes("relationship-list__focus"));
+
+            canvas.dispatch("keydown", {{ key: "ArrowRight", preventDefault() {{}} }});
+            nodeC.dispatch("focus");
+            relationFocus.dispatch("click");
+            relationFocus.dispatch("click");
+            if (contexts.length !== 3) throw new Error(`focus controls wrote ${{contexts.length}} contexts instead of three real changes`);
+            if (contexts.map((entry) => entry.universeFocusId).join(",") !== "item:B,item:C,item:A") throw new Error("keyboard, node button, and relationship focus did not persist in order");
+            if (contexts.some((entry) => !Array.isArray(entry.expandedIds) || entry.expandedIds.length > 36)) throw new Error("focus context did not keep bounded expanded ids");
+
+            canvas.dispatch("pointerdown", {{ pointerId: 7, clientX: 400, clientY: 250 }});
+            canvas.dispatch("pointercancel", {{ pointerId: 7, clientX: 400, clientY: 250 }});
+            if (canvas.pointerCapture !== null || requests.length !== 0 || contexts.length !== 3) throw new Error("pointercancel focused, expanded, or retained capture");
+
+            canvas.dispatch("pointerdown", {{ pointerId: 8, clientX: 400, clientY: 250 }});
+            canvas.pointerCapture = null;
+            canvas.dispatch("lostpointercapture", {{ pointerId: 8 }});
+            canvas.dispatch("pointerup", {{ pointerId: 8, clientX: 400, clientY: 250 }});
+            if (requests.length !== 0 || contexts.length !== 3) throw new Error("lostpointercapture left a clickable drag behind");
+            destroyUniverse();
+            console.log(JSON.stringify({{ contexts: contexts.map((entry) => entry.universeFocusId), requests: requests.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["item:B", "item:C", "item:A"], result["contexts"])
+        self.assertEqual(0, result["requests"])
+
+    def test_universe_fractional_dpr_keeps_backing_store_stable_until_tween_raf_drains(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.style = {{ setProperty() {{}} }}; this.listeners = new Map();
+                this._width = 300; this._height = 150; this.widthWrites = 0; this.heightWrites = 0;
+              }}
+              get width() {{ return this._width; }} set width(value) {{ this.widthWrites += 1; this._width = Math.trunc(Number(value)); }}
+              get height() {{ return this._height; }} set height(value) {{ this.heightWrites += 1; this._height = Math.trunc(Number(value)); }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }} appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }} setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }} removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              getBoundingClientRect() {{ return {{ left: 0, top: 0, width: 801, height: 501 }}; }}
+              getContext() {{ return this.tagName === "CANVAS" ? context2d : null; }}
+              hasPointerCapture() {{ return false; }} get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            const transforms = [];
+            const context2d = new Proxy({{}}, {{ get(target, key) {{ if (key === "setTransform") return (...args) => transforms.push(args); return () => {{}}; }}, set() {{ return true; }} }});
+            const rafs = new Map(); let rafId = 0;
+            globalThis.requestAnimationFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            globalThis.cancelAnimationFrame = (id) => rafs.delete(id);
+            globalThis.performance = {{ now: () => 0 }};
+            globalThis.document = {{ activeElement: null, createElement: (tag) => new FakeElement(tag) }};
+            globalThis.window = {{ devicePixelRatio: 1.25, addEventListener() {{}}, removeEventListener() {{}}, matchMedia: () => ({{ matches: false }}) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            delete globalThis.IntersectionObserver; delete globalThis.ResizeObserver;
+
+            const {{ destroyUniverse, focusNode, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
+            const container = new FakeElement("main");
+            const view = renderUniverse(container, {{ focus_id: "item:A", nodes: [{{ id: "item:A", title: "A" }}, {{ id: "item:B", title: "B" }}], edges: [] }});
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const canvas = collect(view).find((node) => node.tagName === "CANVAS");
+            focusNode("item:B");
+            for (const timestamp of [60, 140, 220, 260]) {{
+              const frame = [...rafs.entries()][0];
+              if (!frame) throw new Error(`tween RAF ended before ${{timestamp}}ms`);
+              rafs.delete(frame[0]); frame[1](timestamp);
+            }}
+            if (canvas.widthWrites !== 1 || canvas.heightWrites !== 1) throw new Error(`fractional DPR reset backing store ${{canvas.widthWrites}}/${{canvas.heightWrites}} times`);
+            if (canvas.width !== 1001 || canvas.height !== 626) throw new Error(`unstable integer backing size ${{canvas.width}}x${{canvas.height}}`);
+            if (rafs.size !== 0) throw new Error(`tween left ${{rafs.size}} RAF callbacks queued`);
+            if (!transforms.every((args) => args[0] === 1.25 && args[3] === 1.25)) throw new Error("fractional DPR transform was not stable");
+            destroyUniverse();
+            console.log(JSON.stringify({{ widthWrites: canvas.widthWrites, heightWrites: canvas.heightWrites, rafs: rafs.size, size: [canvas.width, canvas.height] }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["widthWrites"])
+        self.assertEqual(1, result["heightWrites"])
+        self.assertEqual(0, result["rafs"])
+        self.assertEqual([1001, 626], result["size"])
+
+    def test_title_universe_back_forward_restores_user_focused_universe_context(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const values = new Map();
+            globalThis.localStorage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            const listeners = new Map(); const entries = [{{ path: "/title/douban:A", state: null }}]; let index = 0;
+            const browser = {{
+              location: {{ pathname: entries[0].path }}, scrollY: 0,
+              history: {{
+                state: null, scrollRestoration: "auto",
+                pushState(state, _title, path) {{ entries.splice(index + 1); entries.push({{ path, state }}); index = entries.length - 1; this.state = state; browser.location.pathname = path; }},
+                back() {{ if (index === 0) return Promise.resolve(); index -= 1; this.state = entries[index].state; browser.location.pathname = entries[index].path; return browser.dispatchEvent(new browser.PopStateEvent("popstate", {{ state: this.state }})); }},
+                forward() {{ if (index >= entries.length - 1) return Promise.resolve(); index += 1; this.state = entries[index].state; browser.location.pathname = entries[index].path; return browser.dispatchEvent(new browser.PopStateEvent("popstate", {{ state: this.state }})); }},
+              }},
+              addEventListener(type, listener) {{ listeners.set(type, listener); }}, removeEventListener(type) {{ listeners.delete(type); }},
+              dispatchEvent(event) {{ return listeners.get(event.type)?.(event); }}, requestAnimationFrame(callback) {{ callback(); return 1; }}, scrollTo() {{}},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.history = browser.history; globalThis.PopStateEvent = browser.PopStateEvent;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser);
+
+            const {{ createAppRouteHandler, createUniverseExplorer, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ createRouter }} = await import("{module_url('js/core/router.js')}");
+            const {{ createEmptyUiState, createStore }} = await import("{module_url('js/core/store.js')}");
+            const store = createStore(createEmptyUiState(), reduceUiState); const universes = []; const titles = [];
+            const noOpGate = {{ invalidate() {{}}, async restore() {{}} }};
+            const universeGate = {{ invalidate() {{}}, async render() {{ universes.push(store.getState().candidateTray.context.universeFocusId || null); }} }};
+            const explorationGate = {{ invalidate() {{}}, async render(route) {{ titles.push(route.params.id); }} }};
+            const appView = {{ dataset: {{}} }};
+            const onRoute = createAppRouteHandler({{
+              appView, store, restoreGate: noOpGate, explorationGate, universeGate,
+              prepare() {{}}, setNavigation() {{}}, renderTonightView() {{}}, renderPlaceholder() {{}}, setStatus() {{}},
+            }});
+            const router = createRouter([
+              {{ pattern: "/title/:id", name: "title" }}, {{ pattern: "/universe", name: "universe" }},
+            ], {{ onRoute }});
+            const exploreUniverse = createUniverseExplorer({{ store, navigate: (path) => router.navigate(path) }});
+
+            await router.start();
+            if (store.getState().candidateTray.context.universeFocusId) throw new Error("entering title route overwrote universe context");
+            await exploreUniverse("douban:A");
+            if (universes.at(-1) !== "douban:A") throw new Error("explicit title action did not establish universe entry focus");
+            store.dispatch({{ type: "universe/contextChanged", context: {{ universeFocusId: "douban:B", expandedIds: ["douban:A", "douban:B"] }} }});
+            await browser.history.back();
+            if (titles.at(-1) !== "douban:A" || store.getState().candidateTray.context.universeFocusId !== "douban:B") throw new Error("back to title replaced user-focused universe B with title A");
+            await browser.history.forward();
+            if (universes.at(-1) !== "douban:B" || store.getState().candidateTray.context.universeFocusId !== "douban:B") throw new Error("forward universe did not restore B");
+            router.destroy();
+            console.log(JSON.stringify({{ titles, universes, focus: store.getState().candidateTray.context.universeFocusId, path: appView.dataset.route }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["douban:A", "douban:A"], result["titles"])
+        self.assertEqual(["douban:A", "douban:B"], result["universes"])
+        self.assertEqual("douban:B", result["focus"])
+        self.assertEqual("/universe", result["path"])
+
     def test_universe_route_requires_persisted_focus_and_title_entry_uses_stable_id(self):
         output = run_node_module(
             f'''

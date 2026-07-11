@@ -302,10 +302,12 @@ function drawCanvas(state, timestamp = 0) {
   const rect = state.canvas.getBoundingClientRect();
   const width = Math.max(1, Math.floor(rect.width));
   const height = Math.max(1, Math.floor(rect.height));
-  const ratio = Math.max(1, Number(globalThis.window?.devicePixelRatio) || 1);
-  if (state.canvas.width !== width * ratio || state.canvas.height !== height * ratio) {
-    state.canvas.width = width * ratio;
-    state.canvas.height = height * ratio;
+  const ratio = Math.max(1, Math.min(2, Number(globalThis.window?.devicePixelRatio) || 1));
+  const pixelWidth = Math.max(1, Math.round(width * ratio));
+  const pixelHeight = Math.max(1, Math.round(height * ratio));
+  if (state.canvas.width !== pixelWidth || state.canvas.height !== pixelHeight) {
+    state.canvas.width = pixelWidth;
+    state.canvas.height = pixelHeight;
   }
   const context = state.context;
   if (!context) return false;
@@ -391,18 +393,23 @@ function bindCanvas(state) {
       scheduleDraw(state);
     }
   });
-  const finishPointer = (event) => {
+  const clearPointer = (event, releaseCapture = true) => {
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
-    const moved = state.drag.moved;
-    if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture?.(event.pointerId);
+    const drag = state.drag;
     state.drag = null;
-    if (!moved) {
+    if (releaseCapture && canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture?.(event.pointerId);
+    return drag;
+  };
+  const finishPointer = (event) => {
+    const drag = clearPointer(event);
+    if (drag && !drag.moved) {
       const id = nearestNode(state, canvasPoint(state, event));
       if (id) { focusNode(id); void expandNode(id); }
     }
   };
   listen(state, canvas, "pointerup", finishPointer);
-  listen(state, canvas, "pointercancel", finishPointer);
+  listen(state, canvas, "pointercancel", (event) => { clearPointer(event); });
+  listen(state, canvas, "lostpointercapture", (event) => { clearPointer(event, false); });
   listen(state, canvas, "pointerleave", () => {
     if (!state.drag) {
       state.hoveredId = null;
@@ -510,10 +517,21 @@ export function renderUniverse(container, graph) {
   return view;
 }
 
-export function focusNode(nodeIdValue) {
-  const state = activeUniverse;
+function contextSnapshot(state) {
+  return {
+    universeFocusId: state.focusedId,
+    expandedIds: [...state.expandedIds].slice(-MAX_NODES),
+  };
+}
+
+function persistContext(state) {
+  dependencies.onContextChange(contextSnapshot(state));
+}
+
+function applyFocus(state, nodeIdValue) {
   const id = nodeId(nodeIdValue);
-  if (!state || state.destroyed || !id || !state.nodesById.has(id)) return false;
+  if (!state || state.destroyed || !id || !state.nodesById.has(id)) return { valid: false, changed: false };
+  if (state.focusedId === id) return { valid: true, changed: false };
   state.focusedId = id;
   const position = state.positions.get(id);
   const reduceMotion = globalThis.window?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
@@ -524,7 +542,12 @@ export function focusNode(nodeIdValue) {
   }
   syncFocusState(state);
   scheduleDraw(state);
-  return true;
+  persistContext(state);
+  return { valid: true, changed: true };
+}
+
+export function focusNode(nodeIdValue) {
+  return applyFocus(activeUniverse, nodeIdValue).valid;
 }
 
 export function expandNode(nodeIdValue) {
@@ -547,8 +570,8 @@ export function expandNode(nodeIdValue) {
     mergeGraph(state, graph, { initial: false });
     state.expandedIds.add(id);
     rebuildSemanticView(state);
-    focusNode(id);
-    dependencies.onContextChange({ universeFocusId: id, expandedIds: [...state.expandedIds].slice(-MAX_NODES) });
+    const focus = applyFocus(state, id);
+    if (!focus.changed) persistContext(state);
     return graph;
   }).catch((error) => {
     if (controller.signal.aborted || state.destroyed || activeUniverse !== state || state.generation !== generation || error?.name === "AbortError") return null;
