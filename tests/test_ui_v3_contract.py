@@ -197,7 +197,7 @@ class UiV3ContractTests(unittest.TestCase):
             const values = new Map();
             const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
             globalThis.localStorage = storage;
-            const {{ createEmptyUiState, createStore, persistUiState, UI_STATE_KEY }} = await import("{module_url('js/core/store.js')}");
+            const {{ containsSensitiveText, createEmptyUiState, createStore, persistUiState, UI_STATE_KEY }} = await import("{module_url('js/core/store.js')}");
             const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
             const store = createStore(createEmptyUiState(), reduceUiState);
             const secrets = [
@@ -206,6 +206,16 @@ class UiV3ContractTests(unittest.TestCase):
               "api_key = sk-1234567890abcdef",
               "password: cinema-secret",
               "ck=secret-cookie-value",
+              "session=abcdef1234567890",
+              "sessionid=abcdef1234567890",
+              "sid=abcdef1234567890",
+              "jwt=abcdef1234567890",
+              "credential=abcdef1234567890",
+              "subscription=abcdef1234567890",
+              "private_key=abcdef1234567890",
+              "auth=abcdef1234567890",
+              "access_token=abcdef1234567890",
+              "refresh_token=abcdef1234567890",
             ];
             for (const secret of secrets) {{
               store.dispatch({{
@@ -225,12 +235,13 @@ class UiV3ContractTests(unittest.TestCase):
             }}
             store.dispatch({{
               type: "commandLens/grounded",
-              draft: "今晚想看九十分钟以内、温暖但不俗套的华语电影",
+              draft: "今晚的会话 session 想看九十分钟以内、温暖但不俗套的华语电影",
               chips: [{{ key: "mood", label: "温暖", value: "温暖", removable: true }}],
             }});
             persistUiState(store.getState(), storage);
             const state = store.getState();
             if (!state.commandLens.draft.includes("九十分钟") || state.commandLens.chips[0]?.value !== "温暖") throw new Error("ordinary Chinese intent was rejected");
+            if (containsSensitiveText("今晚的会话 session 想看轻松电影")) throw new Error("plain session word was misclassified as a credential");
             console.log(JSON.stringify({{ draft: state.commandLens.draft, chips: state.commandLens.chips, serialized: values.get(UI_STATE_KEY) }}));
             '''
         )
@@ -256,11 +267,13 @@ class UiV3ContractTests(unittest.TestCase):
               api: {{ async postV2(_path, payload) {{ apiCalls += 1; return {{ id: "session-1", intent: {{ free_text: payload.intent_text }}, chips: [], channels: {{}} }}; }} }},
             }});
             openCommandLens();
-            const rejected = await submitIntent("Authorization: Bearer sk-1234567890abcdef");
             const status = collectNodes(root).find((node) => node.className === "command-lens__status");
-            if (rejected !== null || apiCalls !== 0 || actions.length !== 0) throw new Error("secret reached API or store");
-            if (!status?.textContent.includes("敏感")) throw new Error(`visible rejection missing: ${{status?.textContent}}`);
-            await submitIntent("今晚想看轻松的华语喜剧");
+            for (const secret of ["sessionid=abcdef1234567890", "sid=abcdef1234567890"]) {{
+              const rejected = await submitIntent(secret);
+              if (rejected !== null || apiCalls !== 0 || actions.length !== 0) throw new Error(`secret reached API or store: ${{secret}}`);
+              if (!status?.textContent.includes("敏感")) throw new Error(`visible rejection missing: ${{status?.textContent}}`);
+            }}
+            await submitIntent("今晚的会话 session 想看轻松的华语喜剧");
             if (apiCalls !== 1 || !actions.some((action) => action.type === "commandLens/grounded")) throw new Error("ordinary intent was not submitted");
             console.log(JSON.stringify({{ apiCalls, status: status.textContent, actions: actions.map((action) => action.type) }}));
             '''
@@ -2257,7 +2270,11 @@ class UiV3ContractTests(unittest.TestCase):
             const store = createStore(createEmptyUiState(), reduceUiState); const navigations = []; const lensTexts = [];
             const handler = createUniverseRecommendationHandler({{
               store,
-              navigate(path) {{ navigations.push(path); return Promise.resolve(path); }},
+              navigate(path) {{
+                navigations.push(path);
+                store.dispatch({{ type: "route/changed", route: {{ path, name: "tonight", params: {{}} }} }});
+                return Promise.resolve({{ path, name: "tonight", params: {{}} }});
+              }},
               openLens(text) {{ lensTexts.push(text); }},
             }});
             for (let index = 0; index < 30; index += 1) await handler({{ id: `derived:${{index}}`, title: `安全节点 ${{index}}` }});
@@ -2278,6 +2295,87 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(24, len(result["restored"]))
         self.assertEqual(32, result["navigations"])
 
+    def test_universe_tonight_handoff_requires_latest_committed_router_result(self):
+        output = run_node_module(
+            f'''
+            const deferred = () => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }};
+            const slowTonight = deferred(); const values = new Map(); const listeners = new Map();
+            const browser = {{
+              location: {{ pathname: "/universe" }}, scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ listeners.set(type, listener); }}, removeEventListener(type) {{ listeners.delete(type); }},
+              dispatchEvent(event) {{ return listeners.get(event.type)?.(event); }}, requestAnimationFrame(callback) {{ callback(); return 1; }}, scrollTo() {{}},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser); globalThis.PopStateEvent = browser.PopStateEvent;
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createRouter }} = await import("{module_url('js/core/router.js')}");
+            const {{ createEmptyUiState, createStore }} = await import("{module_url('js/core/store.js')}");
+            const {{ createUniverseRecommendationHandler, reduceUiState }} = await import("{module_url('js/app.js')}");
+            const store = createStore(createEmptyUiState(), reduceUiState); const lens = []; let deferTonight = true;
+            const router = createRouter([
+              {{ pattern: "/universe", name: "universe" }}, {{ pattern: "/tonight", name: "tonight" }}, {{ pattern: "/health", name: "health" }},
+            ], {{
+              async onRoute(route) {{
+                store.dispatch({{ type: "route/changed", route }});
+                if (route.path === "/tonight" && deferTonight) await slowTonight.promise;
+                return true;
+              }},
+            }});
+            await router.start();
+            const handler = createUniverseRecommendationHandler({{ store, navigate: (path) => router.navigate(path), openLens: (text) => lens.push(text) }});
+            const staleHandoff = handler({{ id: "douban:slow", title: "慢节点" }});
+            await Promise.resolve();
+            await router.navigate("/health");
+            slowTonight.resolve(true);
+            const staleResult = await staleHandoff;
+            if (staleResult !== false || router.currentRoute?.path !== "/health" || store.getState().activePath !== "/health") throw new Error("slow Tonight handoff overrode committed Health");
+            if (store.getState().candidateTray.itemIds.length || lens.length) throw new Error("stale Tonight handoff mutated tray or opened Lens");
+
+            deferTonight = false;
+            const success = await handler({{ id: "douban:success", title: "成功节点" }});
+            if (success !== true || router.currentRoute?.path !== "/tonight" || store.getState().activePath !== "/tonight") throw new Error("committed Tonight handoff was rejected");
+            if (store.getState().candidateTray.itemIds.join() !== "douban:success" || lens.length !== 1) throw new Error("successful Tonight handoff did not trigger exactly once");
+
+            let firstResolve; let navigationCall = 0;
+            const latestHandler = createUniverseRecommendationHandler({{
+              store,
+              navigate() {{
+                navigationCall += 1;
+                if (navigationCall === 1) return new Promise((resolve) => {{ firstResolve = resolve; }});
+                store.dispatch({{ type: "route/changed", route: {{ path: "/tonight", name: "tonight", params: {{}} }} }});
+                return Promise.resolve({{ path: "/tonight", name: "tonight", params: {{}} }});
+              }},
+              openLens: (text) => lens.push(text),
+            }});
+            const superseded = latestHandler({{ id: "douban:old", title: "旧 handoff" }});
+            const latest = await latestHandler({{ id: "douban:new", title: "新 handoff" }});
+            firstResolve({{ path: "/tonight", name: "tonight", params: {{}} }});
+            const supersededResult = await superseded;
+            if (!latest || supersededResult !== false || store.getState().candidateTray.itemIds.includes("douban:old") || !store.getState().candidateTray.itemIds.includes("douban:new")) throw new Error("handoff generation did not keep only latest completion");
+
+            const beforeReject = JSON.stringify(store.getState().candidateTray.itemIds); const beforeLens = lens.length;
+            const rejectedHandler = createUniverseRecommendationHandler({{ store, navigate: () => Promise.reject(new Error("navigation failed")), openLens: (text) => lens.push(text) }});
+            const rejected = await rejectedHandler({{ id: "douban:reject", title: "拒绝节点" }});
+            if (rejected !== false || JSON.stringify(store.getState().candidateTray.itemIds) !== beforeReject || lens.length !== beforeLens) throw new Error("rejected navigation mutated handoff state");
+            for (const [label, navigationResult] of [["false", false], ["mismatch", {{ path: "/health", name: "health" }}]]) {{
+              const guardedHandler = createUniverseRecommendationHandler({{ store, navigate: () => Promise.resolve(navigationResult), openLens: (text) => lens.push(text) }});
+              const guarded = await guardedHandler({{ id: `douban:${{label}}`, title: label }});
+              if (guarded !== false || JSON.stringify(store.getState().candidateTray.itemIds) !== beforeReject || lens.length !== beforeLens) throw new Error(`${{label}} navigation result mutated handoff state`);
+            }}
+            console.log(JSON.stringify({{ current: router.currentRoute.path, active: store.getState().activePath, tray: store.getState().candidateTray.itemIds, lens: lens.length, staleResult, success, supersededResult, rejected }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("/tonight", result["current"])
+        self.assertEqual("/tonight", result["active"])
+        self.assertNotIn("douban:slow", result["tray"])
+        self.assertNotIn("douban:old", result["tray"])
+        self.assertIn("douban:success", result["tray"])
+        self.assertIn("douban:new", result["tray"])
+
     def test_universe_ui_expansion_error_is_visible_without_unhandled_rejection(self):
         prelude = fake_dom_module_prelude()
         output = run_node_module(
@@ -2290,14 +2388,19 @@ class UiV3ContractTests(unittest.TestCase):
             const unhandled = []; process.on("unhandledRejection", (error) => unhandled.push(error.message));
             const root = new FakeElement("main");
             const {{ configureUniverse, renderUniverse }} = await import("{module_url('js/features/universe.js')}");
-            configureUniverse({{ async fetchJson() {{ const error = new Error("expand failed"); error.status = 503; throw error; }} }});
+            configureUniverse({{
+              async fetchJson() {{ const error = new Error("expand failed"); error.status = 503; throw error; }},
+              onRecommendNode() {{ return Promise.reject(new Error("recommend failed")); }},
+            }});
             renderUniverse(root, {{
               focus_id: "douban:A",
               nodes: [{{ id: "douban:A", title: "节点甲" }}, {{ id: "douban:B", title: "节点乙" }}],
               edges: [{{ source: "douban:A", target: "douban:B", score: 0.8, reasons: ["共同类型"] }}],
             }});
             const expand = collectNodes(root).find((node) => node.className === "relationship-list__expand");
+            const recommend = collectNodes(root).find((node) => node.className === "relationship-list__recommend");
             expand.dispatchEvent({{ type: "click" }});
+            recommend.dispatchEvent({{ type: "click" }});
             await new Promise((resolve) => setTimeout(resolve, 0));
             await new Promise((resolve) => setTimeout(resolve, 0));
             const note = collectNodes(root).find((node) => node.className === "universe-limit-note");

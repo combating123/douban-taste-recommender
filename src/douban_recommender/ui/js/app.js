@@ -355,11 +355,23 @@ export function createUniverseExplorer({ store, navigate = () => {} } = {}) {
 }
 
 export function createUniverseRecommendationHandler({ store, navigate = () => {}, openLens = openCommandLens } = {}) {
+  let handoffGeneration = 0;
   return async (node) => {
+    const requestGeneration = ++handoffGeneration;
     const itemId = stableUniverseId(node?.id);
     if (!itemId || !store?.dispatch) return false;
+    let committedRoute;
+    try {
+      committedRoute = await Promise.resolve(navigate("/tonight"));
+    } catch {
+      return false;
+    }
+    if (
+      requestGeneration !== handoffGeneration
+      || committedRoute?.path !== "/tonight"
+      || store.getState?.().activePath !== "/tonight"
+    ) return false;
     store.dispatch({ type: "candidateTray/nodeAdded", itemId });
-    await Promise.resolve(navigate("/tonight"));
     const title = sanitizeNonSensitiveText(textValue(node?.title), "这部作品", 160) || "这部作品";
     openLens(`以《${title}》为线索，生成今晚推荐；请确认或补充条件。`);
     return true;

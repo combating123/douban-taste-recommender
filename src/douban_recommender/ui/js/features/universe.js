@@ -201,7 +201,12 @@ function recommendAction(state, id, className) {
   button.type = "button";
   button.addEventListener("click", () => {
     const node = state.nodesById.get(id);
-    if (node) dependencies.onRecommendNode({ id: node.id, title: node.title });
+    if (!node) return;
+    try {
+      void Promise.resolve(dependencies.onRecommendNode({ id: node.id, title: node.title })).catch(() => {});
+    } catch {
+      // Injected UI callbacks are isolated from the event loop.
+    }
   });
   return button;
 }
