@@ -366,3 +366,70 @@ Each route was primed once and then measured through three cache-enabled `Page.r
 - Browser broken/external/pending/missing-image-element failures remain `0` across all six runs.
 - Diagnostics remain `assets_total=0`, `bytes=0`; bounded recent-batch poster audit `0 ready / 256 missing`; wrong-identity canary `0` with scope `global_historical_identity_rejected_hard_conflicts` and no visible-session attribution.
 - `output/task6-acceptance/evidence-validation.json` schema 2 contains 25 passing checks, including required route selector/identity/timestamps/geometry, ordering, content-paint and settle budgets, honest shell LCP retention, raw summary statistics, zero media fabrication, and exact diagnostics scopes.
+
+## Rollout Task 8 — final verification and completion evidence (2026-07-12)
+
+### Bound source and isolated services
+
+- Final code under test: `847a70b4a447fa9d26b17b5e5be1326dc65e218c` (`feat: make cinescope v3 the default experience`).
+- Default V3 ran on `127.0.0.1:7891` with `CINESCOPE_UI_VERSION` absent, dedicated data directory `output/task8-acceptance-data`, and the V3 asset shell present. This directly verifies the default switch rather than an explicit V3 opt-in.
+- Rollback ran separately on `127.0.0.1:7892` with `CINESCOPE_UI_VERSION=legacy`. Port `7860` was not touched. Both Task 8 ports were released at shutdown.
+- Fixed resources: session `ecbb40ee00384b0c82dcad30559df1d4`, title `douban:1291879`, person `derived:6buR5rO95piO`.
+
+### Automated and hygiene gates
+
+```text
+python -m unittest discover -s tests -v
+Ran 601 tests in 86.615s
+OK
+```
+
+- Recursive JavaScript syntax validation covered all `23` files under `src/douban_recommender/ui/js/**/*.js`; every `node --check` exited successfully.
+- `git diff --check` passed before documentation work and again after this section was added.
+- The required source/test/README/acceptance placeholder scan returned zero matches, so there was no unintended placeholder to classify.
+- Raw logs: `output/task8-acceptance/unittest-final.log`, `output/task8-acceptance/node-check.log`, and `output/task8-acceptance/hygiene.log`.
+
+### Fresh final-code browser smoke
+
+The Codex in-app browser collected a new source-bound matrix; prior Task 4–6 JSON was not counted as final-code smoke. Each route settled with the intended route, non-empty main content, no `aria-busy=true`, and a viewport screenshot.
+
+| Viewport | Route | Audit | Navigation contract |
+|---|---|---|---|
+| `1440×900` | `/tonight` | PASS | desktop rail visible; bottom nav hidden |
+| `1440×900` | `/tonight/anime-series` | PASS | desktop rail visible; bottom nav hidden |
+| `1440×900` | `/title/douban:1291879` | PASS | desktop rail visible; bottom nav hidden |
+| `1440×900` | `/person/derived:6buR5rO95piO` | PASS | desktop rail visible; bottom nav hidden |
+| `1440×900` | `/health` | PASS | desktop rail visible; bottom nav hidden |
+| `390×844` | `/tonight` | PASS | desktop rail hidden; bottom nav visible |
+| `390×844` | `/tonight/anime-series` | PASS | desktop rail hidden; bottom nav visible |
+| `390×844` | `/title/douban:1291879` | PASS | desktop rail hidden; bottom nav visible |
+| `390×844` | `/person/derived:6buR5rO95piO` | PASS | desktop rail hidden; bottom nav visible |
+| `390×844` | `/health` | PASS | desktop rail hidden; bottom nav visible |
+
+For all `10/10` rows, `window.__CINESCOPE_AUDIT__()` returned empty `brokenImages`, `externalImages`, `overflowNodes`, and `focusFailures`; `emptyMain=false`; the document had no horizontal scrolling.
+
+On `/tonight/anime-series`, visible input `更偏温暖、节奏舒缓` was submitted through **按原因换一批**. The page changed from batch `3` with five visible titles to batch `4` with status `下一批已就绪。` and an empty exhausted batch, proving a real server-backed transition rather than a visual-only change.
+
+Refresh restoration used the visible route flow: the page was scrolled, navigated to Health through the rail, returned with browser Back, and then full-document reloaded. The route remained `/tonight/anime-series`; batch `4` remained active; all three shelf count/item projections were identical before and after reload; the route-max scroll position restored exactly at `738px` both before and after the full reload. The initial attempted `867px` position was clamped by the rendered page maximum and is not reported as a failed restoration.
+
+No Cookie was entered. Visible Cookie fields stayed empty. The run did not read browser Cookie data, profiles, local/session storage, disk Cookie files, environment dumps, request headers, or hidden storage. The fixed session was prepared by writing a source-derived allowlisted UI-state projection; no browser storage value was read.
+
+### Legacy rollback and data integrity
+
+The legacy root loaded with title `CineScope Studio：豆瓣私人影视策展器`, heading `CineScope Studio`, non-empty content, and no V3 asset reference. Its visible Cookie textarea remained empty.
+
+```text
+SHA-256 before legacy: a31e07221893da3c1e18b33c7d26a67f5517906040b91c9cf011162680897670
+SHA-256 after legacy:  a31e07221893da3c1e18b33c7d26a67f5517906040b91c9cf011162680897670
+```
+
+The hashes are identical, proving that selecting the legacy UI did not change `output/task8-acceptance-data/cinescope.db`.
+
+### Performance/media provenance and evidence paths
+
+Task 8 does not relabel historical timing as a fresh measurement. The retained performance and media conclusion comes from Task 6 commits `3e53e07061fd2213fc8f67580f6ab114c1186313` and `c427f4a535a0b913b34f5a5418a06afb80de2607`, recorded in `output/task6-acceptance/verification.json`. Its warm-cache route-content paint and settle gates passed. Real media coverage remains honestly unchanged: posters `0/24`, portraits `0/4`, backdrop `0/1`; designed CSS fallbacks are not counted as broken images and are not described as real media.
+
+- Final machine evidence: `output/task8-acceptance/final-evidence.json`.
+- Fresh route rows and restoration details: `output/task8-acceptance/browser-evidence.json`.
+- Fresh screenshots: `output/task8-acceptance/screenshots/1440x900`, `output/task8-acceptance/screenshots/390x844`, and `output/task8-acceptance/screenshots/legacy`.
+- Historical-only provenance is enumerated under `old_evidence_provenance` in the final machine evidence; those older JSON files are not substitutes for the Task 8 smoke matrix.
