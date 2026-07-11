@@ -22,6 +22,7 @@ let currentChips = [];
 let currentIntentSessionId = null;
 let currentSessionId = null;
 let keyboardDocument = null;
+let keyboardHandler = null;
 let intentGeneration = 0;
 let intentPending = false;
 let releaseLensTrap = null;
@@ -199,14 +200,22 @@ export function closeCommandLens({ restoreFocus = true } = {}) {
 }
 
 function bindKeyboardShortcut() {
-  if (!globalThis.document?.addEventListener || keyboardDocument === document) return;
+  if (!globalThis.document?.addEventListener || (keyboardDocument === document && keyboardHandler)) return;
+  unbindCommandLensShortcut();
   keyboardDocument = document;
-  document.addEventListener("keydown", (event) => {
+  keyboardHandler = (event) => {
     const isCommandShortcut = event.key.toLowerCase() === "k";
     if (!(event.ctrlKey || event.metaKey) || !isCommandShortcut) return;
     event.preventDefault();
     openCommandLens();
-  });
+  };
+  keyboardDocument.addEventListener("keydown", keyboardHandler);
+}
+
+export function unbindCommandLensShortcut() {
+  if (keyboardDocument && keyboardHandler) keyboardDocument.removeEventListener?.("keydown", keyboardHandler);
+  keyboardDocument = null;
+  keyboardHandler = null;
 }
 
 export function configureCommandLens(options = {}) {

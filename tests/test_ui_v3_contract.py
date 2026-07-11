@@ -3085,6 +3085,87 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("Latest route", result["announcement"])
         self.assertEqual(0, result["listeners"])
 
+    def test_focus_trap_filters_real_tabbables_and_restores_empty_dialog_tabindex(self):
+        output = run_node_module(
+            f'''
+            const listeners = new Map();
+            class Element {{
+              constructor(tagName, name) {{
+                this.tagName = tagName.toUpperCase(); this.name = name; this.children = []; this.parentElement = null;
+                this.attributes = new Map(); this.disabled = false; this.hidden = false; this.inert = false; this.isConnected = true;
+                this.computed = {{ display: "block", visibility: "visible" }}; this.focusCount = 0;
+              }}
+              append(...nodes) {{ for (const node of nodes) {{ this.children.push(node); node.parentElement = this; }} }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              getAttribute(name) {{ return this.attributes.get(name) ?? null; }}
+              hasAttribute(name) {{ return this.attributes.has(name); }}
+              removeAttribute(name) {{ this.attributes.delete(name); }}
+              focus() {{ document.activeElement = this; this.focusCount += 1; }}
+              contains(node) {{ for (let current = node; current; current = current.parentElement) if (current === this) return true; return false; }}
+              querySelectorAll() {{
+                const found = [];
+                const visit = (node) => {{
+                  for (const child of node.children) {{
+                    if (["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA"].includes(child.tagName) || child.hasAttribute("tabindex") || child.hasAttribute("contenteditable")) found.push(child);
+                    visit(child);
+                  }}
+                }};
+                visit(this); return found;
+              }}
+            }}
+            const document = {{
+              activeElement: null,
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }},
+            }};
+            globalThis.document = document;
+            globalThis.getComputedStyle = (node) => node.computed;
+            const outside = new Element("button", "outside");
+            const dialog = new Element("section", "dialog");
+            const hiddenParent = new Element("div", "hidden-parent"); hiddenParent.hidden = true;
+            const hiddenChild = new Element("button", "hidden-child"); hiddenParent.append(hiddenChild);
+            const inertParent = new Element("div", "inert-parent"); inertParent.inert = true;
+            const inertChild = new Element("button", "inert-child"); inertParent.append(inertChild);
+            const ariaParent = new Element("div", "aria-parent"); ariaParent.setAttribute("aria-hidden", "true");
+            const ariaChild = new Element("button", "aria-child"); ariaParent.append(ariaChild);
+            const displayParent = new Element("div", "display-parent"); displayParent.computed.display = "none";
+            const displayChild = new Element("button", "display-child"); displayParent.append(displayChild);
+            const visibilityParent = new Element("div", "visibility-parent"); visibilityParent.computed.visibility = "hidden";
+            const visibilityChild = new Element("button", "visibility-child"); visibilityParent.append(visibilityChild);
+            const disconnectedParent = new Element("div", "disconnected-parent"); disconnectedParent.isConnected = false;
+            const disconnectedChild = new Element("button", "disconnected-child"); disconnectedParent.append(disconnectedChild);
+            const negative = new Element("button", "negative"); negative.setAttribute("tabindex", "-2");
+            const disabled = new Element("button", "disabled"); disabled.disabled = true;
+            const hiddenSelf = new Element("button", "hidden-self"); hiddenSelf.hidden = true;
+            const visible = new Element("button", "visible");
+            dialog.append(hiddenParent, inertParent, ariaParent, displayParent, visibilityParent, disconnectedParent, negative, disabled, hiddenSelf, visible);
+            const {{ trapFocus }} = await import("{module_url('js/core/focus.js')}");
+            const release = trapFocus(dialog);
+            const dispatch = (event) => {{ for (const listener of [...(listeners.get("keydown") || [])]) listener(event); }};
+            outside.focus(); let prevented = 0;
+            dispatch({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== visible) throw new Error(`invalid descendant became first tabbable: ${{document.activeElement?.name}}`);
+            const dynamic = new Element("button", "dynamic"); dialog.append(dynamic); dynamic.focus();
+            dispatch({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== visible) throw new Error("dynamic insertion was not recomputed before wrapping");
+            visible.disabled = true; dynamic.disabled = true; outside.focus();
+            dispatch({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (document.activeElement !== dialog || dialog.getAttribute("tabindex") !== "-1") throw new Error("empty trap did not retain focus on a programmatically focusable dialog");
+            release(); release();
+            if (dialog.hasAttribute("tabindex") || (listeners.get("keydown")?.size || 0) !== 0) throw new Error("release did not restore absent tabindex or remove listener");
+            const original = new Element("section", "original"); original.setAttribute("tabindex", "7");
+            const releaseOriginal = trapFocus(original); outside.focus();
+            dispatch({{ key: "Tab", shiftKey: false, preventDefault() {{ prevented += 1; }} }});
+            if (original.getAttribute("tabindex") !== "-1" || document.activeElement !== original) throw new Error("empty dialog with existing tabindex was not normalized");
+            releaseOriginal();
+            if (original.getAttribute("tabindex") !== "7") throw new Error("release did not restore original tabindex value");
+            console.log(JSON.stringify({{ prevented, dialogFocus: dialog.focusCount, originalFocus: original.focusCount, listeners: listeners.get("keydown")?.size || 0 }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(4, result["prevented"])
+        self.assertEqual(0, result["listeners"])
+
     def test_command_lens_restores_trigger_reopens_without_trap_leak_and_route_close_skips_restore(self):
         output = run_node_module(
             f'''
@@ -3187,6 +3268,154 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(2, result["prevented"])
         self.assertEqual(0, result["listeners"])
         self.assertEqual(0, result["focusCount"])
+
+    def test_person_sheet_reopen_preserves_first_trigger_when_removed_focus_falls_to_body(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{ add() {{}} }}
+            class FakeElement {{
+              constructor(tagName, name = "") {{ this.tagName = tagName.toUpperCase(); this.name = name; this.children = []; this.parentElement = null; this.parentNode = null; this.attributes = new Map(); this.dataset = {{}}; this.className = ""; this.textContent = ""; this.disabled = false; this.hidden = false; this.inert = false; this.isConnected = true; this.classList = new FakeClassList(); this.style = {{ setProperty() {{}} }}; this.listeners = new Map(); this.focusCount = 0; this.computed = {{ display: "block", visibility: "visible" }}; }}
+              append(...nodes) {{ nodes.forEach((node) => this.appendChild(node)); }}
+              appendChild(node) {{ this.children.push(node); node.parentElement = this; node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }} getAttribute(name) {{ return this.attributes.get(name) ?? null; }} hasAttribute(name) {{ return this.attributes.has(name); }} removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); this[`on${{type}}`] = listener; }}
+              remove() {{ if (this.contains(document.activeElement)) document.activeElement = body; if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this); this.isConnected = false; }}
+              focus() {{ document.activeElement = this; this.focusCount += 1; }}
+              contains(node) {{ for (let current = node; current; current = current.parentElement) if (current === this) return true; return false; }}
+              querySelectorAll() {{ const found = []; const visit = (node) => {{ for (const child of node.children) {{ if (["BUTTON", "A", "INPUT", "TEXTAREA"].includes(child.tagName)) found.push(child); visit(child); }} }}; visit(this); return found; }}
+              get firstElementChild() {{ return this.children[0] || null; }}
+            }}
+            const body = new FakeElement("body", "body"); const overlayRoot = new FakeElement("div", "overlay"); body.append(overlayRoot);
+            const firstCard = new FakeElement("button", "first-card"); body.append(firstCard); const listeners = new Map();
+            globalThis.document = {{ activeElement: firstCard, body, createElement: (tag) => new FakeElement(tag), getElementById: () => overlayRoot,
+              addEventListener(type, listener) {{ if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(listener); }}, removeEventListener(type, listener) {{ listeners.get(type)?.delete(listener); }} }};
+            globalThis.getComputedStyle = (node) => node.computed;
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const person = {{ id: "person:1", name: "Person", portrait: {{ url: "", media_status: "missing" }}, known_for: [], evidence: [] }};
+            const {{ closePersonSheet, configurePeople, openPersonSheet }} = await import("{module_url('js/features/people.js')}");
+            configurePeople({{ overlayRoot, async fetchJson() {{ return person; }} }});
+            await openPersonSheet("person:1");
+            await openPersonSheet("person:1");
+            if (document.activeElement?.className !== "person-sheet__close") throw new Error("reopened sheet did not own focus");
+            await openPersonSheet("person:1");
+            for (const listener of [...(listeners.get("keydown") || [])]) listener({{ key: "Escape", preventDefault() {{}} }});
+            if (firstCard.focusCount !== 1 || document.activeElement !== firstCard) throw new Error(`final close restored ${{document.activeElement?.name || document.activeElement?.tagName}} instead of first trigger`);
+            const restoredCount = firstCard.focusCount; firstCard.focus();
+            await openPersonSheet("person:1");
+            closePersonSheet({{ restoreFocus: false }});
+            if (firstCard.focusCount !== restoredCount + 1 || document.activeElement !== body) throw new Error("route close restored trigger after removed sheet focus fell to body");
+            const secondCard = new FakeElement("button", "second-card"); body.append(secondCard); secondCard.focus();
+            await openPersonSheet("person:1");
+            for (const listener of [...(listeners.get("keydown") || [])]) listener({{ key: "Escape", preventDefault() {{}} }});
+            if (secondCard.focusCount !== 2 || document.activeElement !== secondCard || firstCard.focusCount !== restoredCount + 1) throw new Error("route close retained the previous sheet trigger for a later open");
+            console.log(JSON.stringify({{ focusCount: firstCard.focusCount, secondFocusCount: secondCard.focusCount, listeners: listeners.get("keydown")?.size || 0, active: document.activeElement.name }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["focusCount"])
+        self.assertEqual(2, result["secondFocusCount"])
+        self.assertEqual(0, result["listeners"])
+
+    def test_index_has_one_route_live_region_and_visual_shell_status(self):
+        html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+        shell_status = re.search(r'<p\s+id="shell-status"([^>]*)>', html)
+        announcer = re.search(r'<div\s+id="a11y-announcer"([^>]*)>', html)
+        self.assertIsNotNone(shell_status)
+        self.assertNotIn("aria-live", shell_status.group(1))
+        self.assertNotRegex(shell_status.group(1), r'role="(?:status|alert)"')
+        self.assertIsNotNone(announcer)
+        self.assertIn('aria-live="polite"', announcer.group(1))
+        self.assertEqual(1, len(re.findall(r'aria-live="polite"', html)))
+
+    def test_command_lens_destroy_unbinds_shortcut_and_rebootstrap_does_not_leak(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const nodes = new Map();
+            for (const [id, tag] of [["app-view", "main"], ["shell-status", "p"], ["command-lens-root", "div"], ["overlay-root", "div"], ["command-lens-trigger", "button"], ["rail-collapse-toggle", "button"], ["rail-hide-toggle", "button"], ["rail-restore", "button"], ["primary-rail", "aside"], ["a11y-announcer", "div"]]) {{ const node = new FakeElement(tag); node.id = id; nodes.set(id, node); }}
+            document.body = new FakeElement("body"); document.body.classList = new FakeClassList(document.body); document.activeElement = document.body;
+            const documentListeners = new Map();
+            document.getElementById = (id) => nodes.get(id) || null;
+            document.querySelectorAll = () => [];
+            document.addEventListener = (type, listener) => {{ if (!documentListeners.has(type)) documentListeners.set(type, new Set()); documentListeners.get(type).add(listener); }};
+            document.removeEventListener = (type, listener) => documentListeners.get(type)?.delete(listener);
+            const storage = new Map(); const windowListeners = new Map();
+            const browser = {{
+              location: {{ pathname: "/missing" }}, scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return storage.get(key) ?? null; }}, setItem(key, value) {{ storage.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ if (!windowListeners.has(type)) windowListeners.set(type, new Set()); windowListeners.get(type).add(listener); }},
+              removeEventListener(type, listener) {{ windowListeners.get(type)?.delete(listener); }},
+              dispatchEvent(event) {{ for (const listener of [...(windowListeners.get(event.type) || [])]) listener(event); }},
+              requestAnimationFrame(callback) {{ callback(); return 1; }}, scrollTo() {{}}, matchMedia() {{ return {{ matches: false }}; }},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.location = browser.location; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage; globalThis.requestAnimationFrame = browser.requestAnimationFrame; globalThis.PopStateEvent = browser.PopStateEvent;
+            const {{ bootstrapCineScopeShell }} = await import("{module_url('js/app.js')}");
+            const keydowns = () => documentListeners.get("keydown")?.size || 0;
+            const dispatchKey = (event) => {{ for (const listener of [...(documentListeners.get("keydown") || [])]) listener(event); }};
+            const first = bootstrapCineScopeShell(); await flush();
+            document.activeElement = nodes.get("command-lens-trigger");
+            dispatchKey({{ key: "k", ctrlKey: true, metaKey: false, preventDefault() {{}} }});
+            if (keydowns() !== 2 || nodes.get("command-lens-root").children.length !== 1) throw new Error("first bootstrap did not open one trapped lens");
+            first.destroy();
+            if (keydowns() !== 0 || nodes.get("command-lens-root").children.length !== 0) throw new Error(`destroy leaked shortcut/trap/root: ${{keydowns()}}/${{nodes.get("command-lens-root").children.length}}`);
+            const second = bootstrapCineScopeShell(); await flush();
+            if (keydowns() !== 1) throw new Error(`rebootstrap shortcut count was ${{keydowns()}}`);
+            document.activeElement = nodes.get("command-lens-trigger"); dispatchKey({{ key: "K", metaKey: true, ctrlKey: false, preventDefault() {{}} }});
+            if (keydowns() !== 2 || nodes.get("command-lens-root").children.length !== 1) throw new Error("rebootstrap did not open exactly one lens/trap");
+            second.destroy();
+            if (keydowns() !== 0 || nodes.get("command-lens-root").children.length !== 0) throw new Error("second destroy leaked command lifecycle");
+            console.log(JSON.stringify({{ keydowns: keydowns(), root: nodes.get("command-lens-root").children.length, clickListeners: documentListeners.get("click")?.size || 0 }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(0, result["keydowns"])
+        self.assertEqual(0, result["root"])
+
+    def test_real_router_raf_scroll_restore_survives_route_focus_and_announces_once(self):
+        output = run_node_module(
+            f'''
+            const values = new Map(); const events = []; const announcements = [];
+            const status = {{ textContent: "", attributes: new Map(), getAttribute(name) {{ return this.attributes.get(name) ?? null; }} }};
+            const browser = {{
+              location: {{ pathname: "/library" }}, scrollY: 999,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }},
+              addEventListener() {{}}, removeEventListener() {{}},
+              requestAnimationFrame(callback) {{ events.push("raf"); callback(); return 1; }},
+              scrollTo(options) {{ events.push(`scroll:${{options.top}}`); this.scrollY = options.top; }},
+              matchMedia() {{ return {{ matches: false }}; }},
+            }};
+            globalThis.window = browser; globalThis.location = browser.location; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage; globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser);
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const heading = {{ textContent: "Library route", attributes: new Map(), setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}, focus(options) {{ events.push(`focus:${{options?.preventScroll}}`); if (!options?.preventScroll) browser.scrollY = 0; }} }};
+            const appView = {{ dataset: {{}}, querySelector(selector) {{ return selector === "h1" ? heading : null; }} }};
+            const store = {{ state: {{ activePath: null, recommendation: {{ channels: {{}} }}, library: {{ state: "all" }} }}, getState() {{ return this.state; }}, dispatch(action) {{ if (action.type === "route/changed") this.state.activePath = action.route.path; }} }};
+            const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
+            const {{ createAppRouteHandler }} = await import("{module_url('js/app.js')}");
+            const {{ createRouter }} = await import("{module_url('js/core/router.js')}");
+            const {{ persistUiState }} = await import("{module_url('js/core/store.js')}");
+            persistUiState({{ activePath: "/library", scrollByRoute: {{ "/library": 345 }} }}, browser.localStorage);
+            const routeHandler = createAppRouteHandler({{
+              appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate, prepare() {{}}, setNavigation() {{}},
+              renderLibraryView() {{ events.push("render"); return {{ dispose() {{}} }}; }},
+              setStatus(message) {{ status.textContent = message; events.push("status"); }},
+              announceRoute(message) {{ announcements.push(message); events.push("announce"); }},
+            }});
+            const router = createRouter([{{ pattern: "/library", name: "library" }}], {{ onRoute: routeHandler }});
+            await router.start();
+            if (browser.scrollY !== 345) throw new Error(`restored scroll was disturbed: ${{browser.scrollY}}`);
+            if (events.filter((event) => event === "focus:true").length !== 1 || events.indexOf("focus:true") > events.indexOf("raf") || events.indexOf("raf") > events.indexOf("scroll:345")) throw new Error(`focus/RAF/scroll order mismatch: ${{events}}`);
+            if (!status.textContent.includes("片库") || status.getAttribute("aria-live") !== null) throw new Error("visual shell status was not updated as a non-live region");
+            if (announcements.length !== 1 || announcements[0] !== "Library route") throw new Error(`route announced ${{announcements.length}} times`);
+            console.log(JSON.stringify({{ events, announcements, scrollY: browser.scrollY, status: status.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(345, result["scrollY"])
+        self.assertEqual(1, len(result["announcements"]))
 
     def test_reduced_motion_skips_view_transitions_and_ready_rejection_is_consumed(self):
         output = run_node_module(

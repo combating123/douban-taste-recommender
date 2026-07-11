@@ -38,6 +38,7 @@ let dependencies = {
 };
 let titleContext = null;
 let closeActiveSheet = null;
+let activeSheetTrigger = null;
 let sheetGeneration = 0;
 
 export function configurePeople(options = {}) {
@@ -62,7 +63,6 @@ function canRestoreFocus(trigger) {
 export function closePersonSheet({ restoreFocus = true } = {}) {
   const close = closeActiveSheet;
   if (typeof close !== "function") return false;
-  closeActiveSheet = null;
   close({ restoreFocus });
   return true;
 }
@@ -177,11 +177,13 @@ function fallbackPerson(personId) {
 export async function openPersonSheet(personId, originRect = null) {
   const cleanId = apiRouteSegment(personId);
   if (!cleanId) return null;
+  const reopenTrigger = activeSheetTrigger;
   closePersonSheet({ restoreFocus: false });
 
   const overlayRoot = dependencies.overlayRoot || document.getElementById("overlay-root");
   if (!overlayRoot) return null;
-  const trigger = document.activeElement;
+  const trigger = reopenTrigger || document.activeElement;
+  activeSheetTrigger = trigger;
   const generation = sheetGeneration + 1;
   sheetGeneration = generation;
   const fetchController = new AbortController();
@@ -218,7 +220,10 @@ export async function openPersonSheet(personId, originRect = null) {
     releaseSheetTrap();
     backdrop.classList?.add("person-sheet-backdrop--leave");
     backdrop.remove();
-    if (closeActiveSheet === close) closeActiveSheet = null;
+    if (closeActiveSheet === close) {
+      closeActiveSheet = null;
+      activeSheetTrigger = null;
+    }
     if (restoreFocus && canRestoreFocus(trigger)) trigger.focus();
   };
   closeActiveSheet = close;

@@ -3,7 +3,7 @@ import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState } from "./core/store.js";
 import { announce } from "./core/focus.js";
-import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState } from "./features/command-lens.js";
+import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
 import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
@@ -635,6 +635,8 @@ export function bootstrapCineScopeShell() {
     router,
     store,
     destroy() {
+      closeCommandLens({ restoreFocus: false });
+      unbindCommandLensShortcut();
       routeHandler.dispose();
       router.destroy();
       unbindNavigation();
@@ -643,7 +645,7 @@ export function bootstrapCineScopeShell() {
       collapseToggle?.removeEventListener("click", onCollapse);
       hideToggle?.removeEventListener("click", onHide);
       railRestore?.removeEventListener("click", onRestore);
-      closePersonSheet();
+      closePersonSheet({ restoreFocus: false });
       destroyUniverse();
     },
   };
