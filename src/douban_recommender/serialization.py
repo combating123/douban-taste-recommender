@@ -33,6 +33,8 @@ def media_item_to_dict(item: MediaItem) -> dict[str, object]:
 
 def media_item_from_dict(data: dict[str, Any]) -> MediaItem:
     clean = {field: data.get(field) for field in MEDIA_ITEM_FIELDS}
+    for text_field in ("title", "media_type", "url", "douban_id", "cover", "summary", "source"):
+        clean[text_field] = str(clean.get(text_field) or "").strip()
     for list_field in ("genres", "countries", "languages", "directors", "casts", "tags"):
         value = clean.get(list_field)
         if isinstance(value, list):

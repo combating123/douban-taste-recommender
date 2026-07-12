@@ -105,6 +105,17 @@ def build_taste_profile(
 
     for item in rated_items:
         if item.my_rating is None:
+            wish_tags = {str(tag or "").strip().casefold() for tag in (item.tags or [])}
+            if wish_tags & {"想看", "wish", "wanted", "wishlist"} or str(item.source or "").endswith(":wish"):
+                strength = 0.14
+                add_item_features(profile.positive, profile.positive_examples, item, strength, f"想看：{item.title}")
+                add_keywords_from_item(
+                    profile.positive,
+                    profile.positive_examples,
+                    item,
+                    strength * 0.35,
+                    f"想看：{item.title}",
+                )
             continue
         rating = float(item.my_rating)
         if rating >= like_threshold:

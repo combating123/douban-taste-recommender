@@ -19,6 +19,7 @@ from douban_recommender.media.store import MediaStore
 from douban_recommender.media.validator import validate_image_bytes
 from douban_recommender.media_api import MediaApi
 from douban_recommender.models import MediaItem, recommendation_item_key
+from douban_recommender.serialization import media_item_from_dict, media_item_to_dict
 from douban_recommender.web import Handler
 import douban_recommender.web as web_module
 
@@ -133,6 +134,24 @@ class RecommendationApiV2Tests(unittest.TestCase):
         Image.new("RGB", (160, 240), "navy").save(output, format="PNG")
         validated = validate_image_bytes(output.getvalue(), "image/png")
         return self.media_store.put(validated, "https://source.example/poster.png", "poster")
+
+    def insert_library_item(self, item, state, source="douban-sync"):
+        payload = media_item_to_dict(media_item_from_dict(dict(item)))
+        key = recommendation_item_key(payload)
+        with self.api.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES(?, ?, ?, ?, 1, 1)
+                ON CONFLICT(item_key) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    state=excluded.state,
+                    source=excluded.source,
+                    updated_at=excluded.updated_at
+                """,
+                (key, json.dumps(payload, ensure_ascii=False), state, source),
+            )
+        return key
 
     def first_nonempty_channel(self, response):
         for name, channel in response["channels"].items():
@@ -713,6 +732,74 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
         self.assertEqual([record["item_key"] for record in watched_records], [watched_key])
         self.assertNotIn(watched_key, fresh_keys)
+
+    def test_synced_library_drives_session_and_exposes_personalization_counts(self):
+        watched_key = self.insert_library_item(
+            {
+                "title": "暗河来信",
+                "my_rating": 5,
+                "media_type": "电影",
+                "genres": ["剧情", "犯罪"],
+                "tags": ["看过"],
+                "douban_id": "movie-1",
+                "source": "douban_user:collect",
+            },
+            "watched",
+        )
+        self.insert_library_item(
+            {
+                "title": "想看的悬疑剧",
+                "media_type": "电视剧",
+                "genres": ["悬疑"],
+                "countries": ["英国"],
+                "tags": ["想看"],
+                "douban_id": "wish-1",
+                "source": "douban_user:wish",
+            },
+            "wish",
+        )
+        self.api.database.set_meta("active_douban_user_id", "272042071")
+
+        created = self.create_session(rated_items=[])
+        visible_keys = {
+            key
+            for channel in created["channels"].values()
+            for key in channel["batch"]["item_keys"]
+        }
+
+        self.assertNotIn(watched_key, visible_keys)
+        self.assertEqual(created["personalization"], {
+            "source": "douban-sync",
+            "user_id": "272042071",
+            "watched_count": 1,
+            "wish_count": 1,
+            "rated_count": 1,
+        })
+        loaded = self.api._rated_items({"rated_items": []})
+        self.assertEqual({item.douban_id for item in loaded}, {"movie-1", "wish-1"})
+        wish = next(item for item in loaded if item.douban_id == "wish-1")
+        self.assertIn("想看", wish.tags)
+
+    def test_default_expansion_is_sanitized_before_ranking(self):
+        candidates = self.api._candidates(
+            {"include_movies": True, "include_series": True, "include_anime": True, "limit": 160},
+            self.api._profile("profile-1", [], {}),
+            [],
+        )
+        expanded = [item for item in candidates if item.source == "title_seed"]
+
+        self.assertTrue(expanded)
+        for item in expanded:
+            self.assertFalse(str(item.cover or "").startswith("data:image/"))
+            self.assertFalse(item.douban_id.startswith("premium-"))
+            factual_blob = " ".join([
+                item.summary,
+                *item.directors,
+                *item.casts,
+            ])
+            self.assertNotIn("CineScope 精选扩展池", factual_blob)
+            self.assertNotIn("镜头语言专家", factual_blob)
+            self.assertNotIn("戏剧张力担当", factual_blob)
 
     def test_watched_seen_semantics_merge_into_duplicate_caller_rated_item(self):
         created = self.create_session(batch_size=4)

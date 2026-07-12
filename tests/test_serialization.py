@@ -62,6 +62,15 @@ class SerializationTests(unittest.TestCase):
         self.assertEqual(restored.media_type, "动漫")
         self.assertTrue(is_animated_series(restored))
 
+    def test_missing_optional_text_fields_restore_as_empty_strings(self):
+        restored = media_item_from_dict({"title": "最小条目", "media_type": "电影"})
+
+        self.assertEqual(restored.url, "")
+        self.assertEqual(restored.cover, "")
+        self.assertEqual(restored.summary, "")
+        self.assertEqual(restored.source, "")
+        self.assertEqual(restored.douban_id, "")
+
     def test_redact_cookie_removes_sensitive_values(self):
         raw = "bid=abc123; dbcl2=\"999:user\"; ck=secret; push_noty_num=0"
 

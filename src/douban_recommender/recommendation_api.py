@@ -158,6 +158,30 @@ def _validate_item_array(payload: dict[str, Any], field: str) -> None:
         _validate_item_schema(item, f"{field}[{index}]")
 
 
+def _sanitize_unverified_expansion(item: MediaItem) -> MediaItem:
+    if str(item.source or "") != "premium_expansion":
+        return item
+    raw = dict(item.raw or {})
+    aliases = [str(value).strip() for value in raw.get("aliases", []) if str(value).strip()]
+    format_value = str(raw.get("format") or "").strip()
+    item.my_rating = None
+    item.douban_rating = None
+    item.vote_count = None
+    item.year = None
+    item.genres = []
+    item.countries = []
+    item.languages = []
+    item.directors = []
+    item.casts = []
+    item.tags = []
+    item.douban_id = ""
+    item.cover = ""
+    item.summary = ""
+    item.source = "title_seed"
+    item.raw = {"aliases": aliases, **({"format": format_value} if format_value else {})}
+    return item
+
+
 def _validate_intent_schema(payload: dict[str, Any]) -> None:
     if "intent" not in payload:
         return
@@ -591,27 +615,30 @@ class RecommendationApi:
             elif bool(payload.get("use_sample_ratings")):
                 rated_items = load_media_csv(self.sample_ratings_path, kind="ratings")
 
-        watched_items: list[MediaItem] = []
-        for record in self.session_service.library_items(states=["watched"]):
+        library_items: list[MediaItem] = []
+        for record in self.session_service.library_items(states=["watched", "wish", "wanted"]):
             if not isinstance(record.get("payload"), dict):
                 continue
             item = media_item_from_dict(record["payload"])
-            if "看过" not in item.tags:
-                item.tags.append("看过")
-            watched_items.append(item)
+            state = str(record.get("state") or "").strip().lower()
+            required_tag = "看过" if state == "watched" else "想看"
+            if required_tag not in item.tags:
+                item.tags.append(required_tag)
+            library_items.append(item)
         deduped: dict[str, MediaItem] = {}
         for item in rated_items:
             key = recommendation_item_key(item)
             if key not in deduped:
                 deduped[key] = item
-        for item in watched_items:
+        for item in library_items:
             key = recommendation_item_key(item)
             existing = deduped.get(key)
             if existing is None:
                 deduped[key] = item
                 continue
-            if "看过" not in existing.tags:
-                existing.tags.append("看过")
+            for tag in item.tags:
+                if tag not in existing.tags:
+                    existing.tags.append(tag)
         return list(deduped.values())
 
     def _profile(self, profile_key: str, rated_items: list[MediaItem], payload: dict[str, Any]):
@@ -668,6 +695,7 @@ class RecommendationApi:
                 include_anime=bool(payload.get("include_anime", True)),
                 target_total=self._candidate_target(payload),
             )
+        candidates = [_sanitize_unverified_expansion(item) for item in candidates]
         apply_curated_people_photos(apply_curated_posters(candidates))
         deduped: dict[str, MediaItem] = {}
         for item in candidates:
@@ -766,10 +794,39 @@ class RecommendationApi:
             "intent": restored.intent.to_dict(),
             "chips": [asdict(chip) for chip in intent_to_chips(restored.intent)],
             "candidate_counts": candidate_counts,
+            "personalization": self._personalization(),
             "channels": channels,
             "restore": self._restore_metadata(restored.channels),
             "created_at": restored.created_at,
             "updated_at": restored.updated_at,
+        }
+
+    def _personalization(self) -> dict[str, object]:
+        rows = self.session_service.library_items(states=["watched", "wish", "wanted"])
+        watched_count = 0
+        wish_count = 0
+        rated_count = 0
+        has_douban_source = False
+        for row in rows:
+            state = str(row.get("state") or "").strip().lower()
+            if state == "watched":
+                watched_count += 1
+            elif state in {"wish", "wanted"}:
+                wish_count += 1
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            if payload.get("my_rating") is not None:
+                rated_count += 1
+            source = str(row.get("source") or payload.get("source") or "")
+            if "douban" in source.casefold():
+                has_douban_source = True
+        user_id = str(self.database.get_meta("active_douban_user_id") or "").strip()
+        source = "douban-sync" if user_id and has_douban_source else ("local-library" if rows else "unpersonalized")
+        return {
+            "source": source,
+            "user_id": user_id if source == "douban-sync" else "",
+            "watched_count": watched_count,
+            "wish_count": wish_count,
+            "rated_count": rated_count,
         }
 
     def _serialize_channel(
