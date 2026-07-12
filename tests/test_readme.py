@@ -30,6 +30,22 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn("不会保存到磁盘", text)
         self.assertNotIn("Request Headers", text)
 
+    def test_readme_matches_visible_cookie_same_tab_lifecycle(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("同步请求发出后 Cookie 输入框会自动清空", text)
+        self.assertIn("同步请求发出后，Cookie 会继续保留在当前同步面板的输入框", text)
+        self.assertIn("离开或销毁同步面板时，可见输入框会清空", text)
+        self.assertIn("返回同步页时会从同一标签页的 sessionStorage 恢复", text)
+        self.assertIn("关闭标签页后该会话值失效", text)
+        for boundary in (
+            "Cookie 只由可见输入获得",
+            "不会将 Cookie 写入数据库、磁盘、缓存、日志或报告",
+            "不读取浏览器 Profile、请求头或任何隐藏存储",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, text)
+
     def test_readme_explains_profile_url_is_not_cookie(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("主页链接不是 Cookie", text)

@@ -45,12 +45,12 @@ function safeParams(params) {
 
 function safeScroll(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const result = {};
-  for (const [path, position] of Object.entries(value).slice(0, 100)) {
+  const safeEntries = [];
+  for (const [path, position] of Object.entries(value)) {
     const cleanPath = safePath(path);
-    if (cleanPath && Number.isFinite(position) && position >= 0) result[cleanPath] = Math.floor(position);
+    if (cleanPath && Number.isFinite(position) && position >= 0) safeEntries.push([cleanPath, Math.floor(position)]);
   }
-  return result;
+  return Object.fromEntries(safeEntries.slice(-100));
 }
 
 function safeCandidateCount(value) {
@@ -162,6 +162,16 @@ export function restoreLastStableState() {
   return clone(lastStableState);
 }
 
+function canonicalRecoverySnapshot(rememberedStable, liveStable) {
+  if (!rememberedStable) return sanitizeStableState(liveStable);
+  const scrollByRoute = { ...rememberedStable.scrollByRoute };
+  for (const [path, position] of Object.entries(liveStable.scrollByRoute)) {
+    delete scrollByRoute[path];
+    scrollByRoute[path] = position;
+  }
+  return sanitizeStableState({ ...rememberedStable, scrollByRoute });
+}
+
 function recoveryPanel(stableState) {
   if (typeof globalThis.document?.createElement !== "function") {
     return { className: "route-recovery", textContent: "恢复上次稳定状态", stableState: clone(stableState) };
@@ -180,7 +190,7 @@ function recoveryPanel(stableState) {
   retry.type = "button";
   retry.textContent = "恢复上次稳定状态";
   retry.addEventListener("click", () => {
-    const restored = stableState ? sanitizeStableState(stableState) : restoreLastStableState();
+    const restored = stableState ? clone(stableState) : restoreLastStableState();
     if (restored?.activePath) boundary.onRetry(restored);
   });
   panel.append(eyebrow, heading, copy, retry);
@@ -189,7 +199,7 @@ function recoveryPanel(stableState) {
 
 function commitRecoveryBoundary(error, stableState, recoveryRoot) {
   void error;
-  const safeStable = stableState ? sanitizeStableState(stableState) : restoreLastStableState();
+  const safeStable = stableState ? clone(stableState) : restoreLastStableState();
   const panel = recoveryPanel(safeStable);
   if (recoveryRoot?.replaceChildren) recoveryRoot.replaceChildren(panel);
   return panel;
@@ -197,7 +207,7 @@ function commitRecoveryBoundary(error, stableState, recoveryRoot) {
 
 export function renderRecoveryBoundary(error, stableState) {
   const root = boundary.root ?? globalThis.document?.getElementById?.("app-view") ?? null;
-  return commitRecoveryBoundary(error, stableState, root);
+  return commitRecoveryBoundary(error, stableState ? sanitizeStableState(stableState) : restoreLastStableState(), root);
 }
 
 function rootChildren(root) {
@@ -250,15 +260,7 @@ export async function renderSafely(route, renderer, options = {}) {
   const previousNodes = rootChildren(root);
   const rememberedStable = restoreLastStableState();
   const liveStable = sanitizeStableState(getStableState?.() || {});
-  const previousStable = rememberedStable
-    ? {
-        ...rememberedStable,
-        scrollByRoute: {
-          ...rememberedStable.scrollByRoute,
-          ...liveStable.scrollByRoute,
-        },
-      }
-    : liveStable;
+  const previousStable = canonicalRecoverySnapshot(rememberedStable, liveStable);
   const generation = root ? (renderGenerations.get(root) || 0) + 1 : 1;
   if (root) {
     disconnectObserver(root);
@@ -300,7 +302,7 @@ export async function renderSafely(route, renderer, options = {}) {
     pending = false;
     reportRecovery(expectedPath);
     if (root && rootChildren(root).length === 0 && previousNodes.length) root.replaceChildren(...previousNodes);
-    if (previousStable?.activePath) rememberLastStableState(previousStable);
+    if (previousStable?.activePath) lastStableState = clone(previousStable);
     commitRecoveryBoundary(error, previousStable, root);
     return { ok: false, recovered: true, stale: false, value: null, previousStable };
   } finally {

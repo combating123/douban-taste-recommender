@@ -518,6 +518,56 @@ class UiV3MigrationTests(unittest.TestCase):
         for forbidden in ("pre-render-drop", "failed-render", "failed renderer draft", "999", "1200"):
             self.assertNotIn(forbidden, serialized)
 
+    def test_recovery_canonicalizes_high_cardinality_scroll_with_live_routes_first(self):
+        result = run_node_module(
+            f'''
+            {fake_recovery_dom()}
+            console.error = () => {{}};
+            const {{ configureRecoveryBoundary, rememberLastStableState, renderSafely, restoreLastStableState }} = await import("{module_url('js/core/recovery.js')}");
+            const rememberedScroll = Object.fromEntries(Array.from({{ length: 100 }}, (_, index) => [`/remembered-${{String(index).padStart(3, "0")}}`, index]));
+            const liveScroll = Object.fromEntries(Array.from({{ length: 100 }}, (_, index) => [`/live-${{String(index).padStart(3, "0")}}`, 1000 + index]));
+            const stableState = {{
+              activePath: "/library", activeParams: {{ filter: "wish" }}, scrollByRoute: rememberedScroll,
+              rail: {{ mode: "collapsed" }}, recommendation: {{ activeChannel: "anime-series", channels: {{}} }},
+              candidateTray: {{ context: {{ universeFocusId: "douban:42" }} }}, library: {{ state: "wish" }}, sync: {{}},
+            }};
+            const liveState = {{ ...structuredClone(stableState), scrollByRoute: liveScroll }};
+            let reads = 0; let rendererStartedAfterCapture = false; const retries = [];
+            rememberLastStableState(stableState);
+            configureRecoveryBoundary({{
+              root: appView,
+              getCurrentPath: () => "/taste",
+              getStableState: () => {{ reads += 1; rendererStartedAfterCapture = true; return liveState; }},
+              onRetry: (state) => retries.push(state),
+            }});
+            const rendered = await renderSafely({{ path: "/taste" }}, () => {{
+              if (!rendererStartedAfterCapture) throw new Error("renderer ran before live state capture");
+              liveState.scrollByRoute["/live-099"] = 9999;
+              throw new Error("failed");
+            }});
+            const button = appView.querySelector("button"); button.listeners.get("click")({{ preventDefault() {{}} }});
+            const restored = restoreLastStableState();
+            const canonical = rendered.previousStable;
+            console.log(JSON.stringify({{
+              canonical, retries, restored, reads,
+              distinctClones: canonical !== retries[0]
+                && canonical !== restored
+                && retries[0] !== restored
+                && canonical.scrollByRoute !== retries[0].scrollByRoute
+                && canonical.scrollByRoute !== restored.scrollByRoute,
+            }}));
+            '''
+        )
+        canonical = result["canonical"]
+        scroll = canonical["scrollByRoute"]
+        self.assertEqual(1, result["reads"])
+        self.assertEqual(100, len(scroll))
+        self.assertEqual(1099, scroll["/live-099"])
+        self.assertEqual({f"/live-{index:03d}" for index in range(100)}, set(scroll))
+        self.assertEqual(canonical, result["retries"][0])
+        self.assertEqual(canonical, result["restored"])
+        self.assertTrue(result["distinctClones"])
+
     def test_failed_route_restores_runtime_persistence_router_and_retry_to_previous_stable(self):
         result = run_node_module(
             f'''
