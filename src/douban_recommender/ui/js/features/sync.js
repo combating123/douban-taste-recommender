@@ -422,9 +422,11 @@ export function renderSyncPanel(root, {
     void start();
   }
   const onProfileEdit = () => emitState();
+  const onSecretEdit = () => syncVisibleCookie(secretInput.value);
   const onOptionsEdit = () => emitState();
   form.addEventListener("submit", onSubmit);
   profileInput.addEventListener("input", onProfileEdit);
+  secretInput.addEventListener("input", onSecretEdit);
   includeWish.addEventListener("change", onOptionsEdit);
   includeDo.addEventListener("change", onOptionsEdit);
   renderJobs();
@@ -436,9 +438,11 @@ export function renderSyncPanel(root, {
 
   function dispose() {
     if (disposed) return;
+    syncVisibleCookie(secretInput.value);
     disposed = true;
     form.removeEventListener("submit", onSubmit);
     profileInput.removeEventListener("input", onProfileEdit);
+    secretInput.removeEventListener("input", onSecretEdit);
     includeWish.removeEventListener("change", onOptionsEdit);
     includeDo.removeEventListener("change", onOptionsEdit);
     clearJobListeners();

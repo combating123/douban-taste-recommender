@@ -3492,6 +3492,70 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertFalse(result["stored"])
         self.assertIsNone(result["remounted"])
 
+    def test_sync_visible_cookie_edits_immediately_replace_same_tab_storage(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const sessionValues = new Map([["cinescope.sync.cookie.tab", "bid=old-secret"]]);
+            const storage = {{ getItem(key) {{ return sessionValues.get(key) ?? null; }}, setItem(key, value) {{ sessionValues.set(key, String(value)); }}, removeItem(key) {{ sessionValues.delete(key); }} }};
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+
+            const clearRoot = new FakeElement("div");
+            const clearPanel = renderSyncPanel(clearRoot, {{ storage, fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            clearPanel.elements.cookie.value = "";
+            clearPanel.elements.cookie.dispatchEvent({{ type: "input" }});
+            const removedImmediately = !sessionValues.has("cinescope.sync.cookie.tab");
+            clearPanel.dispose();
+            const clearRemount = renderSyncPanel(new FakeElement("div"), {{ storage, fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            const clearedValue = clearRemount.elements.cookie.value;
+            clearRemount.dispose();
+
+            sessionValues.set("cinescope.sync.cookie.tab", "bid=old-secret");
+            const editPanel = renderSyncPanel(new FakeElement("div"), {{ storage, fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            editPanel.elements.cookie.value = "bid=new-secret; ck=fresh";
+            editPanel.elements.cookie.dispatchEvent({{ type: "input" }});
+            const editedImmediately = sessionValues.get("cinescope.sync.cookie.tab");
+            editPanel.dispose();
+            const editRemount = renderSyncPanel(new FakeElement("div"), {{ storage, fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            const editedValue = editRemount.elements.cookie.value;
+            editRemount.dispose();
+            console.log(JSON.stringify({{ removedImmediately, clearedValue, editedImmediately, editedValue }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["removedImmediately"])
+        self.assertEqual("", result["clearedValue"])
+        self.assertEqual("bid=new-secret; ck=fresh", result["editedImmediately"])
+        self.assertEqual("bid=new-secret; ck=fresh", result["editedValue"])
+
+    def test_sync_invalid_profile_after_visible_clear_never_revives_old_cookie(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const sessionValues = new Map([["cinescope.sync.cookie.tab", "bid=stale-secret"]]);
+            const storage = {{ getItem(key) {{ return sessionValues.get(key) ?? null; }}, setItem(key, value) {{ sessionValues.set(key, String(value)); }}, removeItem(key) {{ sessionValues.delete(key); }} }};
+            const posts = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const first = renderSyncPanel(new FakeElement("div"), {{ storage, fetchJson: async () => ({{}}), postJson: async (...args) => {{ posts.push(args); return {{}}; }} }});
+            first.elements.cookie.value = "";
+            first.elements.cookie.dispatchEvent({{ type: "input" }});
+            first.elements.profile.value = "not/a/douban/profile";
+            const started = await first.start();
+            first.dispose();
+            const second = renderSyncPanel(new FakeElement("div"), {{ storage, fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
+            const remounted = second.elements.cookie.value;
+            second.dispose();
+            console.log(JSON.stringify({{ started, posts: posts.length, stored: sessionValues.has("cinescope.sync.cookie.tab"), remounted }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIsNone(result["started"])
+        self.assertEqual(0, result["posts"])
+        self.assertFalse(result["stored"])
+        self.assertEqual("", result["remounted"])
+
     def test_sync_job_visibly_distinguishes_collect_wish_and_page_counts(self):
         prelude = fake_dom_module_prelude()
         output = run_node_module(

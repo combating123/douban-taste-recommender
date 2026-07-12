@@ -16,6 +16,22 @@ SOURCE_COMMIT = "1" * 40
 SOURCE_TREE = "2" * 40
 
 
+def marker_record(width=390, height=844, *, x=None, y=None, rgba=None):
+    x = width - 1 if x is None else x
+    y = height - 1 if y is None else y
+    return {
+        "x": x,
+        "y": y,
+        "rgba": rgba or [255, 0, 255, 255],
+        "tolerance": 0,
+        "css_rect": {"left": width - 1, "top": height - 1, "right": width, "bottom": height, "width": 1, "height": 1},
+    }
+
+
+def manifest_metadata(expected_screenshot_count):
+    return {"mandatory_edge_marker": True, "expected_screenshot_count": expected_screenshot_count}
+
+
 def capture_record(
     *,
     width=390,
@@ -68,13 +84,14 @@ class EvidenceValidationTests(unittest.TestCase):
             image.putpixel((389, 843), (255, 0, 255, 255))
             image.save(screenshot, format="PNG")
             (bundle / "browser-smoke.json").write_text(json.dumps({"rows": 1}), encoding="utf-8")
-            marker = {"x": 389, "y": 843, "rgba": [255, 0, 255, 255], "tolerance": 0}
+            marker = marker_record()
             manifest_path = write_evidence_manifest(
                 bundle,
                 source_commit=SOURCE_COMMIT,
                 source_tree=SOURCE_TREE,
                 capture_mode="raw-device-pixels",
                 screenshot_captures={"screenshots/390x844/health.png": capture_record(marker=marker)},
+                metadata=manifest_metadata(1),
             )
 
             summary = validate_evidence_manifest(manifest_path)
@@ -101,6 +118,7 @@ class EvidenceValidationTests(unittest.TestCase):
                         image_height=844,
                     )
                 },
+                metadata=manifest_metadata(1),
             )
 
             with self.assertRaisesRegex(EvidenceValidationError, r"expected 585x1266.*decoded 390x844"):
@@ -112,13 +130,14 @@ class EvidenceValidationTests(unittest.TestCase):
             screenshot = bundle / "screenshots" / "raw" / "missing-marker.png"
             screenshot.parent.mkdir(parents=True)
             Image.new("RGBA", (585, 1266), (0, 0, 0, 255)).save(screenshot, format="PNG")
-            marker = {"x": 584, "y": 1265, "rgba": [255, 0, 255, 255], "tolerance": 0}
+            marker = marker_record(390, 844, x=584, y=1265)
             manifest_path = write_evidence_manifest(
                 bundle,
                 source_commit=SOURCE_COMMIT,
                 source_tree=SOURCE_TREE,
                 capture_mode="raw-device-pixels",
                 screenshot_captures={"screenshots/raw/missing-marker.png": capture_record(dpr=1.5, marker=marker)},
+                metadata=manifest_metadata(1),
             )
 
             with self.assertRaisesRegex(EvidenceValidationError, "edge marker"):
@@ -138,6 +157,7 @@ class EvidenceValidationTests(unittest.TestCase):
                 screenshot_captures={
                     "screenshots/390x844/missing-marker-metadata.png": capture_record()
                 },
+                metadata=manifest_metadata(1),
             )
 
             with self.assertRaisesRegex(EvidenceValidationError, "edge marker metadata is required"):
@@ -153,10 +173,72 @@ class EvidenceValidationTests(unittest.TestCase):
                 source_tree=SOURCE_TREE,
                 capture_mode="raw-device-pixels",
                 screenshot_captures={},
+                metadata=manifest_metadata(0),
             )
             (bundle / "unlisted.txt").write_text("not hashed", encoding="utf-8")
 
             with self.assertRaisesRegex(EvidenceValidationError, "unlisted artifact"):
+                validate_evidence_manifest(manifest_path)
+
+    def test_rejects_matching_marker_that_is_not_the_lower_right_edge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            screenshot = bundle / "screenshots" / "390x844" / "interior-marker.png"
+            screenshot.parent.mkdir(parents=True)
+            image = Image.new("RGBA", (390, 844), (12, 18, 32, 255))
+            image.putpixel((100, 100), (255, 0, 255, 255))
+            image.save(screenshot, format="PNG")
+            marker = marker_record(x=100, y=100)
+            manifest_path = write_evidence_manifest(
+                bundle,
+                source_commit=SOURCE_COMMIT,
+                source_tree=SOURCE_TREE,
+                capture_mode="raw-device-pixels",
+                screenshot_captures={"screenshots/390x844/interior-marker.png": capture_record(marker=marker)},
+                metadata=manifest_metadata(1),
+            )
+
+            with self.assertRaisesRegex(EvidenceValidationError, "lower-right edge"):
+                validate_evidence_manifest(manifest_path)
+
+    def test_rejects_manifest_when_actual_screenshot_count_differs_from_declared_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            screenshot = bundle / "screenshots" / "390x844" / "health.png"
+            screenshot.parent.mkdir(parents=True)
+            image = Image.new("RGBA", (390, 844), (12, 18, 32, 255))
+            image.putpixel((389, 843), (255, 0, 255, 255))
+            image.save(screenshot, format="PNG")
+            manifest_path = write_evidence_manifest(
+                bundle,
+                source_commit=SOURCE_COMMIT,
+                source_tree=SOURCE_TREE,
+                capture_mode="raw-device-pixels",
+                screenshot_captures={"screenshots/390x844/health.png": capture_record(marker=marker_record())},
+                metadata=manifest_metadata(2),
+            )
+
+            with self.assertRaisesRegex(EvidenceValidationError, "screenshot count"):
+                validate_evidence_manifest(manifest_path)
+
+    def test_rejects_manifest_that_does_not_require_edge_markers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            screenshot = bundle / "screenshots" / "390x844" / "health.png"
+            screenshot.parent.mkdir(parents=True)
+            image = Image.new("RGBA", (390, 844), (12, 18, 32, 255))
+            image.putpixel((389, 843), (255, 0, 255, 255))
+            image.save(screenshot, format="PNG")
+            manifest_path = write_evidence_manifest(
+                bundle,
+                source_commit=SOURCE_COMMIT,
+                source_tree=SOURCE_TREE,
+                capture_mode="raw-device-pixels",
+                screenshot_captures={"screenshots/390x844/health.png": capture_record(marker=marker_record())},
+                metadata={"mandatory_edge_marker": False, "expected_screenshot_count": 1},
+            )
+
+            with self.assertRaisesRegex(EvidenceValidationError, "mandatory edge marker"):
                 validate_evidence_manifest(manifest_path)
 
 

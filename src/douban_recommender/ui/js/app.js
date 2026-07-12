@@ -563,15 +563,16 @@ export function createAppRouteHandler({
     getStableState: () => store.getState?.() || null,
   });
   const disposeActiveSpace = () => {
-    activeSpace?.dispose?.();
+    const space = activeSpace;
     activeSpace = null;
+    space?.dispose?.();
   };
   const handler = async (route) => {
     const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
     const renderResult = await renderSafely(route, async () => {
+      store.dispatch({ type: "route/changed", route });
       disposeActiveSpace();
       prepare();
-      store.dispatch({ type: "route/changed", route });
       appView.dataset.route = route.path;
       setNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
       if (route.path.startsWith("/tonight")) {

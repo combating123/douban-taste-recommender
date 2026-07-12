@@ -690,16 +690,22 @@ class UiHtmlTests(unittest.TestCase):
             {normalizer}
             console.log(JSON.stringify({{
               direct: normalizeCookieInput("bid=abc123; ck=xyz987; dbcl2=quoted-value"),
+              quoted: normalizeCookieInput('bid="abc-123"; empty='),
               prefixed: normalizeCookieInput("Cookie: bid=abc123; ck=xyz987"),
               headers: normalizeCookieInput("GET / HTTP/1.1\\nHost: movie.douban.com\\nCookie: bid=abc123; ck=xyz987\\nUser-Agent: private"),
               multiline: normalizeCookieInput("bid=abc123;\\n ck=xyz987"),
               headerLike: normalizeCookieInput("Authorization: Bearer private-token"),
+              embeddedCookie: normalizeCookieInput("bid=abc123 Cookie: ck=xyz"),
+              embeddedAuthorization: normalizeCookieInput("bid=abc123, Authorization: Bearer token"),
+              commaJoined: normalizeCookieInput("bid=abc123,ck=xyz987"),
+              explanatory: normalizeCookieInput("bid=abc123 copied from browser"),
               plainText: normalizeCookieInput("not-a-cookie"),
             }}));
             '''
         )
         self.assertEqual("bid=abc123; ck=xyz987; dbcl2=quoted-value", result["direct"])
-        for rejected in ("prefixed", "headers", "multiline", "headerLike", "plainText"):
+        self.assertEqual('bid="abc-123"; empty=', result["quoted"])
+        for rejected in ("prefixed", "headers", "multiline", "headerLike", "embeddedCookie", "embeddedAuthorization", "commaJoined", "explanatory", "plainText"):
             with self.subTest(rejected=rejected):
                 self.assertEqual("", result[rejected])
 

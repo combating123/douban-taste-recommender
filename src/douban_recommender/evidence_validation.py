@@ -165,6 +165,20 @@ def _validate_capture(path: Path, relative: str, capture: Mapping[str, Any], bun
                 raise EvidenceValidationError(f"{relative}: edge marker rgba must contain four byte values")
             if not (0 <= x < decoded_width and 0 <= y < decoded_height):
                 raise EvidenceValidationError(f"{relative}: edge marker coordinate is outside the decoded image")
+            if (x, y) != (decoded_width - 1, decoded_height - 1):
+                raise EvidenceValidationError(f"{relative}: edge marker must be the decoded lower-right edge pixel")
+            marker_rect = _rect(marker.get("css_rect"), f"{relative}.edge_marker.css_rect")
+            visual_right = visual["offset_left"] + visual["width"]
+            visual_bottom = visual["offset_top"] + visual["height"]
+            if abs(marker_rect["right"] - visual_right) > 0.5 or abs(marker_rect["bottom"] - visual_bottom) > 0.5:
+                raise EvidenceValidationError(f"{relative}: edge marker CSS rect does not reach the visual viewport edge")
+            if abs(marker_rect["width"] - 1) > 0.25 or abs(marker_rect["height"] - 1) > 0.25:
+                raise EvidenceValidationError(f"{relative}: edge marker CSS rect must be exactly one CSS pixel")
+            if (
+                abs((marker_rect["right"] - marker_rect["left"]) - marker_rect["width"]) > 0.25
+                or abs((marker_rect["bottom"] - marker_rect["top"]) - marker_rect["height"]) > 0.25
+            ):
+                raise EvidenceValidationError(f"{relative}: edge marker CSS rect geometry is inconsistent")
             actual = image.convert("RGBA").getpixel((x, y))
             if any(abs(actual[index] - expected_rgba[index]) > tolerance for index in range(4)):
                 raise EvidenceValidationError(f"{relative}: edge marker is missing at the declared right/bottom coordinate")
@@ -247,6 +261,15 @@ def validate_evidence_manifest(manifest_path: str | Path) -> dict[str, Any]:
     capture_mode = manifest.get("capture_mode")
     if capture_mode not in CAPTURE_MODES:
         raise EvidenceValidationError("manifest capture mode is invalid")
+    if manifest.get("mandatory_edge_marker") is not True:
+        raise EvidenceValidationError("manifest mandatory edge marker contract must be true")
+    expected_screenshot_count = manifest.get("expected_screenshot_count")
+    if (
+        isinstance(expected_screenshot_count, bool)
+        or not isinstance(expected_screenshot_count, int)
+        or expected_screenshot_count < 0
+    ):
+        raise EvidenceValidationError("manifest expected screenshot count must be a nonnegative integer")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list):
         raise EvidenceValidationError("manifest artifacts must be a list")
@@ -284,6 +307,10 @@ def validate_evidence_manifest(manifest_path: str | Path) -> dict[str, Any]:
     missing = sorted(listed - actual)
     if missing:
         raise EvidenceValidationError(f"manifest lists an absent artifact: {missing[0]}")
+    if screenshot_count != expected_screenshot_count:
+        raise EvidenceValidationError(
+            f"manifest screenshot count mismatch: expected {expected_screenshot_count}, found {screenshot_count}"
+        )
     return {
         "artifact_count": len(artifacts),
         "screenshot_count": screenshot_count,

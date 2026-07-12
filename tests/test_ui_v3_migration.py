@@ -750,6 +750,89 @@ class UiV3MigrationTests(unittest.TestCase):
         self.assertEqual(345, result["scrollYAfterFailure"])
         self.assertEqual([345], result["scrollsAfterFailure"])
 
+    def test_route_setup_failures_commit_recovery_before_main_can_blank(self):
+        result = run_node_module(
+            f'''
+            {timed_recovery_dom()}
+            console.error = () => {{}};
+            const values = new Map();
+            globalThis.localStorage = {{
+              getItem(key) {{ return values.get(key) ?? null; }},
+              setItem(key, value) {{ values.set(key, String(value)); }},
+            }};
+            Object.assign(window, {{
+              location: {{ pathname: "/library" }},
+              history: {{
+                state: null,
+                replaceState(state, _title, path) {{ this.state = state; window.location.pathname = path; historyPaths.push(path); }},
+              }},
+            }});
+            const historyPaths = [];
+            const {{ createEmptyUiState, createStore, persistUiState, restoreUiState, UI_STATE_KEY }} = await import("{module_url('js/core/store.js')}");
+            const {{ createAppRouteHandler, reduceUiState }} = await import("{module_url('js/app.js')}");
+
+            async function exercise(kind) {{
+              values.clear(); historyPaths.length = 0; window.location.pathname = "/library";
+              const initial = createEmptyUiState(); initial.activePath = "/library"; initial.scrollByRoute["/library"] = 345;
+              persistUiState(initial);
+              const store = createStore(restoreUiState(), reduceUiState);
+              const actions = []; const originalDispatch = store.dispatch;
+              store.dispatch = (action) => {{ actions.push(action.type); return originalDispatch(action); }};
+              const unsubscribe = store.subscribe((state) => persistUiState(state));
+              const stable = document.createElement("section"); const stableHeading = document.createElement("h1"); stableHeading.textContent = "Stable library"; stable.append(stableHeading); appView.replaceChildren(stable);
+              const gate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
+              let poisonDisposals = 0; let tasteRenders = 0;
+              const handler = createAppRouteHandler({{
+                appView, store, restoreGate: gate, explorationGate: gate, universeGate: gate,
+                prepare() {{
+                  if (kind === "prepare") throw new Error("prepare failed");
+                  if (kind === "clear-prepare") {{ appView.replaceChildren(); throw new Error("prepare cleared then failed"); }}
+                }},
+                setNavigation() {{}}, setStatus() {{}}, announceRoute() {{}},
+                renderLibraryView(root) {{
+                  const view = document.createElement("section"); const heading = document.createElement("h1"); heading.textContent = "Stable library"; view.append(heading); root.replaceChildren(view);
+                  return {{ dispose() {{ poisonDisposals += 1; throw new Error("poison disposer"); }} }};
+                }},
+                renderTasteView(root) {{ const view = document.createElement("section"); const heading = document.createElement("h1"); heading.textContent = "Taste"; view.append(heading); root.replaceChildren(view); tasteRenders += 1; return {{ dispose() {{}} }}; }},
+              }});
+              if (kind === "dispose") await handler({{ name: "library", path: "/library", params: {{}} }});
+              actions.length = 0; historyPaths.length = 0;
+              const failed = await handler({{ name: "taste", path: "/taste", params: {{}} }});
+              await flushMicrotasks();
+              const afterFailure = {{
+                failed, activePath: store.getState().activePath, persistedPath: JSON.parse(values.get(UI_STATE_KEY)).activePath,
+                browserPath: window.location.pathname, childCount: appView.children.length,
+                recovered: actions.includes("recovery/restored"), historyPaths: [...historyPaths], poisonDisposals,
+              }};
+              let retry = null;
+              if (kind === "dispose") retry = await handler({{ name: "taste", path: "/taste", params: {{}} }});
+              let cleanupError = null;
+              unsubscribe();
+              try {{ handler.dispose(); }} catch (error) {{ cleanupError = error.message; }}
+              return {{ ...afterFailure, retry, tasteRenders, cleanupError }};
+            }}
+
+            const dispose = await exercise("dispose");
+            const prepare = await exercise("prepare");
+            const clearPrepare = await exercise("clear-prepare");
+            console.log(JSON.stringify({{ dispose, prepare, clearPrepare }}));
+            '''
+        )
+        for name in ("dispose", "prepare", "clearPrepare"):
+            with self.subTest(name=name):
+                row = result[name]
+                self.assertFalse(row["failed"])
+                self.assertTrue(row["recovered"])
+                self.assertEqual("/library", row["activePath"])
+                self.assertEqual("/library", row["persistedPath"])
+                self.assertEqual("/library", row["browserPath"])
+                self.assertIn("/library", row["historyPaths"])
+                self.assertGreater(row["childCount"], 0)
+                self.assertIsNone(row["cleanupError"])
+        self.assertTrue(result["dispose"]["retry"])
+        self.assertEqual(1, result["dispose"]["poisonDisposals"])
+        self.assertEqual(1, result["dispose"]["tasteRenders"])
+
     def test_safe_routes_reject_embedded_external_url_text_in_store_recovery_scroll_and_diagnostics(self):
         result = run_node_module(
             f'''

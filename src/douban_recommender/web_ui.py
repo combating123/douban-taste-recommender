@@ -532,6 +532,7 @@ function extractDoubanUserId(value) { const text = String(value || '').trim(); c
 function normalizeCookieInput(value) {
   const text = String(value || '').trim();
   if (!text || /[\r\n]/.test(text)) return '';
+  if (/\b(?:cookie|authorization)\s*:/i.test(text)) return '';
   const pairs = text.split(';').map(part => part.trim()).filter(Boolean);
   if (!pairs.length) return '';
   const normalized = [];
@@ -540,7 +541,10 @@ function normalizeCookieInput(value) {
     if (separator <= 0) return '';
     const name = pair.slice(0, separator).trim();
     const cookieValue = pair.slice(separator + 1).trim();
-    if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name) || /[\x00-\x1f\x7f]/.test(cookieValue)) return '';
+    const cookieOctet = /^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$/;
+    const validCookieValue = cookieOctet.test(cookieValue)
+      || (cookieValue.length >= 2 && cookieValue.startsWith('"') && cookieValue.endsWith('"') && cookieOctet.test(cookieValue.slice(1, -1)));
+    if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name) || !validCookieValue) return '';
     normalized.push(`${name}=${cookieValue}`);
   }
   return normalized.join('; ');
