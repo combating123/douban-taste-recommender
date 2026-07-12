@@ -108,7 +108,13 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
     items: list[MediaItem] = []
     for block in blocks:
         url = html.unescape(first_match(r'''href=["'](https://movie\.douban\.com/subject/\d+/?[^"']*)["']''', block))
-        title = clean_html(first_match(r"<em[^>]*>(.*?)</em>", block)) or clean_html(first_match(r'''<img[^>]+alt=["']([^"']+)["']''', block))
+        title_markup = first_match(r'''<li\s+class=["'][^"']*\btitle\b[^"']*["'][^>]*>\s*<a[^>]*>(.*?)</a>''', block)
+        title_text = clean_html(title_markup)
+        em_title = clean_html(first_match(r"<em[^>]*>(.*?)</em>", block))
+        image_title = clean_html(first_match(r'''<img[^>]+alt=["']([^"']+)["']''', block))
+        anchor_title = clean_html(first_match(r'''<a[^>]+title=["']([^"']+)["'][^>]+href=["']https://movie\.douban\.com/subject/''', block))
+        title_parts = split_title_parts(title_text or em_title)
+        title = (title_parts[0] if title_parts else "") or image_title or anchor_title
         if not title or not url:
             continue
 
@@ -117,12 +123,18 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
         rating_match = re.search(r"rating(\d)-t", block)
         my_rating = float(rating_match.group(1)) if rating_match else None
         cover = html.unescape(first_match(r'''<img[^>]+src=["']([^"']+)["']''', block))
-        genres = [genre for genre in KNOWN_GENRES if genre in intro]
-        countries = [country for country in COUNTRY_WORDS if country in intro]
         people_parts = [part.strip() for part in re.split(r"\s*/\s*", intro) if part.strip()]
-        directors, casts = split_people_from_intro(people_parts)
+        genres = []
+        for part in people_parts:
+            for genre in KNOWN_GENRES:
+                if genre in part and genre not in genres:
+                    genres.append(genre)
+        countries = [country for country in COUNTRY_WORDS if country in intro]
+        runtime_minutes = intro_runtime_minutes(people_parts)
+        directors, casts = split_people_from_intro(people_parts, genres=genres, countries=countries)
         tag = "想看" if status == "wish" else "看过"
         media_type = infer_media_type(title, intro)
+        aliases = [part for part in title_parts[1:] if part != title]
         items.append(MediaItem(
             title=title,
             my_rating=my_rating,
@@ -138,7 +150,11 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
             cover=cover,
             summary=comment,
             source=f"douban_user:{status}",
-            raw={"intro": intro},
+            raw={
+                "intro": intro,
+                "aliases": aliases,
+                "episode_runtime_minutes": runtime_minutes,
+            },
         ))
     fallback_items = parse_fallback_subject_links(page_html or "", status=status)
     seen_ids = {item.douban_id for item in items if item.douban_id}
@@ -152,16 +168,14 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
 
 def infer_media_type(title: str, intro: str) -> str:
     blob = f"{title or ''} {intro or ''}".lower()
+    runtime = intro_runtime_minutes([part.strip() for part in re.split(r"\s*/\s*", intro or "") if part.strip()])
     anime_markers = [
         "动画",
         "动漫",
         "番剧",
         "日本动画",
-        "剧场版",
         "anime",
     ]
-    if any(marker in blob for marker in anime_markers):
-        return "动漫"
     series_markers = [
         "电视剧",
         "剧集",
@@ -179,7 +193,12 @@ def infer_media_type(title: str, intro: str) -> str:
         "series",
         "episode",
     ]
-    if any(marker in blob for marker in series_markers):
+    has_series_evidence = any(marker in blob for marker in series_markers) or (runtime is not None and runtime <= 60)
+    if any(marker in blob for marker in anime_markers):
+        if runtime is not None and runtime > 60 and not any(marker in blob for marker in series_markers):
+            return "电影"
+        return "动漫"
+    if has_series_evidence:
         return "电视剧"
     if re.search(r"第[一二三四五六七八九十0-9\d]+季", title or ""):
         return "电视剧"
@@ -213,7 +232,10 @@ def parse_fallback_subject_links(page_html: str, status: str) -> list[MediaItem]
 
 
 def split_item_blocks(page_html: str) -> list[str]:
-    starts = [match.start() for match in re.finditer(r'''<div\s+class=["']item["'][^>]*>''', page_html, flags=re.I)]
+    starts: list[int] = []
+    for match in re.finditer(r'''<div\b[^>]*\bclass=["']([^"']*)["'][^>]*>''', page_html, flags=re.I):
+        if "item" in {token.casefold() for token in match.group(1).split()}:
+            starts.append(match.start())
     blocks: list[str] = []
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(page_html)
@@ -225,12 +247,76 @@ def split_item_blocks(page_html: str) -> list[str]:
     return blocks
 
 
-def split_people_from_intro(parts: list[str]) -> tuple[list[str], list[str]]:
+def split_title_parts(value: str) -> list[str]:
+    parts: list[str] = []
+    for raw in re.split(r"\s*/\s*", str(value or "")):
+        text = re.sub(r"\s*\[[^\]]+\]\s*$", "", raw).strip()
+        if text and text not in parts:
+            parts.append(text)
+    return parts
+
+
+def intro_runtime_minutes(parts: list[str]) -> int | None:
+    for part in parts:
+        match = re.search(r"(?<!\d)(\d{1,3})\s*分钟", part)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def _split_people_names(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text or re.search(r"(?:https?://|www\.|\.[a-z]{2,}/)", text, flags=re.I):
+        return []
+    chunks = [part.strip() for part in re.split(r"[、,，]|\s{2,}", text) if part.strip()]
+    if len(chunks) == 1:
+        tokens = [part for part in text.split() if part]
+        if len(tokens) > 1 and all(re.fullmatch(r"[\u3400-\u9fff·]{2,8}", token) for token in tokens):
+            chunks = tokens
+    return chunks
+
+
+def split_people_from_intro(
+    parts: list[str],
+    genres: list[str] | None = None,
+    countries: list[str] | None = None,
+) -> tuple[list[str], list[str]]:
     if len(parts) < 4:
         return [], []
-    directors = [name.strip() for name in re.split(r"\s+", parts[-2]) if name.strip()]
-    casts = [name.strip() for name in re.split(r"\s+", parts[-1]) if name.strip()]
-    return directors[:4], casts[:8]
+    runtime_index = next((index for index, part in enumerate(parts) if re.search(r"\d{1,3}\s*分钟", part)), None)
+    country_values = set(countries or COUNTRY_WORDS)
+    country_indexes = [index for index, part in enumerate(parts) if part in country_values]
+    release_end = 0
+    while release_end < len(parts) and re.search(r"(?:19|20)\d{2}", parts[release_end]):
+        release_end += 1
+
+    if runtime_index is not None and country_indexes:
+        countries_before_runtime = [index for index in country_indexes if index < runtime_index]
+        if countries_before_runtime:
+            first_country = countries_before_runtime[0]
+            last_country = countries_before_runtime[-1]
+            casts = [name for part in parts[release_end:first_country] for name in _split_people_names(part)]
+            directors = [name for part in parts[last_country + 1:runtime_index] for name in _split_people_names(part)]
+            if directors or casts:
+                return directors[:4], casts[:12]
+
+    genre_indexes = [
+        index
+        for index, part in enumerate(parts)
+        if any(genre and genre in part for genre in (genres or []))
+    ]
+    if genre_indexes:
+        people_start = genre_indexes[-1] + 1
+        directors = _split_people_names(parts[people_start]) if people_start < len(parts) else []
+        casts = [name for part in parts[people_start + 1:] for name in _split_people_names(part)]
+        return directors[:4], casts[:12]
+
+    directors = _split_people_names(parts[-2])
+    casts = _split_people_names(parts[-1])
+    return directors[:4], casts[:12]
 
 
 def first_match(pattern: str, text: str) -> str:

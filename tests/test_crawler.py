@@ -1,6 +1,7 @@
 import unittest
 import io
 import urllib.error
+from pathlib import Path
 
 from douban_recommender.crawler import (
     build_user_collection_url,
@@ -355,6 +356,41 @@ class CrawlerScaleTests(unittest.TestCase):
 
 
 class CrawlerParserVariantTests(unittest.TestCase):
+    def test_parse_real_comment_item_markup_with_people_roles_and_aliases(self):
+        fixture = Path(__file__).with_name("fixtures").joinpath("douban_collection_comment_item.html")
+
+        items = parse_user_collection_html(fixture.read_text(encoding="utf-8"), status="collect")
+
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item.title, "仙剑奇侠传三")
+        self.assertEqual(item.my_rating, 5)
+        self.assertEqual(item.year, 2009)
+        self.assertEqual(item.media_type, "电视剧")
+        self.assertEqual(item.douban_id, "3227335")
+        self.assertEqual(item.directors, ["李国立"])
+        self.assertEqual(item.casts[:3], ["胡歌", "霍建华", "杨幂"])
+        self.assertEqual(item.countries, ["中国大陆"])
+        self.assertEqual(item.genres, ["爱情", "奇幻", "武侠", "古装"])
+        self.assertEqual(item.raw["aliases"], ["仙剑奇侠传3", "Chinese Paladin 3"])
+        self.assertEqual(item.raw["episode_runtime_minutes"], 45)
+
+    def test_animation_channel_requires_series_evidence(self):
+        html = """
+        <div class="item comment-item">
+          <a href="https://movie.douban.com/subject/1/"><em>动画电影</em></a>
+          <li class="intro">2024 / 日本 / 105分钟 / 动画 / 剧情</li>
+        </div>
+        <div class="item comment-item">
+          <a href="https://movie.douban.com/subject/2/"><em>动画剧集</em></a>
+          <li class="intro">2024 / 日本 / 24分钟 / 动画 / 剧情</li>
+        </div>
+        """
+
+        items = parse_user_collection_html(html, status="collect")
+
+        self.assertEqual([item.media_type for item in items], ["电影", "动漫"])
+
     def test_parse_subject_links_when_item_class_missing(self):
         from douban_recommender.crawler import parse_user_collection_html
 
