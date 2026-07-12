@@ -1061,7 +1061,7 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(900, result["scrollY"])
         self.assertEqual(900, result["persisted"]["/tonight/anime-series"])
 
-    def test_tonight_renders_distinct_counts_three_shelves_and_batch_requests(self):
+    def test_tonight_renders_active_channel_counts_one_compact_shelf_and_batch_requests(self):
         output = run_node_module(
             f'''
             import {{
@@ -1150,7 +1150,7 @@ class UiV3ContractTests(unittest.TestCase):
             if (!text.includes("候选池 30") || !text.includes("匹配 17") || !text.includes("本批可见 12")) {{
               throw new Error(`three count semantics were not rendered: ${{text}}`);
             }}
-            if (shelfRails.length !== 3) throw new Error(`expected three shelves, got ${{shelfRails.length}}`);
+            if (shelfRails.length !== 1) throw new Error(`expected one active-channel shelf, got ${{shelfRails.length}}`);
             if (shelfRails.some((rail) => rail.children.length > 9)) throw new Error("initial shelf exceeded the nine-card cap");
 
             await requestNextBatch("series", "太相似");
@@ -1163,8 +1163,66 @@ class UiV3ContractTests(unittest.TestCase):
             '''
         )
         rendered = json.loads(output)
-        self.assertEqual([9, 8, 7], rendered["shelfSizes"])
+        self.assertEqual([9], rendered["shelfSizes"])
         self.assertEqual("太相似", rendered["calls"][0]["payload"]["reason"])
+
+    def test_tonight_channel_switch_keeps_root_mounted_and_updates_history_in_place(self):
+        output = run_node_module(
+            f'''
+            import {{ configureTonight, renderTonight }} from "{module_url('js/features/tonight.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{ this.tagName = tagName.toUpperCase(); this.children = []; this.dataset = {{}}; this.attributes = new Map(); this.className = ""; this.textContent = ""; this.disabled = false; this.value = ""; }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }};
+            const historyPaths = [];
+            globalThis.window = {{ history: {{ pushState(_state, _title, path) {{ historyPaths.push(path); }} }} }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+
+            const root = new FakeElement("main");
+            let rootReplacements = 0;
+            root.replaceChildren = function(...nodes) {{ rootReplacements += 1; this.children = []; this.append(...nodes); }};
+            const makeChannel = (title) => ({{ pool_size: 20, matched_size: 18, visible_size: 1, active_batch: 1, batch: {{ index: 1, items: [{{ title }}] }} }});
+            const state = {{ activePath: "/tonight/movie", recommendation: {{
+              activeChannel: "movie",
+              personalization: {{ source: "douban-sync", watched_count: 244, wish_count: 36, rated_count: 120 }},
+              channels: {{ movie: makeChannel("电影候选"), series: makeChannel("剧集候选"), "anime-series": makeChannel("动画候选") }},
+            }} }};
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{
+                if (action.type === "recommendation/channelSelected") {{
+                  state.activePath = action.path;
+                  state.recommendation.activeChannel = action.channel;
+                }}
+              }},
+            }};
+            configureTonight({{ root, store, api: {{ postV2() {{}} }} }});
+            const firstPage = renderTonight(state);
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            const seriesTab = collect(firstPage).find((node) => node.dataset?.channel === "series");
+            if (!seriesTab?.onclick) throw new Error("series tab was not an interactive in-place control");
+            seriesTab.onclick();
+            const secondPage = renderTonight(state);
+            const visible = collect(secondPage).map((node) => node.textContent).join(" ");
+            if (rootReplacements !== 1 || root.firstElementChild !== firstPage || secondPage !== firstPage) throw new Error(`Tonight root remounted: ${{rootReplacements}}`);
+            if (historyPaths.join() !== "/tonight/series" || state.activePath !== "/tonight/series") throw new Error("channel URL/state did not update in place");
+            if (!visible.includes("剧集候选") || visible.includes("电影候选")) throw new Error(`active content was not atomically switched: ${{visible}}`);
+            if (!visible.includes("基于你的 244 部看过 · 36 部想看")) throw new Error(`personalization provenance missing: ${{visible}}`);
+            console.log(JSON.stringify({{ rootReplacements, historyPaths, activePath: state.activePath, samePage: secondPage === firstPage, visible }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["rootReplacements"])
+        self.assertTrue(result["samePage"])
+        self.assertEqual("/tonight/series", result["activePath"])
 
     def test_session_candidate_counts_flow_into_channels_and_persist(self):
         prelude = fake_dom_module_prelude()
@@ -4021,7 +4079,7 @@ class UiV3ContractTests(unittest.TestCase):
             r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.universe-node-button\s*\{[^}]*width\s*:\s*100%",
         )
 
-    def test_route_focus_target_has_no_visual_outline_and_rail_controls_stay_compact(self):
+    def test_route_focus_target_has_no_visual_outline_and_rail_controls_wrap_without_overflow(self):
         css = (UI_ROOT / "styles" / "shell.css").read_text(encoding="utf-8")
         tonight = (UI_ROOT / "styles" / "tonight.css").read_text(encoding="utf-8")
         responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
@@ -4032,8 +4090,9 @@ class UiV3ContractTests(unittest.TestCase):
 
         rail_control = re.search(r"\.rail-control\s*\{([^}]*)\}", css)
         self.assertIsNotNone(rail_control)
-        self.assertRegex(rail_control.group(1), r"font-size\s*:\s*0\.72rem")
-        self.assertRegex(rail_control.group(1), r"white-space\s*:\s*nowrap")
+        self.assertRegex(rail_control.group(1), r"font-size\s*:\s*0\.68rem")
+        self.assertRegex(rail_control.group(1), r"overflow-wrap\s*:\s*anywhere")
+        self.assertNotRegex(rail_control.group(1), r"white-space\s*:\s*nowrap")
 
         route_heading = re.search(r'#app-view\s+h1\[tabindex="-1"\]\s*\{([^}]*)\}', responsive)
         self.assertIsNotNone(route_heading)

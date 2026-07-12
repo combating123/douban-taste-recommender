@@ -37,7 +37,7 @@
 .app-rail a:focus-visible,
 .app-rail a[aria-current="page"] { color: var(--text); background: var(--surface); transform: translateY(-2px); }
 .app-rail .rail-mark { color: var(--canvas); background: var(--signal); font-size: 0.8rem; letter-spacing: 0.08em; }
-.rail-symbol { display: block; font-size: 0.95rem; }
+.rail-symbol { display: block; font-size: 1.05rem; }
 .rail-label { display: block; margin-top: 0.16rem; font-size: 0.62rem; }
 
 .rail-controls { display: grid; gap: 0.5rem; margin-top: auto; padding-top: 1.25rem; }
@@ -52,10 +52,10 @@
   cursor: pointer;
 }
 .rail-control {
-  padding-inline: 0.2rem;
-  font-size: 0.72rem;
+  padding-inline: 0.35rem;
+  font-size: 0.68rem;
   line-height: 1.2;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .rail-control:hover,
@@ -117,7 +117,7 @@
     bottom: 0;
     left: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.2rem;
     padding: 0.45rem;
     border-top: 1px solid var(--line);

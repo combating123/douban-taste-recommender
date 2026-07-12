@@ -108,7 +108,16 @@ async function runIntentRequest(payload, workingMessage, successMessage) {
 
 function replaceSession(intent) {
   return runIntentRequest(
-    { intent, batch_size: 9 },
+    {
+      intent,
+      batch_size: 9,
+      limit: 160,
+      per_query: 30,
+      fetch_douban: true,
+      include_movies: true,
+      include_series: true,
+      include_anime: true,
+    },
     "正在用结构化条件重建今晚片单…",
     "条件已更新，新的批次历史已建立。",
   );
@@ -315,6 +324,12 @@ export async function submitIntent(text) {
     {
       intent_text: cleanText,
       batch_size: 9,
+      limit: 160,
+      per_query: 30,
+      fetch_douban: true,
+      include_movies: true,
+      include_series: true,
+      include_anime: true,
     },
     "正在把自然语言落成结构化条件…",
     "结构化意图已落地，今晚片单已刷新。",

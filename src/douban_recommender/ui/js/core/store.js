@@ -27,6 +27,7 @@ export function createEmptyUiState() {
     recommendation: {
       sessionId: null,
       activeChannel: "movie",
+      personalization: {},
       channels: Object.fromEntries(CHANNEL_SLUGS.map((slug) => [slug, emptyChannelState()])),
     },
     scrollByRoute: {},
@@ -254,6 +255,7 @@ export function normalizeUiState(state = {}) {
     recommendation: {
       sessionId: safeText(recommendation.sessionId, "", 256) || null,
       activeChannel,
+      personalization: sanitizeNonSensitiveValue(recommendation.personalization) || {},
       channels: sanitizeChannels(recommendation.channels),
     },
     scrollByRoute: sanitizeScrollByRoute(source.scrollByRoute),

@@ -38,37 +38,73 @@
   border-radius: 999px;
   color: var(--muted);
   background: var(--surface);
+  font: inherit;
   font-size: 0.78rem;
   font-weight: 750;
   text-decoration: none;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
   transition: transform var(--motion-fast) ease, opacity var(--motion-fast) ease;
 }
 .tonight-channel:hover,
 .tonight-channel:focus-visible { transform: translateY(-2px); opacity: 0.9; }
 .tonight-channel[aria-current="page"] { color: var(--canvas); background: var(--signal); }
 
-.tonight-hero {
+.tonight-stage {
   display: grid;
-  grid-template-columns: minmax(10rem, 0.38fr) minmax(0, 1fr);
+  gap: clamp(1.25rem, 2.5vw, 2.4rem);
+  min-width: 0;
+  view-transition-name: tonight-stage;
+}
+
+.tonight-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: clamp(22rem, 48vw, 34rem);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: clamp(1.15rem, 2.5vw, 2rem);
-  background:
-    radial-gradient(circle at 84% 12%, rgba(200, 168, 107, 0.18), transparent 28rem),
-    linear-gradient(125deg, rgba(42, 55, 85, 0.72), rgba(12, 15, 24, 0.96));
+  isolation: isolate;
+  background: linear-gradient(125deg, rgba(42, 55, 85, 0.72), rgba(12, 15, 24, 0.96));
   box-shadow: var(--shadow);
 }
-.tonight-hero__media { min-width: 0; padding: clamp(1rem, 3vw, 2.5rem); }
-.tonight-hero__media .media-frame { height: 100%; max-height: 30rem; }
+.tonight-hero__media { position: absolute; z-index: -1; inset: 0; min-width: 0; }
+.tonight-hero__backdrop,
+.tonight-hero__backdrop .media-frame { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 0; }
+.tonight-hero__backdrop .media-frame { opacity: 0.52; filter: saturate(0.8) contrast(1.05); }
+.tonight-hero__backdrop .media-frame::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    linear-gradient(90deg, rgba(8, 11, 18, 0.98) 0%, rgba(8, 11, 18, 0.82) 38%, rgba(8, 11, 18, 0.18) 75%),
+    linear-gradient(0deg, rgba(8, 11, 18, 0.88), transparent 55%);
+}
+.tonight-hero__backdrop img { width: 100%; height: 100%; object-fit: cover; object-position: center 24%; transform: scale(1.035); filter: blur(5px); }
+.tonight-hero__poster {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  right: clamp(1rem, 4vw, 4rem);
+  width: clamp(11rem, 21vw, 18rem);
+  aspect-ratio: 2 / 3;
+  transform: translateY(-50%);
+  filter: drop-shadow(0 1.5rem 2.6rem rgba(0, 0, 0, 0.56));
+}
+.tonight-hero__poster .media-frame { width: 100%; height: 100%; border-color: rgba(255, 255, 255, 0.22); background: #111724; }
+.tonight-hero__poster img { width: 100%; height: 100%; object-fit: contain; background: #0c1019; }
 .tonight-hero__copy {
+  position: relative;
+  z-index: 3;
   display: grid;
   align-content: end;
   gap: clamp(0.75rem, 1.5vw, 1.2rem);
   min-width: 0;
-  padding: clamp(1.25rem, 4vw, 4rem);
+  width: min(72%, 58rem);
+  padding: clamp(1.5rem, 5vw, 4.5rem);
+  padding-right: clamp(13rem, 28vw, 24rem);
 }
 .tonight-hero__title {
   display: -webkit-box;
@@ -290,9 +326,9 @@
   .tonight-page { padding-top: 1rem; }
   .tonight-intro { align-items: flex-start; flex-direction: column; }
   .tonight-channels { justify-content: flex-start; }
-  .tonight-hero { grid-template-columns: minmax(0, 1fr); min-height: 0; }
-  .tonight-hero__media { max-width: 13rem; padding-bottom: 0; }
-  .tonight-hero__copy { padding-top: 1rem; }
+  .tonight-hero { min-height: 34rem; }
+  .tonight-hero__poster { top: 1.1rem; right: 1rem; width: 9rem; transform: none; }
+  .tonight-hero__copy { width: 100%; padding: 12rem 1.2rem 1.35rem; }
   .tonight-hero__title { font-size: clamp(2.2rem, 13vw, 4.2rem); }
   .tonight-counts { grid-template-columns: minmax(0, 1fr); }
   .tonight-batch-controls { align-items: stretch; flex-direction: column; }

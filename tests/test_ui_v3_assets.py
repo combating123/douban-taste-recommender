@@ -52,12 +52,14 @@ class UiV3AssetTests(unittest.TestCase):
             finally:
                 error.close()
 
-    def test_v3_shell_uses_native_modules_and_five_spaces(self):
+    def test_v3_shell_uses_native_modules_and_four_clear_primary_spaces(self):
         html = load_index_html()
 
         self.assertIn('type="module"', html)
-        for route in ("/tonight", "/universe", "/library", "/taste", "/health"):
+        for route in ("/tonight", "/library", "/taste", "/health"):
             self.assertIn(route, html)
+        self.assertNotIn('<a href="/universe" data-route>', html)
+        self.assertIn("隐藏侧栏", html)
 
     def test_v3_shell_exposes_required_semantic_regions(self):
         html = load_index_html()

@@ -17,28 +17,26 @@
 </head>
 <body>
   <a class="skip-link" href="#app-view">跳至主要内容</a>
-  <button id="rail-restore" class="rail-restore" type="button" aria-controls="primary-rail" aria-expanded="false" hidden>恢复导航</button>
+  <button id="rail-restore" class="rail-restore" type="button" aria-controls="primary-rail" aria-expanded="false" hidden>显示导航</button>
   <div class="cinescope-shell">
     <aside id="primary-rail" class="app-rail" aria-label="CineScope 空间导航">
       <a class="rail-mark" href="/tonight" data-route aria-label="CineScope 今晚">CS</a>
       <nav aria-label="主要空间">
-        <a href="/tonight" data-route><span class="rail-symbol" aria-hidden="true">今</span><span class="rail-label">今晚</span></a>
-        <a href="/universe" data-route><span class="rail-symbol" aria-hidden="true">宇</span><span class="rail-label">宇宙</span></a>
-        <a href="/library" data-route><span class="rail-symbol" aria-hidden="true">库</span><span class="rail-label">片库</span></a>
-        <a href="/taste" data-route><span class="rail-symbol" aria-hidden="true">味</span><span class="rail-label">口味</span></a>
-        <a href="/health" data-route><span class="rail-symbol" aria-hidden="true">健</span><span class="rail-label">健康</span></a>
+        <a href="/tonight" data-route><span class="rail-symbol" aria-hidden="true">✦</span><span class="rail-label">推荐</span></a>
+        <a href="/library" data-route><span class="rail-symbol" aria-hidden="true">▦</span><span class="rail-label">片库</span></a>
+        <a href="/taste" data-route><span class="rail-symbol" aria-hidden="true">◈</span><span class="rail-label">口味</span></a>
+        <a href="/health" data-route><span class="rail-symbol" aria-hidden="true">⚙</span><span class="rail-label">设置</span></a>
       </nav>
       <div class="rail-controls">
-        <button id="rail-collapse-toggle" class="rail-control" type="button" aria-controls="primary-rail" aria-expanded="true">折叠导航</button>
-        <button id="rail-hide-toggle" class="rail-control" type="button" aria-controls="primary-rail" aria-expanded="true">隐藏导航</button>
+        <button id="rail-hide-toggle" class="rail-control" type="button" aria-controls="primary-rail" aria-expanded="true">隐藏侧栏</button>
       </div>
     </aside>
 
     <div class="shell-content">
       <header class="top-bar">
-        <p class="eyebrow">CineScope / LOCAL AI CINEMA</p>
+        <p class="eyebrow">CineScope / 私人影院</p>
         <p id="shell-status" class="shell-status">本地片库已准备就绪</p>
-        <button id="command-lens-trigger" class="command-lens-trigger" type="button" aria-haspopup="dialog">Command Lens · Ctrl K</button>
+        <button id="command-lens-trigger" class="command-lens-trigger" type="button" aria-haspopup="dialog">描述今晚 · Ctrl K</button>
       </header>
 
       <div id="command-lens-root" aria-label="Command Lens"></div>
@@ -52,11 +50,10 @@
     </div>
   </div>
   <nav id="bottom-nav" class="bottom-nav" aria-label="移动端主导航">
-    <a href="/tonight" data-route>今晚</a>
-    <a href="/universe" data-route>宇宙</a>
+    <a href="/tonight" data-route>推荐</a>
     <a href="/library" data-route>片库</a>
     <a href="/taste" data-route>口味</a>
-    <a href="/health" data-route>健康</a>
+    <a href="/health" data-route>设置</a>
   </nav>
   <div id="overlay-root"></div>
   <div id="a11y-announcer" class="a11y-announcer" aria-live="polite" aria-atomic="true"></div>

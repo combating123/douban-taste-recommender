@@ -203,6 +203,14 @@ export function reduceUiState(state, action) {
           ? { ...state.recommendation, activeChannel: channelSlug(action.route) }
           : state.recommendation,
       };
+    case "recommendation/channelSelected":
+      if (!Object.hasOwn(ROUTE_CHANNELS, action.channel)) return state;
+      return {
+        ...state,
+        activePath: action.path,
+        activeParams: { channel: action.channel },
+        recommendation: { ...state.recommendation, activeChannel: action.channel },
+      };
     case "route/scrollSaved": {
       const scrollByRoute = saveScrollByRoute(state.scrollByRoute, action.path, action.y);
       if (!scrollByRoute) return state;
@@ -234,6 +242,7 @@ export function reduceUiState(state, action) {
         recommendation: {
           sessionId: channels?.[activeChannel]?.sessionId || null,
           activeChannel,
+          personalization: sanitizeNonSensitiveValue(stable.recommendation?.personalization) || {},
           channels,
         },
         candidateTray: { itemIds: [], context: stable.candidateTray?.context || {} },
@@ -282,6 +291,7 @@ export function reduceUiState(state, action) {
           sessionId: action.session?.id || state.recommendation.sessionId,
           intent: sanitizeNonSensitiveValue(action.session?.intent) || {},
           intentSessionId: action.session?.id || null,
+          personalization: sanitizeNonSensitiveValue(action.session?.personalization) || state.recommendation.personalization || {},
           channels: backendChannelsToState(action.session, state.recommendation.channels, {
             preserveOtherSessions: action.source === "restore",
           }),
@@ -570,7 +580,19 @@ export function createAppRouteHandler({
   const handler = async (route) => {
     const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
     const renderResult = await renderSafely(route, async () => {
+      const previousPath = store.getState?.().activePath || "";
+      const keepTonightMounted = previousPath.startsWith("/tonight")
+        && route.path.startsWith("/tonight")
+        && Boolean(appView.querySelector?.(".tonight-page"));
       store.dispatch({ type: "route/changed", route });
+      if (keepTonightMounted) {
+        appView.dataset.route = route.path;
+        setNavigation("/tonight");
+        await renderTonightView(store.getState());
+        await restoreGate.restore(route, heading);
+        setStatus(`CineScope 正在浏览：${heading}`);
+        return;
+      }
       disposeActiveSpace();
       prepare();
       appView.dataset.route = route.path;
@@ -681,7 +703,7 @@ export function bootstrapCineScopeShell() {
     if (action.type === "recommendation/sessionReceived") {
       syncTonightSessionState(state);
     }
-    if (state.activePath?.startsWith("/tonight") && ["recommendation/sessionReceived", "recommendation/batchReceived"].includes(action.type)) {
+    if (state.activePath?.startsWith("/tonight") && ["recommendation/sessionReceived", "recommendation/batchReceived", "recommendation/channelSelected"].includes(action.type)) {
       renderTonight(state);
     }
   });

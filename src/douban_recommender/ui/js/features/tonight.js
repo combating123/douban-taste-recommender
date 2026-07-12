@@ -26,6 +26,7 @@ const batchOperations = new Map(CHANNELS.map((channel) => [channel.slug, {
   tone: "neutral",
   controls: null,
 }]));
+let mountedTonight = null;
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -93,17 +94,53 @@ function activeChannelFor(recommendation) {
   return CHANNELS.find((channel) => channel.slug === recommendation.activeChannel) || CHANNELS[0];
 }
 
+function personalizationCopy(recommendation) {
+  const profile = recommendation?.personalization && typeof recommendation.personalization === "object"
+    ? recommendation.personalization
+    : {};
+  const watched = numberValue(profile.watched_count);
+  const wish = numberValue(profile.wish_count);
+  if (profile.source === "douban-sync" && (watched || wish)) {
+    return `基于你的 ${watched} 部看过 · ${wish} 部想看，兼顾高口碑、剧情完成度与近期新鲜度。`;
+  }
+  if (profile.source === "local-library" && (watched || wish)) {
+    return `基于本地片库的 ${watched} 部看过 · ${wish} 部想看，持续随反馈校准。`;
+  }
+  return "描述片长、情绪或类型，CineScope 会建立可换批、可撤回的私人片单。";
+}
+
+export function selectTonightChannel(slug, { replace = false } = {}) {
+  const channel = CHANNELS.find((entry) => entry.slug === slug);
+  const store = dependencies.store;
+  if (!channel || !store?.dispatch) return false;
+  const current = activeChannelFor(recommendationState(store.getState?.() || {}));
+  if (current.slug === channel.slug) return true;
+  const history = globalThis.window?.history;
+  const method = replace ? "replaceState" : "pushState";
+  if (typeof history?.[method] === "function") history[method]({}, "", channel.route);
+  store.dispatch({
+    type: "recommendation/channelSelected",
+    channel: channel.slug,
+    backend: channel.backend,
+    path: channel.route,
+  });
+  return true;
+}
+
 function renderChannelTabs(recommendation) {
   const tabs = element("nav", "tonight-channels");
   tabs.setAttribute("aria-label", "今晚频道");
+  tabs.setAttribute("role", "tablist");
   const active = activeChannelFor(recommendation);
   for (const channel of CHANNELS) {
-    const link = element("a", "tonight-channel", channel.label);
-    link.href = channel.route;
-    link.setAttribute("href", channel.route);
-    link.setAttribute("data-route", "");
-    if (active.slug === channel.slug) link.setAttribute("aria-current", "page");
-    tabs.append(link);
+    const button = element("button", "tonight-channel", channel.label);
+    button.type = "button";
+    button.dataset.channel = channel.slug;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", active.slug === channel.slug ? "true" : "false");
+    if (active.slug === channel.slug) button.setAttribute("aria-current", "page");
+    button.addEventListener("click", () => selectTonightChannel(channel.slug));
+    tabs.append(button);
   }
   return tabs;
 }
@@ -115,8 +152,14 @@ function renderHero(recommendation, channel) {
   hero.setAttribute("aria-labelledby", "tonight-hero-title");
 
   const media = element("div", "tonight-hero__media");
-  if (item) media.append(renderMediaFrame(adaptRecommendationMedia(item)));
-  else media.append(renderMediaFrame({ kind: "poster", title: `${channel.label}待选`, status: "missing" }));
+  const mediaModel = item
+    ? adaptRecommendationMedia(item)
+    : { kind: "poster", title: `${channel.label}待选`, status: "missing" };
+  const backdrop = element("div", "tonight-hero__backdrop");
+  const poster = element("div", "tonight-hero__poster");
+  backdrop.append(renderMediaFrame(mediaModel));
+  poster.append(renderMediaFrame(mediaModel));
+  media.append(backdrop, poster);
 
   const copy = element("div", "tonight-hero__copy");
   copy.append(element("p", "eyebrow", `TONIGHT / ${channel.label}`));
@@ -198,9 +241,9 @@ function renderBatchToolbar(recommendation, channel) {
   return toolbar;
 }
 
-function renderShelves(recommendation) {
+function renderShelves(recommendation, channels = CHANNELS) {
   const shelves = element("div", "tonight-shelves");
-  for (const channel of CHANNELS) {
+  for (const channel of channels) {
     const state = channelState(recommendation, channel);
     const items = batchItems(state).slice(0, MAX_INITIAL_CARDS).map(displayItem);
     shelves.append(renderShelf({
@@ -222,25 +265,56 @@ export function configureTonight(options = {}) {
     ...options,
     api: options.api || dependencies.api,
   };
+  if (mountedTonight && options.root && mountedTonight.root !== options.root) mountedTonight = null;
+}
+
+function createTonightPage(recommendation) {
+  const page = element("div", "tonight-page");
+  const intro = element("header", "tonight-intro");
+  const introCopy = element("div", "tonight-intro__copy");
+  const deck = element("p", "tonight-intro__deck");
+  introCopy.append(
+    element("p", "eyebrow", "AI CURATION / 今晚"),
+    element("h1", "tonight-intro__title", "今晚，只看值得开始的。"),
+    deck,
+  );
+  const tabs = renderChannelTabs(recommendation);
+  const stage = element("div", "tonight-stage");
+  intro.append(introCopy, tabs);
+  page.append(intro, stage);
+  return { page, deck, tabs, stage };
+}
+
+function updateTonightPage(mount, recommendation) {
+  const activeChannel = activeChannelFor(recommendation);
+  mount.deck.textContent = personalizationCopy(recommendation);
+  for (const tab of mount.tabs.children || []) {
+    const active = tab.dataset?.channel === activeChannel.slug;
+    tab.setAttribute?.("aria-selected", active ? "true" : "false");
+    if (active) tab.setAttribute?.("aria-current", "page");
+    else tab.removeAttribute?.("aria-current");
+  }
+  mount.stage.replaceChildren(
+    renderHero(recommendation, activeChannel),
+    renderBatchToolbar(recommendation, activeChannel),
+    renderShelves(recommendation, [activeChannel]),
+  );
+  mount.page.dataset.channel = activeChannel.slug;
+  return mount.page;
 }
 
 export function renderTonight(state = dependencies.store?.getState?.() || {}) {
   const recommendation = recommendationState(state);
-  const activeChannel = activeChannelFor(recommendation);
-  const page = element("div", "tonight-page");
-
-  const intro = element("header", "tonight-intro");
-  const introCopy = element("div", "tonight-intro__copy");
-  introCopy.append(
-    element("p", "eyebrow", "AI CURATION / 今晚"),
-    element("h1", "tonight-intro__title", "今晚，只看值得开始的。"),
-    element("p", "tonight-intro__deck", "一个会记住频道、批次与撤回路径的本地策展台。"),
-  );
-  intro.append(introCopy, renderChannelTabs(recommendation));
-  page.append(intro, renderHero(recommendation, activeChannel), renderBatchToolbar(recommendation, activeChannel), renderShelves(recommendation));
-
-  if (dependencies.root) dependencies.root.replaceChildren(page);
-  return page;
+  const root = dependencies.root;
+  const mountedInRoot = Boolean(root && mountedTonight?.root === root && (root.children ? [...root.children].includes(mountedTonight.page) : mountedTonight.page?.isConnected));
+  if (!mountedInRoot) {
+    const mount = createTonightPage(recommendation);
+    mountedTonight = root ? { ...mount, root } : null;
+    updateTonightPage(mount, recommendation);
+    if (root) root.replaceChildren(mount.page);
+    return mount.page;
+  }
+  return updateTonightPage(mountedTonight, recommendation);
 }
 
 function configuredStore() {
