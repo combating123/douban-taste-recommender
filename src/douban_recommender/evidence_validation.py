@@ -155,20 +155,19 @@ def _validate_capture(path: Path, relative: str, capture: Mapping[str, Any], bun
             if (declared_width, declared_height) != (decoded_width, decoded_height):
                 raise EvidenceValidationError(f"{relative}: declared image size does not match decoded PNG dimensions")
             marker = capture.get("edge_marker")
-            if marker is not None:
-                if not isinstance(marker, Mapping):
-                    raise EvidenceValidationError(f"{relative}: edge marker metadata must be an object")
-                x = int(_number(marker.get("x"), f"{relative}.edge_marker.x"))
-                y = int(_number(marker.get("y"), f"{relative}.edge_marker.y"))
-                expected_rgba = marker.get("rgba")
-                tolerance = int(_number(marker.get("tolerance", 0), f"{relative}.edge_marker.tolerance"))
-                if not isinstance(expected_rgba, list) or len(expected_rgba) != 4 or not all(isinstance(channel, int) and 0 <= channel <= 255 for channel in expected_rgba):
-                    raise EvidenceValidationError(f"{relative}: edge marker rgba must contain four byte values")
-                if not (0 <= x < decoded_width and 0 <= y < decoded_height):
-                    raise EvidenceValidationError(f"{relative}: edge marker coordinate is outside the decoded image")
-                actual = image.convert("RGBA").getpixel((x, y))
-                if any(abs(actual[index] - expected_rgba[index]) > tolerance for index in range(4)):
-                    raise EvidenceValidationError(f"{relative}: edge marker is missing at the declared right/bottom coordinate")
+            if not isinstance(marker, Mapping):
+                raise EvidenceValidationError(f"{relative}: edge marker metadata is required")
+            x = int(_number(marker.get("x"), f"{relative}.edge_marker.x"))
+            y = int(_number(marker.get("y"), f"{relative}.edge_marker.y"))
+            expected_rgba = marker.get("rgba")
+            tolerance = int(_number(marker.get("tolerance", 0), f"{relative}.edge_marker.tolerance"))
+            if not isinstance(expected_rgba, list) or len(expected_rgba) != 4 or not all(isinstance(channel, int) and 0 <= channel <= 255 for channel in expected_rgba):
+                raise EvidenceValidationError(f"{relative}: edge marker rgba must contain four byte values")
+            if not (0 <= x < decoded_width and 0 <= y < decoded_height):
+                raise EvidenceValidationError(f"{relative}: edge marker coordinate is outside the decoded image")
+            actual = image.convert("RGBA").getpixel((x, y))
+            if any(abs(actual[index] - expected_rgba[index]) > tolerance for index in range(4)):
+                raise EvidenceValidationError(f"{relative}: edge marker is missing at the declared right/bottom coordinate")
     except EvidenceValidationError:
         raise
     except Exception as error:

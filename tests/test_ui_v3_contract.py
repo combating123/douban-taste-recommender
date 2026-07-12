@@ -232,14 +232,22 @@ class UiV3ContractTests(unittest.TestCase):
             const firstHundred = Object.fromEntries(Array.from({{ length: 100 }}, (_, index) => [`/route-${{String(index).padStart(3, "0")}}`, index]));
 
             const store = createStore({{ ...createEmptyUiState(), scrollByRoute: firstHundred }}, reduceUiState);
-            store.subscribe((state) => persistUiState(state, storage));
+            let persisted = null;
+            store.subscribe((state) => {{ persisted = persistUiState(state, storage); }});
             store.dispatch({{ type: "route/scrollSaved", path: "/route-000", y: 9000 }});
             if (Object.keys(store.getState().scrollByRoute).at(-1) !== "/route-000") throw new Error("reducer update did not become the most recent route");
             store.dispatch({{ type: "route/scrollSaved", path: "/route-100", y: 100 }});
+            const live = store.getState().scrollByRoute;
+            const liveKeys = Object.keys(live);
+            if (liveKeys.length !== 100) throw new Error(`live reducer retained ${{liveKeys.length}} routes instead of 100`);
+            if ("/route-001" in live) throw new Error("live reducer did not evict the oldest non-refreshed route");
+            if (liveKeys.at(-2) !== "/route-000" || liveKeys.at(-1) !== "/route-100") throw new Error(`live reducer lost refreshed/new recency: ${{liveKeys.slice(-3)}}`);
             const reducerRestored = restoreUiState(storage);
             const reducerKeys = Object.keys(reducerRestored.scrollByRoute);
             if (reducerKeys.length !== 100 || reducerKeys.at(-2) !== "/route-000" || reducerKeys.at(-1) !== "/route-100") throw new Error(`reducer persistence lost latest routes: ${{reducerKeys.slice(-3)}}`);
             if ("/route-001" in reducerRestored.scrollByRoute) throw new Error("reducer persistence evicted a newer route instead of the oldest route");
+            if (JSON.stringify(live) !== JSON.stringify(persisted.scrollByRoute)) throw new Error("live and persisted scroll maps differ");
+            if (JSON.stringify(live) !== JSON.stringify(reducerRestored.scrollByRoute)) throw new Error("live and persisted/restored scroll maps differ");
 
             persistUiState({{ ...createEmptyUiState(), scrollByRoute: firstHundred }}, storage);
             saveScroll("/route-000", 9100);
@@ -248,13 +256,16 @@ class UiV3ContractTests(unittest.TestCase):
             const directKeys = Object.keys(directRestored.scrollByRoute);
             if (directKeys.length !== 100 || directKeys.at(-2) !== "/route-000" || directKeys.at(-1) !== "/route-100") throw new Error(`saveScroll persistence lost latest routes: ${{directKeys.slice(-3)}}`);
             if ("/route-001" in directRestored.scrollByRoute) throw new Error("saveScroll persistence evicted a newer route instead of the oldest route");
-            console.log(JSON.stringify({{ memory: Object.keys(store.getState().scrollByRoute).slice(-3), reducerKeys: reducerKeys.slice(-3), directKeys: directKeys.slice(-3) }}));
+            console.log(JSON.stringify({{ live, persisted: persisted.scrollByRoute, restored: reducerRestored.scrollByRoute, direct: directRestored.scrollByRoute }}));
             '''
         )
         result = json.loads(output)
-        self.assertEqual(["/route-000", "/route-100"], result["memory"][-2:])
-        self.assertEqual(["/route-000", "/route-100"], result["reducerKeys"][-2:])
-        self.assertEqual(["/route-000", "/route-100"], result["directKeys"][-2:])
+        self.assertEqual(100, len(result["live"]))
+        self.assertNotIn("/route-001", result["live"])
+        self.assertEqual(["/route-000", "/route-100"], list(result["live"])[-2:])
+        self.assertEqual(result["live"], result["persisted"])
+        self.assertEqual(result["live"], result["restored"])
+        self.assertEqual(list(result["live"]), list(result["direct"]))
 
     def test_command_lens_runtime_and_persisted_state_reject_sensitive_text_content(self):
         output = run_node_module(

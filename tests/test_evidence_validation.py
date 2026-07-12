@@ -124,6 +124,25 @@ class EvidenceValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(EvidenceValidationError, "edge marker"):
                 validate_evidence_manifest(manifest_path)
 
+    def test_rejects_screenshot_capture_when_edge_marker_metadata_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle = Path(temporary)
+            screenshot = bundle / "screenshots" / "390x844" / "missing-marker-metadata.png"
+            screenshot.parent.mkdir(parents=True)
+            Image.new("RGBA", (390, 844), (12, 18, 32, 255)).save(screenshot, format="PNG")
+            manifest_path = write_evidence_manifest(
+                bundle,
+                source_commit=SOURCE_COMMIT,
+                source_tree=SOURCE_TREE,
+                capture_mode="raw-device-pixels",
+                screenshot_captures={
+                    "screenshots/390x844/missing-marker-metadata.png": capture_record()
+                },
+            )
+
+            with self.assertRaisesRegex(EvidenceValidationError, "edge marker metadata is required"):
+                validate_evidence_manifest(manifest_path)
+
     def test_rejects_unlisted_artifacts_added_after_manifest_generation(self):
         with tempfile.TemporaryDirectory() as temporary:
             bundle = Path(temporary)

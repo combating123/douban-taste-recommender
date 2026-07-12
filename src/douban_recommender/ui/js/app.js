@@ -1,7 +1,7 @@
 import { renderRoutePlaceholder, setCurrentNavigation, setText } from "./core/dom.js";
 import { postV2 } from "./core/api.js";
 import { createRouter } from "./core/router.js";
-import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, sanitizeNonSensitiveText, sanitizeNonSensitiveValue } from "./core/store.js";
+import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, sanitizeNonSensitiveText, sanitizeNonSensitiveValue, saveScrollByRoute } from "./core/store.js";
 import { migrateLegacyClientState } from "./core/migrate.js";
 import { configureRecoveryBoundary, invalidateRecoveryRender, rememberLastStableState, renderSafely } from "./core/recovery.js";
 import { announce } from "./core/focus.js";
@@ -204,14 +204,8 @@ export function reduceUiState(state, action) {
           : state.recommendation,
       };
     case "route/scrollSaved": {
-      const path = typeof action.path === "string" && action.path.startsWith("/") && !action.path.startsWith("//")
-        ? action.path
-        : "";
-      if (!path) return state;
-      const y = Number.isFinite(action.y) && action.y >= 0 ? Math.floor(action.y) : 0;
-      const scrollByRoute = { ...state.scrollByRoute };
-      delete scrollByRoute[path];
-      scrollByRoute[path] = y;
+      const scrollByRoute = saveScrollByRoute(state.scrollByRoute, action.path, action.y);
+      if (!scrollByRoute) return state;
       return { ...state, scrollByRoute };
     }
     case "rail/changed":
