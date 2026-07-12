@@ -1,4 +1,4 @@
-import { postV2 } from "../core/api.js";
+import { getV2, postV2 } from "../core/api.js";
 import { adaptCatalogMedia, adaptPersonMedia } from "../core/media.js";
 import { renderMediaFrame } from "../components/media-frame.js";
 import { renderTitleCard } from "../components/title-card.js";
@@ -9,6 +9,9 @@ const RELATION_BUDGET_MS = 900;
 const SAFE_ROUTE_SEGMENT = /^[A-Za-z0-9:._~-]+$/;
 const portraitPrefetchInFlight = new Set();
 const portraitPrefetched = new Set();
+const portraitJobState = new Map();
+const portraitJobTimers = new Map();
+let activeDetail = null;
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -39,8 +42,11 @@ async function requestJson(path, { signal } = {}) {
 let dependencies = {
   root: null,
   fetchJson: requestJson,
-  api: { postV2 },
+  api: { postV2, getV2 },
   openPersonSheet,
+  setTimer: (callback, delay) => setTimeout(callback, delay),
+  clearTimer: (id) => clearTimeout(id),
+  mediaPollInterval: 1200,
   onExploreUniverse: () => {},
 };
 
@@ -49,7 +55,10 @@ export function configureDetail(options = {}) {
     ...dependencies,
     ...options,
     fetchJson: options.fetchJson || dependencies.fetchJson,
-    api: options.api || { postV2: options.postV2 || dependencies.api.postV2 },
+    api: options.api || { postV2: options.postV2 || dependencies.api.postV2, getV2: options.getV2 || dependencies.api.getV2 },
+    setTimer: options.setTimer || dependencies.setTimer,
+    clearTimer: options.clearTimer || dependencies.clearTimer,
+    mediaPollInterval: options.mediaPollInterval || dependencies.mediaPollInterval,
     openPersonSheet: options.openPersonSheet || dependencies.openPersonSheet,
     onExploreUniverse: options.onExploreUniverse || dependencies.onExploreUniverse,
   };
@@ -180,11 +189,14 @@ function renderPeople(title) {
     const portrait = element("div", "person-card__portrait");
     portrait.append(renderMediaFrame(adaptPersonMedia(person)));
     const copy = element("div", "person-card__copy");
+    const personId = textValue(person?.id);
+    const jobState = portraitJobState.get(personId);
     copy.append(
       element("span", "person-card__role", roleLabel(person?.role)),
-      element("strong", "person-card__name", textValue(person?.name, "未命名人物")),
+      element("strong", "person-card__name", textValue(person?.name, "Unnamed person")),
       element("span", "person-card__status", adaptPersonMedia(person).status === "ready" ? "本地肖像已就绪" : "身份卡 · 肖像待补"),
     );
+    if (jobState) copy.append(element("span", "person-card__job", jobState));
     button.append(portrait, copy);
     button.addEventListener("click", () => {
       const rect = typeof button.getBoundingClientRect === "function" ? button.getBoundingClientRect() : null;
@@ -357,11 +369,77 @@ async function boundedUniverse(titleId, signal) {
   }
 }
 
+function detailApiGet(path) {
+  if (typeof dependencies.api.getV2 === "function") return dependencies.api.getV2(path);
+  return getV2(path);
+}
+
+function findPeopleSection(page) {
+  if (!page) return null;
+  const stack = [page];
+  while (stack.length) {
+    const node = stack.shift();
+    if (node?.id === "people") return node;
+    stack.unshift(...(node?.children || []));
+  }
+  return null;
+}
+
+function patchPeopleSection(title) {
+  const page = activeDetail?.page;
+  const current = findPeopleSection(page);
+  if (!page || !current) return;
+  const next = renderPeople(title);
+  const siblings = page.children || [];
+  const index = siblings.indexOf ? siblings.indexOf(current) : Array.prototype.indexOf.call(siblings, current);
+  if (index < 0) return;
+  siblings[index] = next;
+  next.parentNode = page;
+  current.parentNode = null;
+}
+
+async function refreshTitlePeople(titleId) {
+  if (!activeDetail || activeDetail.titleId !== titleId) return null;
+  const refreshed = await dependencies.fetchJson(`/api/v2/titles/${titleId}`);
+  if (!activeDetail || activeDetail.titleId !== titleId) return null;
+  activeDetail.title = refreshed;
+  setPersonContext(refreshed);
+  patchPeopleSection(refreshed);
+  return refreshed;
+}
+
+function schedulePortraitPoll(personId, jobId, titleId) {
+  if (!jobId || portraitJobTimers.has(personId)) return;
+  const timer = dependencies.setTimer(async () => {
+    portraitJobTimers.delete(personId);
+    try {
+      const job = await detailApiGet(`/api/v2/media/jobs/${encodeURIComponent(jobId)}`);
+      const state = textValue(job?.state).toLowerCase();
+      if (state === "ready" || state === "degraded") {
+        portraitJobState.set(personId, state === "ready" ? "success" : "failed");
+        await refreshTitlePeople(titleId);
+        patchPeopleSection(activeDetail?.title || {});
+        return;
+      }
+      if (["queued", "pending", "processing", "resolving", "downloading", "validating"].includes(state)) {
+        schedulePortraitPoll(personId, jobId, titleId);
+      } else {
+        portraitJobState.set(personId, "failed");
+        patchPeopleSection(activeDetail?.title || {});
+      }
+    } catch {
+      portraitJobState.set(personId, "failed");
+      patchPeopleSection(activeDetail?.title || {});
+    }
+  }, dependencies.mediaPollInterval);
+  portraitJobTimers.set(personId, timer);
+}
+
 /**
  * Enqueues only directors and the first eight cast portraits. Name matching is
  * exact against title.people, while every job uses the backend-provided person id.
  */
-export function prefetchVisiblePeople(title = {}) {
+export function prefetchVisiblePeople(title = {}, { titleId = textValue(title?.item_key) } = {}) {
   const item = title?.item && typeof title.item === "object" ? title.item : {};
   const people = Array.isArray(title?.people) ? title.people : [];
   const directors = listValue(item.directors);
@@ -381,6 +459,8 @@ export function prefetchVisiblePeople(title = {}) {
   const jobs = uniquePeople.map(async (person) => {
     const personId = textValue(person.id);
     portraitPrefetchInFlight.add(personId);
+    portraitJobState.set(personId, "in-progress");
+    patchPeopleSection(title);
     try {
       const job = await dependencies.api.postV2("/api/v2/media/jobs", {
         kind: "portrait",
@@ -390,9 +470,21 @@ export function prefetchVisiblePeople(title = {}) {
         work_context: [textValue(title?.title, textValue(item.title, "当前作品"))],
         priority: 0,
       });
-      if (job && typeof job === "object") portraitPrefetched.add(personId);
+      if (job && typeof job === "object") {
+        portraitPrefetched.add(personId);
+        const jobId = textValue(job.job_id) || textValue(job.id);
+        const state = textValue(job.state).toLowerCase();
+        if (state === "ready" || state === "degraded") {
+          portraitJobState.set(personId, state === "ready" ? "success" : "failed");
+          void refreshTitlePeople(titleId);
+        } else {
+          schedulePortraitPoll(personId, jobId, titleId);
+        }
+      }
       return job;
     } catch {
+      portraitJobState.set(personId, "failed");
+      patchPeopleSection(title);
       return null;
     } finally {
       portraitPrefetchInFlight.delete(personId);
@@ -414,7 +506,9 @@ export async function renderTitleDetail(titleId, options = {}) {
     const committed = await commitView(page, { heading: textValue(title?.title, "作品详情") }, options);
     if (!committed) return null;
     setPersonContext(title);
-    void prefetchVisiblePeople(title);
+    activeDetail = { titleId: cleanId, page, title };
+    void prefetchVisiblePeople(title, { titleId: cleanId });
+    patchPeopleSection(title);
     return page;
   } catch (error) {
     if (options.signal?.aborted || error?.name === "AbortError") return null;

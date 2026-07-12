@@ -330,15 +330,11 @@ export function reduceUiState(state, action) {
 
 function applyRailMode(mode) {
   const body = document.body;
-  const collapseButton = document.getElementById("rail-collapse-toggle");
   const hideButton = document.getElementById("rail-hide-toggle");
   const restoreButton = document.getElementById("rail-restore");
   const hidden = mode === "hidden";
-  const collapsed = mode === "collapsed";
 
-  body.classList.toggle("rail-collapsed", collapsed);
   body.classList.toggle("rail-hidden", hidden);
-  if (collapseButton) collapseButton.setAttribute("aria-expanded", String(!collapsed && !hidden));
   if (hideButton) hideButton.setAttribute("aria-expanded", String(!hidden));
   if (restoreButton) {
     restoreButton.hidden = !hidden;
@@ -775,15 +771,10 @@ export function bootstrapCineScopeShell() {
   };
 
   applyRailMode(store.getState().rail.mode);
-  const collapseToggle = document.getElementById("rail-collapse-toggle");
   const hideToggle = document.getElementById("rail-hide-toggle");
   const railRestore = document.getElementById("rail-restore");
-  const onCollapse = () => {
-    setRailMode(store.getState().rail.mode === "collapsed" ? "expanded" : "collapsed");
-  };
   const onHide = () => setRailMode("hidden");
   const onRestore = () => setRailMode("expanded");
-  collapseToggle?.addEventListener("click", onCollapse);
   hideToggle?.addEventListener("click", onHide);
   railRestore?.addEventListener("click", onRestore);
 
@@ -799,6 +790,10 @@ export function bootstrapCineScopeShell() {
     onRoute: routeHandler,
     onScrollSaved: (path, y) => store.dispatch({ type: "route/scrollSaved", path, y }),
   });
+  configureTonight({ navigate: (path, state) => router.navigate(path, state) });
+  if (globalThis.window?.location?.pathname === "/" && globalThis.window.history?.replaceState) {
+    globalThis.window.history.replaceState({}, "", "/tonight");
+  }
 
   const uninstallAuditHook = installAuditHook();
   const uninstallAcceptanceHook = installAcceptanceHook({ store, router });
@@ -820,7 +815,6 @@ export function bootstrapCineScopeShell() {
       unbindNavigation();
       unsubscribe();
       commandTrigger?.removeEventListener("click", onCommandTrigger);
-      collapseToggle?.removeEventListener("click", onCollapse);
       hideToggle?.removeEventListener("click", onHide);
       railRestore?.removeEventListener("click", onRestore);
       closePersonSheet({ restoreFocus: false });

@@ -90,12 +90,6 @@
 
 .bottom-nav { display: none; }
 
-.rail-collapsed .app-rail { width: 56px; padding-right: 0.35rem; padding-left: 0.35rem; }
-.rail-collapsed .cinescope-shell { grid-template-columns: 56px minmax(0, 1fr); }
-.rail-collapsed .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.rail-collapsed .rail-control { font-size: 0; }
-.rail-collapsed .rail-control::before { font-size: 0.82rem; content: "≡"; }
-
 .rail-hidden .cinescope-shell { grid-template-columns: minmax(0, 1fr); }
 .rail-hidden .app-rail { display: none; }
 

@@ -2,7 +2,7 @@ export const UI_STATE_KEY = "cinescope.ui.state";
 export const UI_SCHEMA_VERSION = 3;
 
 const CHANNEL_SLUGS = ["movie", "series", "anime-series"];
-const RAIL_MODES = new Set(["expanded", "collapsed", "hidden"]);
+const RAIL_MODES = new Set(["expanded", "hidden"]);
 const LIBRARY_STATES = new Set(["all", "watched", "wish", "wanted", "candidate", "rated", "collect", "ready", "hidden", "archived"]);
 const SENSITIVE_KEY = /(?:cookie|api[_-]?key|authorization|headers?|token|secret|password)/i;
 const EXTERNAL_URL = /^(?:https?:)?\/\//i;

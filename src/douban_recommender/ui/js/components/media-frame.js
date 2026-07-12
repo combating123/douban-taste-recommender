@@ -13,6 +13,7 @@ const IMAGE_ALT_LABELS = {
 };
 
 const STATUS_LABELS = {
+  error: "媒体加载失败",
   pending: "正在准备本地素材",
   processing: "正在处理本地素材",
   unavailable: "本地素材不可用",
@@ -66,17 +67,40 @@ export function renderMediaFrame(asset = {}) {
 
   if (normalized.status !== "ready" || !isLocalMediaUrl(normalized.localUrl)) return frame;
 
-  frame.dataset.mediaState = "loading";
-  preloadLocalMedia(normalized.localUrl).then((image) => {
-    if (!image || frame.firstElementChild !== fallback) return;
-
-    image.alt = normalized.title + " " + IMAGE_ALT_LABELS[normalized.kind];
-    image.className = "media-frame__image";
-    frame.replaceChildren(image);
-    frame.dataset.mediaState = "ready";
-  }).catch(() => {
-    if (frame.firstElementChild === fallback) frame.dataset.mediaState = "fallback";
-  });
+  let generation = 0;
+  const showError = () => {
+    if (frame.firstElementChild !== fallback) frame.replaceChildren(fallback);
+    frame.dataset.mediaState = "error";
+    fallback.dataset.mediaState = "error";
+    const status = fallback.querySelector?.(".media-fallback__status") || fallback.children?.[2];
+    if (status) status.textContent = STATUS_LABELS.error || "媒体加载失败";
+    const retry = createElement("button", "media-frame__retry", "重试");
+    retry.type = "button";
+    if (typeof retry.addEventListener === "function") retry.addEventListener("click", () => load());
+    else retry.onclick = () => load();
+    frame.append(retry);
+  };
+  const load = () => {
+    const requestGeneration = ++generation;
+    frame.dataset.mediaState = "loading";
+    fallback.dataset.mediaState = "loading";
+    frame.replaceChildren(fallback);
+    preloadLocalMedia(normalized.localUrl).then((image) => {
+      if (requestGeneration !== generation) return;
+      if (!image) {
+        showError();
+        return;
+      }
+      image.tagName ||= "IMG";
+      image.alt = normalized.title + " " + IMAGE_ALT_LABELS[normalized.kind];
+      image.className = "media-frame__image";
+      frame.replaceChildren(image);
+      frame.dataset.mediaState = "ready";
+    }).catch(() => {
+      if (requestGeneration === generation) showError();
+    });
+  };
+  load();
 
   return frame;
 }

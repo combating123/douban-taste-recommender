@@ -699,6 +699,51 @@ class UiV3ContractTests(unittest.TestCase):
         )
         self.assertEqual(0, json.loads(output)["imageCreates"])
 
+    def test_media_frame_decode_failure_enters_terminal_error_and_retry_can_recover(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.className = ""; this.textContent = ""; this.type = ""; this.disabled = false;
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const attempts = [];
+            globalThis.Image = class FakeImage {{
+              constructor() {{ this.children = []; this.naturalWidth = attempts.length === 0 ? 0 : 640; }}
+              set src(value) {{ this._src = value; attempts.push(value); queueMicrotask(() => this.onload?.()); }}
+              get src() {{ return this._src; }}
+              decode() {{ return this.naturalWidth ? Promise.resolve() : Promise.reject(new Error("decode failed")); }}
+            }};
+            const {{ renderMediaFrame }} = await import("{module_url('js/components/media-frame.js')}");
+            const frame = renderMediaFrame({{
+              localUrl: "/media/retry-poster.webp",
+              kind: "poster",
+              title: "Retry Poster",
+              status: "ready",
+            }});
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            const retry = frame.children.find((node) => node.tagName === "BUTTON");
+            if (frame.dataset.mediaState !== "error") throw new Error(`decode failure stayed non-terminal: ${{frame.dataset.mediaState}}`);
+            if (!retry || retry.disabled) throw new Error("terminal media error did not expose an enabled retry action");
+            retry.onclick();
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            if (frame.dataset.mediaState !== "ready" || frame.firstElementChild?.tagName !== "IMG") throw new Error("retry did not recover to ready image");
+            console.log(JSON.stringify({{ attempts, state: frame.dataset.mediaState, first: frame.firstElementChild.tagName }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, len(result["attempts"]))
+        self.assertEqual("ready", result["state"])
+
     def test_title_cards_and_shelves_use_text_content_for_untrusted_copy(self):
         sources = (
             (UI_ROOT / "js" / "components" / "title-card.js").read_text(encoding="utf-8")
@@ -767,6 +812,19 @@ class UiV3ContractTests(unittest.TestCase):
         rendered = json.loads(output)
         self.assertTrue(rendered["cardHasUnsafeText"])
         self.assertTrue(rendered["shelfHasUnsafeText"])
+
+    def test_shell_removes_collapsed_rail_bottom_nav_is_four_columns_and_shelves_have_empty_state(self):
+        store = (UI_ROOT / "js" / "core" / "store.js").read_text(encoding="utf-8")
+        app = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        shell = (UI_ROOT / "styles" / "shell.css").read_text(encoding="utf-8")
+        responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
+        shelf = (UI_ROOT / "js" / "components" / "shelf.js").read_text(encoding="utf-8")
+
+        self.assertNotIn('"collapsed"', store)
+        self.assertNotIn("rail-collapsed", app + shell + responsive)
+        self.assertRegex(shell + responsive, r"\.bottom-nav\s*\{[\s\S]*?grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)")
+        self.assertNotRegex(responsive, r"grid-template-columns:\s*repeat\(5,")
+        self.assertIn("title-shelf__empty", shelf)
 
     def test_component_styles_and_motion_load_after_shell_with_reduced_motion_budget(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
@@ -1166,7 +1224,7 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual([9], rendered["shelfSizes"])
         self.assertEqual("太相似", rendered["calls"][0]["payload"]["reason"])
 
-    def test_tonight_channel_switch_keeps_root_mounted_and_updates_history_in_place(self):
+    def test_tonight_channel_switch_delegates_history_to_router_and_keeps_nodes_stable(self):
         output = run_node_module(
             f'''
             import {{ configureTonight, renderTonight }} from "{module_url('js/features/tonight.js')}";
@@ -1183,7 +1241,7 @@ class UiV3ContractTests(unittest.TestCase):
             }}
             globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }};
             const historyPaths = [];
-            globalThis.window = {{ history: {{ pushState(_state, _title, path) {{ historyPaths.push(path); }} }} }};
+            globalThis.window = {{ history: {{ pushState(_state, _title, path) {{ historyPaths.push(path); throw new Error("Tonight bypassed router history ownership"); }} }} }};
             globalThis.location = {{ origin: "https://cinescope.test" }};
 
             const root = new FakeElement("main");
@@ -1193,36 +1251,110 @@ class UiV3ContractTests(unittest.TestCase):
             const state = {{ activePath: "/tonight/movie", recommendation: {{
               activeChannel: "movie",
               personalization: {{ source: "douban-sync", watched_count: 244, wish_count: 36, rated_count: 120 }},
-              channels: {{ movie: makeChannel("电影候选"), series: makeChannel("剧集候选"), "anime-series": makeChannel("动画候选") }},
+              channels: {{ movie: makeChannel("MovieCandidate"), series: makeChannel("SeriesCandidate"), "anime-series": makeChannel("AnimeCandidate") }},
             }} }};
             const store = {{
               getState: () => state,
               dispatch(action) {{
+                if (action.type === "route/changed") {{
+                  state.activePath = action.route.path;
+                  state.activeParams = action.route.params;
+                  state.recommendation.activeChannel = action.route.params.channel;
+                }}
                 if (action.type === "recommendation/channelSelected") {{
-                  state.activePath = action.path;
-                  state.recommendation.activeChannel = action.channel;
+                  throw new Error("channel switch should be represented by the router route/changed action");
                 }}
               }},
             }};
-            configureTonight({{ root, store, api: {{ postV2() {{}} }} }});
+            const routed = [];
+            const navigate = async (path) => {{
+              routed.push(path);
+              store.dispatch({{ type: "route/changed", route: {{ name: "tonight-channel", path, params: {{ channel: path.split("/").pop() }} }} }});
+              return {{ path }};
+            }};
+            configureTonight({{ root, store, api: {{ postV2() {{}} }}, navigate }});
             const firstPage = renderTonight(state);
+            const firstStage = firstPage.children.find((node) => node.className === "tonight-stage");
+            const firstHero = firstStage.firstElementChild;
+            const firstToolbar = firstStage.children[1];
+            const firstInput = firstToolbar.children.flatMap((node) => node.children).find((node) => node.className === "tonight-reason");
+            firstInput.value = "keep my reason";
             const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
             const seriesTab = collect(firstPage).find((node) => node.dataset?.channel === "series");
             if (!seriesTab?.onclick) throw new Error("series tab was not an interactive in-place control");
-            seriesTab.onclick();
+            await seriesTab.onclick();
             const secondPage = renderTonight(state);
+            const secondStage = secondPage.children.find((node) => node.className === "tonight-stage");
+            const secondToolbar = secondStage.children[1];
+            const secondInput = secondToolbar.children.flatMap((node) => node.children).find((node) => node.className === "tonight-reason");
             const visible = collect(secondPage).map((node) => node.textContent).join(" ");
             if (rootReplacements !== 1 || root.firstElementChild !== firstPage || secondPage !== firstPage) throw new Error(`Tonight root remounted: ${{rootReplacements}}`);
-            if (historyPaths.join() !== "/tonight/series" || state.activePath !== "/tonight/series") throw new Error("channel URL/state did not update in place");
-            if (!visible.includes("剧集候选") || visible.includes("电影候选")) throw new Error(`active content was not atomically switched: ${{visible}}`);
-            if (!visible.includes("基于你的 244 部看过 · 36 部想看")) throw new Error(`personalization provenance missing: ${{visible}}`);
-            console.log(JSON.stringify({{ rootReplacements, historyPaths, activePath: state.activePath, samePage: secondPage === firstPage, visible }}));
+            if (secondStage !== firstStage || secondStage.firstElementChild !== firstHero || secondToolbar !== firstToolbar) throw new Error("Tonight replaced stable stage/hero/toolbar nodes instead of updating in place");
+            if (secondInput !== firstInput || secondInput.value !== "keep my reason") throw new Error("Tonight lost focused intent input identity/value");
+            if (historyPaths.length !== 0 || routed.join() !== "/tonight/series" || state.activePath !== "/tonight/series") throw new Error("channel URL/state did not flow through router");
+            if (secondStage.firstElementChild.className.includes("motion-enter")) throw new Error("Tonight hero reintroduced opacity entry animation after mount");
+            if (!visible.includes("SeriesCandidate") || visible.includes("MovieCandidate")) throw new Error(`active content was not atomically switched: ${{visible}}`);
+            console.log(JSON.stringify({{ rootReplacements, routed, activePath: state.activePath, samePage: secondPage === firstPage, stableNodes: secondStage === firstStage && secondToolbar === firstToolbar && secondInput === firstInput }}));
             '''
         )
         result = json.loads(output)
         self.assertEqual(1, result["rootReplacements"])
         self.assertTrue(result["samePage"])
+        self.assertTrue(result["stableNodes"])
         self.assertEqual("/tonight/series", result["activePath"])
+
+    def test_tonight_missing_visible_media_jobs_poll_and_refresh_session_in_place(self):
+        output = run_node_module(
+            f'''
+            import {{ configureTonight, renderTonight }} from "{module_url('js/features/tonight.js')}";
+
+            class FakeElement {{
+              constructor(tagName) {{ this.tagName = tagName.toUpperCase(); this.children = []; this.dataset = {{}}; this.attributes = new Map(); this.className = ""; this.textContent = ""; this.disabled = false; this.value = ""; }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              removeAttribute(name) {{ this.attributes.delete(name); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const timers = [];
+            const posts = [];
+            const gets = [];
+            const actions = [];
+            const makeItem = (id, title, status = "missing") => ({{ item_key: id, title, year: 2024, media_type: "movie", poster: {{ url: status === "ready" ? `/media/${{id.replace(/[^a-z0-9]/gi, "-")}}.webp` : "", media_status: status }} }});
+            const state = {{ activePath: "/tonight/movie", recommendation: {{ sessionId: "session-42", activeChannel: "movie", channels: {{ movie: {{ sessionId: "session-42", active_batch: 1, batch: {{ index: 1, items: [makeItem("douban:1", "Missing One"), makeItem("douban:2", "Missing Two"), makeItem("douban:3", "Ready", "ready")] }} }}, series: {{}}, "anime-series": {{}} }} }} }};
+            const refreshedSession = {{ id: "session-42", channels: {{ movie: {{ batch: {{ index: 1, items: [makeItem("douban:1", "Ready One", "ready"), makeItem("douban:2", "Degraded Two", "degraded")] }} }} }} }};
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{ actions.push(action); if (action.type === "recommendation/sessionReceived") state.recommendation.channels.movie.batch.items = Object.values(action.session.channels)[0].batch.items; }},
+            }};
+            const api = {{
+              async postV2(path, payload) {{ posts.push({{ path, payload }}); return {{ job_id: `job-${{posts.length}}`, state: "queued" }}; }},
+              async getV2(path) {{ gets.push(path); return path.startsWith("/api/v2/media/jobs/") ? {{ id: path.split("/").pop(), state: "ready", result: {{ status: "ready", local_url: "/media/ready.webp" }} }} : refreshedSession; }},
+            }};
+            configureTonight({{ root: new FakeElement("main"), store, api, setTimer(callback) {{ timers.push(callback); return timers.length; }}, clearTimer() {{}}, mediaPollInterval: 1 }});
+            const page = renderTonight(state);
+            const stage = page.children.find((node) => node.className === "tonight-stage");
+            const hero = stage.firstElementChild;
+            if (posts.length !== 2) throw new Error(`expected hero+visible missing posters to enqueue once by item identity, got ${{posts.length}}`);
+            if (posts.some((call) => call.path !== "/api/v2/media/jobs" || call.payload.kind !== "poster" || !call.payload.identity_key)) throw new Error("Tonight media job payload was not schema-bound");
+            for (let index = 0; index < 4; index += 1) await Promise.resolve();
+            await timers.shift()();
+            await timers.shift()();
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            if (!gets.includes("/api/v2/recommend/sessions/session-42")) throw new Error(`ready media did not refresh session: ${{gets}}`);
+            renderTonight(state);
+            if (page.children.find((node) => node.className === "tonight-stage").firstElementChild !== hero) throw new Error("media refresh remounted Tonight hero instead of patching in place");
+            if (!actions.some((action) => action.type === "recommendation/sessionReceived" && action.source === "media-refresh")) throw new Error("refreshed session was not dispatched with media-refresh source");
+            console.log(JSON.stringify({{ posts, gets, actions: actions.map((action) => action.type), sameHero: stage.firstElementChild === hero }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, len(result["posts"]))
+        self.assertIn("/api/v2/recommend/sessions/session-42", result["gets"])
 
     def test_session_candidate_counts_flow_into_channels_and_persist(self):
         prelude = fake_dom_module_prelude()
@@ -2193,6 +2325,57 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(8, result["count"])
         self.assertNotIn("p-ready", result["ids"])
         self.assertNotIn("演员9", result["names"])
+
+    def test_detail_people_jobs_poll_refresh_title_and_patch_people_section(self):
+        output = run_node_module(
+            f'''
+            class FakeClassList {{ constructor(owner) {{ this.owner = owner; }} add(name) {{ this.owner.className = [...new Set(`${{this.owner.className}} ${{name}}`.split(/\\s+/).filter(Boolean))].join(" "); }} remove(name) {{ this.owner.className = this.owner.className.split(/\\s+/).filter((value) => value && value !== name).join(" "); }} toggle(name, force) {{ if (force) this.add(name); else this.remove(name); }} }}
+            class FakeElement {{
+              constructor(tagName) {{ this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}}; this.className = ""; this.textContent = ""; this.id = ""; this.hidden = false; this.disabled = false; this.classList = new FakeClassList(this); this.style = {{ setProperty() {{}} }}; }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
+              getBoundingClientRect() {{ return {{ left: 0, top: 0, width: 1, height: 1 }}; }}
+              focus() {{}}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+            globalThis.document = {{ createElement: (tag) => new FakeElement(tag), createDocumentFragment: () => new FakeElement("fragment") }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const root = new FakeElement("main");
+            const timers = [];
+            const posts = [];
+            const gets = [];
+            const titleMissing = {{ item_key: "douban:42", title: "People Poll", media_type: "movie", year: 2024, poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }}, item: {{ directors: ["Director A"], casts: ["Actor B"] }}, people: [{{ id: "person-director", role: "director", name: "Director A", portrait: {{ url: "", media_status: "missing" }} }}, {{ id: "person-cast", role: "cast", name: "Actor B", portrait: {{ url: "", media_status: "missing" }} }}] }};
+            const titleReady = {{ ...titleMissing, people: [{{ id: "person-director", role: "director", name: "Director A", portrait: {{ url: "/media/director.webp", media_status: "ready" }} }}, {{ id: "person-cast", role: "cast", name: "Actor B", portrait: {{ url: "", media_status: "degraded" }} }}] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => {{ gets.push(path); return path.startsWith("/api/v2/titles/") ? (gets.filter((item) => item === "/api/v2/titles/douban:42").length > 1 ? titleReady : titleMissing) : {{ focus_id: "douban:42", nodes: [], edges: [] }}; }},
+              api: {{ async postV2(path, payload) {{ posts.push({{ path, payload }}); return {{ job_id: `person-job-${{posts.length}}`, state: "queued" }}; }}, async getV2(path) {{ gets.push(path); return {{ id: path.split("/").pop(), state: path.endsWith("1") ? "ready" : "degraded" }}; }} }},
+              setTimer(callback) {{ timers.push(callback); return timers.length; }}, clearTimer() {{}}, mediaPollInterval: 1,
+            }});
+            await renderTitleDetail("douban:42");
+            const page = root.firstElementChild;
+            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            if (posts.length !== 2) throw new Error(`expected two portrait jobs, got ${{posts.length}}`);
+            if (!collect(page).map((node) => node.textContent).join(" ").includes("in-progress")) throw new Error("portrait controls did not enter pending state");
+            for (let index = 0; index < 4; index += 1) await Promise.resolve();
+            await timers.shift()();
+            await timers.shift()();
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            const titleReads = gets.filter((path) => path === "/api/v2/titles/douban:42").length;
+            const text = collect(page).map((node) => node.textContent).join(" ");
+            if (titleReads < 2) throw new Error(`terminal portrait jobs did not refresh title: ${{gets}}`);
+            if (root.firstElementChild !== page) throw new Error("detail refresh remounted the title page");
+            if (!text.includes("success") || !text.includes("failed") || !text.includes("本地肖像已就绪")) throw new Error(`terminal portrait state was not patched into people rail: ${{text}}`);
+            console.log(JSON.stringify({{ posts, gets, samePage: root.firstElementChild === page, text }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, len(result["posts"]))
+        self.assertTrue(result["samePage"])
 
     def test_person_sheet_is_contextual_closable_and_restores_trigger_focus(self):
         output = run_node_module(

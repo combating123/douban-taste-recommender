@@ -16,9 +16,15 @@ export function renderRoutePlaceholder(container, { heading, description }) {
 }
 
 export function setCurrentNavigation(path) {
-  document.querySelectorAll("[data-route]").forEach((link) => {
-    const current = link.getAttribute("href") === path;
-    if (current) link.setAttribute("aria-current", "page");
+  const links = [...document.querySelectorAll("[data-route]")];
+  const mobile = globalThis.window?.matchMedia?.("(max-width: 720px)")?.matches;
+  const matches = links.filter((link) => link.getAttribute("href") === path);
+  const preferred = (mobile && matches.find((link) => link.closest?.(".bottom-nav")))
+    || matches.find((link) => !link.closest?.(".bottom-nav"))
+    || matches[0]
+    || null;
+  links.forEach((link) => {
+    if (link === preferred) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
 }

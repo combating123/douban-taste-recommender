@@ -43,12 +43,19 @@ export function renderShelf({ title = "", items = [], batchState = {} } = {}) {
   const rail = document.createElement("div");
   rail.className = "title-shelf__rail";
   rail.setAttribute("role", "list");
-  for (const item of Array.isArray(items) ? items : []) {
+  const safeItems = Array.isArray(items) ? items : [];
+  for (const item of safeItems) {
     const entry = document.createElement("div");
     entry.className = "title-shelf__item";
     entry.setAttribute("role", "listitem");
     entry.append(renderTitleCard(item));
     rail.append(entry);
+  }
+  if (!safeItems.length) {
+    const empty = document.createElement("p");
+    empty.className = "title-shelf__empty";
+    empty.textContent = "???????????";
+    rail.append(empty);
   }
   shelf.append(rail);
   return shelf;

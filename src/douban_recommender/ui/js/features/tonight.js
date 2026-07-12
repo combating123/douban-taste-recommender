@@ -1,4 +1,4 @@
-import { backendChannel, postV2 } from "../core/api.js";
+import { backendChannel, getV2, postV2 } from "../core/api.js";
 import { adaptRecommendationMedia } from "../core/media.js";
 import { renderMediaFrame } from "../components/media-frame.js";
 import { renderShelf } from "../components/shelf.js";
@@ -14,10 +14,18 @@ const CHANNELS = Object.freeze([
 
 let dependencies = {
   store: null,
-  api: { postV2 },
+  api: { postV2, getV2 },
   root: null,
   openCommandLens: null,
+  navigate: null,
+  setTimer: (callback, delay) => setTimeout(callback, delay),
+  clearTimer: (id) => clearTimeout(id),
+  mediaPollInterval: 1200,
 };
+const mediaJobsByIdentity = new Map();
+const TERMINAL_MEDIA_STATES = new Set(["ready", "degraded", "failed", "unavailable"]);
+const POLLABLE_MEDIA_STATES = new Set(["queued", "pending", "processing", "resolving", "downloading", "validating"]);
+
 const batchOperations = new Map(CHANNELS.map((channel) => [channel.slug, {
   generation: 0,
   pending: false,
@@ -112,20 +120,15 @@ function personalizationCopy(recommendation) {
 export function selectTonightChannel(slug, { replace = false } = {}) {
   const channel = CHANNELS.find((entry) => entry.slug === slug);
   const store = dependencies.store;
-  if (!channel || !store?.dispatch) return false;
+  if (!channel || !store?.getState) return false;
   const current = activeChannelFor(recommendationState(store.getState?.() || {}));
   if (current.slug === channel.slug) return true;
-  const history = globalThis.window?.history;
-  const method = replace ? "replaceState" : "pushState";
-  if (typeof history?.[method] === "function") history[method]({}, "", channel.route);
-  store.dispatch({
-    type: "recommendation/channelSelected",
-    channel: channel.slug,
-    backend: channel.backend,
-    path: channel.route,
-  });
-  return true;
+  if (typeof dependencies.navigate === "function") {
+    return dependencies.navigate(channel.route, { replace });
+  }
+  return false;
 }
+
 
 function renderChannelTabs(recommendation) {
   const tabs = element("nav", "tonight-channels");
@@ -148,7 +151,7 @@ function renderChannelTabs(recommendation) {
 function renderHero(recommendation, channel) {
   const state = channelState(recommendation, channel);
   const item = batchItems(state)[0];
-  const hero = element("section", "tonight-hero motion-enter");
+  const hero = element("section", "tonight-hero");
   hero.setAttribute("aria-labelledby", "tonight-hero-title");
 
   const media = element("div", "tonight-hero__media");
@@ -280,9 +283,84 @@ function createTonightPage(recommendation) {
   );
   const tabs = renderChannelTabs(recommendation);
   const stage = element("div", "tonight-stage");
+  const hero = element("section", "tonight-hero");
+  hero.setAttribute("aria-labelledby", "tonight-hero-title");
+  const toolbar = element("section", "tonight-batch-toolbar");
+  const shelves = element("div", "tonight-shelves");
+  stage.append(hero, toolbar, shelves);
   intro.append(introCopy, tabs);
   page.append(intro, stage);
-  return { page, deck, tabs, stage };
+  return { page, deck, tabs, stage, hero, toolbar, shelves };
+}
+
+function replaceIntoStable(target, fresh) {
+  target.className = fresh.className;
+  for (const [key, value] of Object.entries(fresh.dataset || {})) target.dataset[key] = value;
+  target.replaceChildren(...(fresh.children || []));
+}
+
+function updateStableHero(mount, recommendation, channel) {
+  replaceIntoStable(mount.hero, renderHero(recommendation, channel));
+}
+
+function updateStableToolbar(mount, recommendation, channel) {
+  const state = channelState(recommendation, channel);
+  const candidateCounts = state.candidate_counts && typeof state.candidate_counts === "object" ? state.candidate_counts : {};
+  const toolbar = mount.toolbar;
+  toolbar.className = "tonight-batch-toolbar";
+  toolbar.setAttribute("aria-label", `${channel.label}批次工具栏`);
+  let controls = toolbar._stableControls;
+  if (!controls) {
+    const counts = element("div", "tonight-counts");
+    const controlsNode = element("div", "tonight-batch-controls");
+    const reason = document.createElement("input");
+    reason.className = "tonight-reason";
+    reason.type = "text";
+    reason.maxLength = 120;
+    reason.placeholder = "换一批的原因，例如：更轻松、更冷门";
+    reason.setAttribute("aria-label", "换一批原因");
+    const previous = element("button", "tonight-button", "撤回上一批");
+    previous.type = "button";
+    previous.addEventListener("click", () => { void restorePreviousBatch(channel.slug); });
+    const next = element("button", "tonight-button tonight-button--signal", "按原因换一批");
+    next.type = "button";
+    next.addEventListener("click", () => { void requestNextBatch(channel.slug, reason.value); });
+    controlsNode.append(reason, previous, next);
+    const status = element("p", "tonight-batch-status");
+    status.setAttribute("aria-live", "polite");
+    toolbar.append(counts, controlsNode, status);
+    controls = { counts, controlsNode, reason, previous, next, status };
+    toolbar._stableControls = controls;
+  }
+  controls.counts.replaceChildren(
+    renderCount("目标", candidateCounts.target_size, "target", { unknownWhenMissing: true }),
+    renderCount("实际返回", candidateCounts.returned_size, "returned"),
+    renderCount("候选池", countValue(state, "pool_size"), "pool"),
+    renderCount("匹配", countValue(state, "matched_size"), "matched"),
+    renderCount("本批可见", countValue(state, "visible_size"), "visible"),
+    renderCount("当前批次", state.active_batch || state.batch?.index, "batch"),
+  );
+  controls.previousBaseDisabled = numberValue(state.active_batch || state.batch?.index) <= 1;
+  const operation = batchOperation(channel.slug);
+  operation.controls = controls;
+  applyBatchOperationUi(channel.slug);
+}
+
+function updateStableShelves(mount, recommendation, activeChannel) {
+  mount.shelves.replaceChildren();
+  for (const channel of [activeChannel]) {
+    const state = channelState(recommendation, channel);
+    const items = batchItems(state).slice(0, MAX_INITIAL_CARDS).map(displayItem);
+    mount.shelves.append(renderShelf({
+      title: channel.label,
+      items,
+      batchState: {
+        poolSize: countValue(state, "pool_size"),
+        matchedSize: countValue(state, "matched_size"),
+        visibleSize: countValue(state, "visible_size"),
+      },
+    }));
+  }
 }
 
 function updateTonightPage(mount, recommendation) {
@@ -294,12 +372,11 @@ function updateTonightPage(mount, recommendation) {
     if (active) tab.setAttribute?.("aria-current", "page");
     else tab.removeAttribute?.("aria-current");
   }
-  mount.stage.replaceChildren(
-    renderHero(recommendation, activeChannel),
-    renderBatchToolbar(recommendation, activeChannel),
-    renderShelves(recommendation, [activeChannel]),
-  );
+  updateStableHero(mount, recommendation, activeChannel);
+  updateStableToolbar(mount, recommendation, activeChannel);
+  updateStableShelves(mount, recommendation, activeChannel);
   mount.page.dataset.channel = activeChannel.slug;
+  ensureVisibleMediaJobs(recommendation, activeChannel);
   return mount.page;
 }
 
@@ -316,6 +393,87 @@ export function renderTonight(state = dependencies.store?.getState?.() || {}) {
   }
   return updateTonightPage(mountedTonight, recommendation);
 }
+
+function itemIdentity(item = {}) {
+  return textValue(item.item_key) || textValue(item.id) || textValue(item.douban_id);
+}
+
+function mediaJobKey(kind, identity) {
+  return `${kind}:${identity}`;
+}
+
+function mediaJobApiGet(path) {
+  if (typeof dependencies.api.getV2 === "function") return dependencies.api.getV2(path);
+  return fetch(path, { method: "GET", headers: { Accept: "application/json" } }).then((response) => {
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    return response.json();
+  });
+}
+
+function scheduleMediaPoll(key, jobId, sessionId) {
+  const record = mediaJobsByIdentity.get(key);
+  if (!record || record.timer) return;
+  record.timer = dependencies.setTimer(async () => {
+    record.timer = null;
+    try {
+      const job = await mediaJobApiGet(`/api/v2/media/jobs/${encodeURIComponent(jobId)}`);
+      const state = textValue(job?.state).toLowerCase();
+      if (state === "ready" || state === "degraded") {
+        record.state = state;
+        const session = await mediaJobApiGet(`/api/v2/recommend/sessions/${encodeURIComponent(sessionId)}`);
+        dependencies.store?.dispatch?.({ type: "recommendation/sessionReceived", session, source: "media-refresh", expectedSessionId: sessionId });
+        return;
+      }
+      if (POLLABLE_MEDIA_STATES.has(state)) scheduleMediaPoll(key, jobId, sessionId);
+      else record.state = state || "failed";
+    } catch {
+      record.state = "failed";
+    }
+  }, dependencies.mediaPollInterval);
+}
+
+function enqueueMediaJob(item, channel, sessionId) {
+  const media = adaptRecommendationMedia(item);
+  const identity = itemIdentity(item);
+  if (!identity || media.status === "ready") return;
+  const key = mediaJobKey("poster", identity);
+  const existing = mediaJobsByIdentity.get(key);
+  if (existing && (existing.inFlight || existing.state === "ready" || existing.state === "degraded")) return;
+  const record = { inFlight: true, state: "queued", timer: null };
+  mediaJobsByIdentity.set(key, record);
+  Promise.resolve(dependencies.api.postV2("/api/v2/media/jobs", {
+    kind: "poster",
+    identity_key: identity,
+    title: textValue(item.title),
+    year: Number.isFinite(item.year) ? item.year : undefined,
+    media_type: textValue(item.media_type),
+    priority: 0,
+  })).then((job) => {
+    record.inFlight = false;
+    const jobId = textValue(job?.job_id) || textValue(job?.id);
+    const state = textValue(job?.state, "queued").toLowerCase();
+    record.state = state;
+    if (jobId && !TERMINAL_MEDIA_STATES.has(state)) scheduleMediaPoll(key, jobId, sessionId);
+    if (jobId && (state === "ready" || state === "degraded")) scheduleMediaPoll(key, jobId, sessionId);
+  }).catch(() => {
+    record.inFlight = false;
+    record.state = "failed";
+  });
+}
+
+function ensureVisibleMediaJobs(recommendation, channel) {
+  const sessionId = textValue(channelState(recommendation, channel).sessionId) || textValue(recommendation.sessionId);
+  if (!sessionId || typeof dependencies.api?.postV2 !== "function") return;
+  const state = channelState(recommendation, channel);
+  const seen = new Set();
+  for (const item of batchItems(state).slice(0, MAX_INITIAL_CARDS)) {
+    const identity = itemIdentity(item);
+    if (!identity || seen.has(identity)) continue;
+    seen.add(identity);
+    enqueueMediaJob(item, channel, sessionId);
+  }
+}
+
 
 function configuredStore() {
   if (!dependencies.store?.getState || !dependencies.store?.dispatch) {
