@@ -778,6 +778,8 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 data = get_sync_api().get_job(job_id)
                 self.send_json(data, status=404 if data.get("error") else 200)
+            elif path == "/api/v2/recommend/sessions/latest":
+                self.send_json(get_recommendation_api().latest_session())
             elif path.startswith("/api/v2/recommend/sessions/"):
                 session_id = path.removeprefix("/api/v2/recommend/sessions/").strip("/")
                 if not session_id or "/" in session_id:

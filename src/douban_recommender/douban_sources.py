@@ -236,6 +236,9 @@ POSTER_SEARCH_ALIASES.update({
     "少女终末旅行": ["Girls Last Tour", "Girls' Last Tour"],
     "怪化猫": ["Mononoke"],
     "伍六七": ["Scissor Seven", "Wu Liuqi"],
+    "去他*的世界": ["The End of the F***ing World"],
+    "黑镜": ["Black Mirror"],
+    "怪奇物语": ["Stranger Things"],
 })
 
 STATIC_POSTER_URLS_BY_TITLE.update({
@@ -1001,7 +1004,7 @@ def fetch_tvmaze_suggestions(
     aliases = POSTER_SEARCH_ALIASES.get(safe_title, [])
     queries = [safe_title] + [alias for alias in aliases if alias and alias != safe_title]
     fetch = fetcher or http_get
-    for query in queries:
+    for query_index, query in enumerate(queries):
         url = TVMAZE_SHOW_SEARCH_ENDPOINT + "?" + urllib.parse.urlencode({"q": query})
         if fetcher is None:
             headers = dict(DEFAULT_HEADERS)
@@ -1011,7 +1014,10 @@ def fetch_tvmaze_suggestions(
                 with build_url_opener().open(request, timeout=timeout) as response:
                     payload = response.read()
             except urllib.error.HTTPError as error:
+                status = int(error.code or 0)
                 error.close()
+                if status == 404 and query_index < len(queries) - 1:
+                    continue
                 raise
         else:
             try:
@@ -1656,6 +1662,10 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
         or first_match(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', text)
         or first_match(r'<title>(.*?)</title>', text).replace("(豆瓣)", "")
     )
+    media_type_match = re.search(r"\s*-\s*(电影|电视剧|动画|动漫)\s*$", title)
+    media_type = "动漫" if media_type_match and media_type_match.group(1) in {"动画", "动漫"} else (
+        media_type_match.group(1) if media_type_match else ""
+    )
     title = re.sub(r"\s*-\s*(电影|电视剧|动画|动漫)\s*$", "", title).strip()
     cover = html.unescape(
         first_match(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', text)
@@ -1686,10 +1696,28 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
     ]
     countries = parse_list(clean_html(first_match(r'制片国家/地区:</span>\s*([^<]+)<', text)))
     languages = parse_list(clean_html(first_match(r'语言:</span>\s*([^<]+)<', text)))
+    mobile_original_title = clean_html(
+        first_match(r'<div[^>]+class=["\'][^"\']*sub-original-title[^"\']*["\'][^>]*>(.*?)</div>', text)
+    )
+    mobile_meta = clean_html(
+        first_match(r'<div[^>]+class=["\'][^"\']*sub-meta[^"\']*["\'][^>]*>(.*?)</div>', text)
+    )
+    mobile_parts = [part.strip() for part in re.split(r"\s*/\s*", mobile_meta) if part.strip()]
+    if not genres:
+        genres = [part for part in mobile_parts if part in KNOWN_GENRES]
+    if not countries and mobile_parts:
+        first_genre = next((index for index, part in enumerate(mobile_parts) if part in KNOWN_GENRES), len(mobile_parts))
+        countries = [
+            part
+            for part in mobile_parts[:first_genre]
+            if not re.search(r"(?:19|20)\d{2}|上映|片长|分钟|集$", part)
+        ]
     year = None
     year_text = (
         first_match(r'property=["\']v:initialReleaseDate["\'][^>]+content=["\'](\d{4})', text)
         or first_match(r'property=["\']v:initialReleaseDate["\'][^>]*>\s*(\d{4})', text)
+        or first_match(r'[（(]((?:19|20)\d{2})[）)]', mobile_original_title)
+        or first_match(r'\b((?:19|20)\d{2})-\d{2}-\d{2}', mobile_meta)
         or first_match(r'\((\d{4})\)', title)
     )
     if year_text:
@@ -1697,9 +1725,34 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
             year = int(year_text)
         except ValueError:
             year = None
+    rating = parse_float(
+        first_match(r'<meta[^>]+itemprop=["\']ratingValue["\'][^>]+content=["\']([^"\']+)', text)
+    )
+    vote_count_text = first_match(
+        r'<meta[^>]+itemprop=["\']reviewCount["\'][^>]+content=["\']([^"\']+)', text
+    )
+    vote_count = None
+    if vote_count_text:
+        try:
+            vote_count = int(re.sub(r"[^0-9]", "", vote_count_text))
+        except ValueError:
+            vote_count = None
+    aliases: list[str] = []
+    if mobile_original_title:
+        original_without_year = re.sub(r"\s*[（(](?:19|20)\d{2}[）)]\s*$", "", mobile_original_title).strip()
+        if original_without_year and original_without_year != title:
+            aliases.append(original_without_year)
+    raw: dict[str, object] = {}
+    if people_photos:
+        raw["people_photos"] = people_photos
+    if aliases:
+        raw["aliases"] = aliases
     return MediaItem(
         title=title,
+        douban_rating=rating,
+        vote_count=vote_count,
         year=year,
+        media_type=media_type,
         genres=genres,
         countries=countries,
         languages=languages,
@@ -1710,7 +1763,7 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
         cover=cover,
         summary=summary,
         source="douban_subject_detail",
-        raw={"people_photos": people_photos} if people_photos else {},
+        raw=raw,
     )
 
 
@@ -1719,6 +1772,12 @@ def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
         item.title = detail.title
     if detail.year and not item.year:
         item.year = detail.year
+    if detail.douban_rating is not None and item.douban_rating is None:
+        item.douban_rating = detail.douban_rating
+    if detail.vote_count is not None and item.vote_count is None:
+        item.vote_count = detail.vote_count
+    if detail.media_type and not item.media_type:
+        item.media_type = detail.media_type
     if detail.cover and not item.cover:
         item.cover = detail.cover
     if detail.summary:
@@ -1745,6 +1804,15 @@ def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
                 current.append(value)
         setattr(item, field, current)
     detail_people_photos = detail.raw.get("people_photos") if isinstance(detail.raw, dict) else None
+    detail_aliases = detail.raw.get("aliases") if isinstance(detail.raw, dict) else None
+    if isinstance(detail_aliases, list) and detail_aliases:
+        item_aliases = item.raw.get("aliases") if isinstance(item.raw, dict) else None
+        merged_aliases = list(item_aliases) if isinstance(item_aliases, list) else []
+        for alias in detail_aliases:
+            clean_alias = str(alias).strip()
+            if clean_alias and clean_alias not in merged_aliases:
+                merged_aliases.append(clean_alias)
+        item.raw["aliases"] = merged_aliases
     if isinstance(detail_people_photos, dict) and detail_people_photos:
         item_people_photos = item.raw.get("people_photos") if isinstance(item.raw, dict) else None
         merged_people_photos = dict(item_people_photos) if isinstance(item_people_photos, dict) else {}

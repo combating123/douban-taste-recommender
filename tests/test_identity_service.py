@@ -64,6 +64,23 @@ class WorkIdentityTests(unittest.TestCase):
         self.assertFalse(decision.accepted)
         self.assertTrue(decision.ambiguous)
 
+    def test_exact_bilingual_original_title_is_strong_secondary_evidence(self):
+        expected = WorkIdentity(
+            title="人生切割术",
+            original_titles=("Severance",),
+            media_type="电视剧",
+        )
+        candidate = WorkIdentity(
+            title="人生切割术",
+            original_titles=("Severance",),
+            media_type="电视剧",
+        )
+
+        decision = match_work_identity(expected, candidate)
+
+        self.assertTrue(decision.accepted)
+        self.assertIn("original-title", decision.reasons)
+
 
 class PersonIdentityTests(unittest.TestCase):
     def test_same_name_person_requires_role_or_work_context(self):

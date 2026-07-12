@@ -313,6 +313,16 @@ class RecommendationApiV2Tests(unittest.TestCase):
     def create_session(self, **overrides):
         return self.post_json("/api/v2/recommend/sessions", self.session_payload(**overrides))
 
+    def test_latest_session_route_restores_the_most_recent_server_session(self):
+        first = self.create_session(profile_key="first-profile")
+        second = self.create_session(profile_key="second-profile")
+
+        latest = self.get_json("/api/v2/recommend/sessions/latest")
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(latest["id"], second["id"])
+        self.assertEqual(latest["profile_key"], "second-profile")
+
     def item_payload(self, **overrides):
         payload = {
             "title": "合法条目",

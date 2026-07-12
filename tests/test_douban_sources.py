@@ -20,6 +20,7 @@ from douban_recommender.douban_sources import (
     merge_subject_detail,
     parse_anilist_results,
     parse_jikan_results,
+    parse_subject_detail_html,
     parse_subject_search_html,
     parse_subject_suggestions,
     parse_themoviedb_search_html,
@@ -32,6 +33,27 @@ from douban_recommender.models import MediaItem
 
 
 class SubjectDetailParseTests(unittest.TestCase):
+    def test_parse_mobile_subject_detail_extracts_rating_votes_year_aliases_and_metadata(self):
+        page = """
+        <meta property="og:title" content="人生切割术 第一季 - 电视剧" />
+        <meta property="og:image" content="https://img.example/severance.jpg" />
+        <meta itemprop="reviewCount" content="182947" />
+        <meta itemprop="ratingValue" content="9.0" />
+        <div class="sub-original-title">Severance Season 1（2022）</div>
+        <div class="sub-meta">美国 / 剧情 / 科幻 / 悬疑 / 2022-02-18(美国)上映 / 片长60分钟</div>
+        <section class="subject-intro"><p>一段真实剧情简介。</p></section>
+        """
+
+        detail = parse_subject_detail_html(page, url="https://m.douban.com/movie/subject/34885342/")
+
+        self.assertEqual(detail.title, "人生切割术 第一季")
+        self.assertEqual(detail.year, 2022)
+        self.assertEqual(detail.douban_rating, 9.0)
+        self.assertEqual(detail.vote_count, 182947)
+        self.assertEqual(detail.genres, ["剧情", "科幻", "悬疑"])
+        self.assertEqual(detail.countries, ["美国"])
+        self.assertIn("Severance Season 1", detail.raw["aliases"])
+
     def test_merge_subject_detail_preserves_user_comment_separately_and_uses_real_synopsis(self):
         item = MediaItem(
             title="同步作品",
@@ -695,6 +717,52 @@ class CandidateFetchPlanTests(unittest.TestCase):
 
         self.assertIs(raised.exception, error)
         self.assertTrue(body.closed)
+
+    def test_tvmaze_fetch_continues_to_curated_alias_after_original_title_404(self):
+        payload = {
+            "id": 44933,
+            "name": "Severance",
+            "premiered": "2022-02-18",
+            "url": "https://www.tvmaze.com/shows/44933/severance",
+            "image": {"original": "https://static.tvmaze.com/uploads/images/original_untouched/548/1371406.jpg"},
+        }
+        body = io.BytesIO(b'{"message":"Not Found"}')
+        missing = urllib.error.HTTPError(
+            url="https://api.tvmaze.com/singlesearch/shows?q=%E4%BA%BA%E7%94%9F%E5%88%87%E5%89%B2%E6%9C%AF",
+            code=404,
+            msg="Not Found",
+            hdrs={},
+            fp=body,
+        )
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        class AliasOpener:
+            def __init__(self):
+                self.calls = 0
+
+            def open(self, request, timeout=0):
+                self.calls += 1
+                if self.calls == 1:
+                    raise missing
+                return Response()
+
+        opener = AliasOpener()
+        with mock.patch("douban_recommender.douban_sources.build_url_opener", return_value=opener):
+            suggestions = fetch_tvmaze_suggestions("人生切割术", media_type="电视剧")
+
+        self.assertTrue(body.closed)
+        self.assertEqual(opener.calls, 2)
+        self.assertEqual(suggestions[0].title, "人生切割术")
+        self.assertEqual(suggestions[0].douban_id, "tvmaze-44933")
 
     def test_source_config_controls_api_source_order(self):
         calls = []

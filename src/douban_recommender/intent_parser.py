@@ -219,6 +219,8 @@ def parse_recommendation_intent(
     quality_match = re.search(r"评分\s*(?:至少|不低于|要有)?\s*(\d(?:\.\d+)?)", raw)
     if quality_match:
         quality_floor = float(quality_match.group(1))
+    elif any(marker in raw for marker in ("高分", "评分高", "高口碑", "口碑好", "口碑稳")):
+        quality_floor = max(float(quality_floor or 0), 8.0)
 
     exploration_level = current.exploration_level
     surprise_level = current.surprise_level

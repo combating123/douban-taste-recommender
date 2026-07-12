@@ -6,6 +6,11 @@ from douban_recommender.serialization import media_item_from_dict, media_item_to
 
 
 class SerializationTests(unittest.TestCase):
+    def test_top_level_aliases_are_restored_into_raw_metadata(self):
+        item = media_item_from_dict({"title": "人生切割术", "aliases": ["Severance"]})
+
+        self.assertEqual(item.raw["aliases"], ["Severance"])
+
     def test_media_item_round_trips_through_json_dict(self):
         item = MediaItem(
             title="隐秘的角落",

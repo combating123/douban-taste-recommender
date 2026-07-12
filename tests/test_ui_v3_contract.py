@@ -1962,6 +1962,52 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("/tonight/movie", result["activePath"])
         self.assertEqual(3, result["requestCount"])
 
+    def test_tonight_without_local_pointer_restores_latest_server_session(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ createTonightRestoreGate, reduceUiState }} = await import("{module_url('js/app.js')}");
+            let state = {{
+              activePath: "/tonight/movie", activeParams: {{ channel: "movie" }},
+              recommendation: {{
+                sessionId: null, activeChannel: "movie", personalization: {{}},
+                channels: {{ movie: {{}}, series: {{}}, "anime-series": {{}} }},
+              }},
+              commandLens: {{ draft: "", chips: [] }}, rail: {{ mode: "expanded" }},
+              scrollByRoute: {{}}, candidateTray: {{ itemIds: [], context: {{}} }},
+            }};
+            const actions = [];
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{ actions.push(action); state = reduceUiState(state, action); return action; }},
+            }};
+            let latestCalls = 0;
+            const gate = createTonightRestoreGate({{
+              store,
+              restoreSession() {{ throw new Error("local restore must not run"); }},
+              async restoreLatestSession() {{
+                latestCalls += 1;
+                return {{
+                  id: "latest-session", intent: {{ quality_floor: 8 }}, chips: [],
+                  channels: {{
+                    "电影": {{ batch: {{ id: "movie-batch", index: 1, items: [] }} }},
+                    "电视剧": {{ batch: {{ id: "series-batch", index: 1, items: [] }} }},
+                    "动漫": {{ batch: {{ id: "anime-batch", index: 1, items: [] }} }},
+                  }},
+                }};
+              }},
+            }});
+            await gate.restore({{ path: "/tonight/movie", name: "tonight-channel", params: {{ channel: "movie" }} }}, "今晚");
+            if (latestCalls !== 1) throw new Error(`latest session requests=${{latestCalls}}`);
+            if (state.recommendation.sessionId !== "latest-session") throw new Error("latest session was not committed");
+            if (!actions.some((action) => action.source === "restore" && !action.expectedSessionId)) throw new Error("latest restore action missing");
+            console.log(JSON.stringify({{ latestCalls, sessionId: state.recommendation.sessionId }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["latestCalls"])
+        self.assertEqual("latest-session", result["sessionId"])
+
     def test_command_lens_intent_mutations_are_latest_wins_and_errors_are_visible(self):
         output = run_node_module(
             f'''

@@ -45,6 +45,11 @@ def media_item_from_dict(data: dict[str, Any]) -> MediaItem:
             clean[list_field] = []
     raw = clean.get("raw")
     clean["raw"] = dict(raw) if isinstance(raw, dict) else {}
+    aliases = data.get("aliases")
+    if isinstance(aliases, (list, tuple, set)):
+        clean_aliases = [str(value).strip() for value in aliases if str(value).strip()]
+        if clean_aliases:
+            clean["raw"]["aliases"] = clean_aliases
     return MediaItem(**clean)
 
 

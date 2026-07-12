@@ -40,6 +40,11 @@ class RecommendationIntentParserTests(unittest.TestCase):
         self.assertEqual(intent.quality_floor, 8.5)
         self.assertEqual(intent.runtime_max, 120)
 
+    def test_qualitative_high_score_language_sets_a_useful_quality_floor(self):
+        intent = parse_recommendation_intent("评分高、剧情好、口碑稳的作品")
+
+        self.assertEqual(intent.quality_floor, 8.0)
+
     def test_base_intent_is_merged_without_losing_existing_media(self):
         base = RecommendationIntent(media_types=("电影",), exploration_level=0.2)
         intent = parse_recommendation_intent("更轻松一点", base=base)

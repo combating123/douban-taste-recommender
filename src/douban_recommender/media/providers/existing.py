@@ -33,6 +33,7 @@ def _original_titles(item: MediaItem) -> tuple[str, ...]:
     raw = item.raw if isinstance(item.raw, dict) else {}
     values: list[str] = []
     for key in (
+        "name",
         "original_title",
         "original_name",
         "title_english",

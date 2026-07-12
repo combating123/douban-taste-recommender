@@ -8,7 +8,7 @@ import { announce } from "./core/focus.js";
 import { installAuditHook } from "./core/audit.js";
 import { installAcceptanceHook } from "./core/acceptance.js";
 import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
-import { configureTonight, renderTonight, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
+import { configureTonight, renderTonight, restoreLatestTonightSession, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
 import { configureDetail, renderTitleDetail } from "./features/detail.js";
 import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
 import { configureUniverse, destroyUniverse, expandNode, renderUniverse } from "./features/universe.js";
@@ -61,7 +61,12 @@ function sessionIdForChannel(state, channel) {
   return recommendation.channels?.[channel]?.sessionId || recommendation.sessionId || null;
 }
 
-export function createTonightRestoreGate({ store, restoreSession = restoreTonightSession, setStatus = () => {} }) {
+export function createTonightRestoreGate({
+  store,
+  restoreSession = restoreTonightSession,
+  restoreLatestSession = restoreLatestTonightSession,
+  setStatus = () => {},
+}) {
   let generation = 0;
   let controller = null;
 
@@ -77,24 +82,21 @@ export function createTonightRestoreGate({ store, restoreSession = restoreTonigh
     const expectedRoute = route.path;
     const channel = channelSlug(route);
     const expectedSessionId = sessionIdForChannel(store.getState(), channel);
-    if (!expectedSessionId) {
-      if (store.getState().activePath === expectedRoute && generation === requestGeneration) {
-        setStatus(`CineScope 正在浏览：${heading}`);
-      }
-      return null;
-    }
-
     const requestController = new AbortController();
     controller = requestController;
     try {
-      const session = await restoreSession(expectedSessionId, { signal: requestController.signal });
+      const session = expectedSessionId
+        ? await restoreSession(expectedSessionId, { signal: requestController.signal })
+        : await restoreLatestSession({ signal: requestController.signal });
       const currentState = store.getState();
+      const currentSessionId = sessionIdForChannel(currentState, channel);
       if (
         requestController.signal.aborted
         || generation !== requestGeneration
         || currentState.activePath !== expectedRoute
-        || sessionIdForChannel(currentState, channel) !== expectedSessionId
-        || session?.id !== expectedSessionId
+        || (expectedSessionId ? currentSessionId !== expectedSessionId : Boolean(currentSessionId))
+        || !session?.id
+        || (expectedSessionId && session.id !== expectedSessionId)
       ) return null;
 
       store.dispatch({
@@ -109,7 +111,7 @@ export function createTonightRestoreGate({ store, restoreSession = restoreTonigh
       if (
         generation === requestGeneration
         && store.getState().activePath === expectedRoute
-        && sessionIdForChannel(store.getState(), channel) === expectedSessionId
+        && sessionIdForChannel(store.getState(), channel) === session.id
       ) setStatus(`CineScope 正在浏览：${heading}`);
       return session;
     } catch (error) {
@@ -274,10 +276,16 @@ export function reduceUiState(state, action) {
       if (action.source === "restore") {
         const expectedChannel = action.channel;
         const currentChannel = state.recommendation.channels[expectedChannel] || {};
-        if (
+        if (action.expectedSessionId) {
+          if (
+            state.activePath !== action.route
+            || currentChannel.sessionId !== action.expectedSessionId
+            || action.session?.id !== action.expectedSessionId
+          ) return state;
+        } else if (
           state.activePath !== action.route
-          || currentChannel.sessionId !== action.expectedSessionId
-          || action.session?.id !== action.expectedSessionId
+          || currentChannel.sessionId
+          || !action.session?.id
         ) return state;
       }
       return {

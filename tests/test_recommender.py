@@ -6,6 +6,18 @@ from douban_recommender.recommender import recommend
 
 
 class CineScopeRecommendationTests(unittest.TestCase):
+    def test_recommendation_payload_preserves_safe_original_title_aliases(self):
+        candidate = MediaItem(
+            title="人生切割术",
+            media_type="电视剧",
+            douban_rating=9.0,
+            raw={"aliases": ["Severance"]},
+        )
+
+        payload = recommend([], [candidate], build_taste_profile([]), limit=1)[0].to_dict()
+
+        self.assertEqual(payload["aliases"], ["Severance"])
+
     def test_quality_first_includes_anime_and_downranks_costume_series(self):
         rated = [
             MediaItem(

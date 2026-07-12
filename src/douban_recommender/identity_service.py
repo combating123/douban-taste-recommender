@@ -106,6 +106,13 @@ def match_work_identity(expected: WorkIdentity, candidate: WorkIdentity) -> Matc
     confidence += 0.08
     reasons.append("media-type")
 
+    shared_original_titles = _normalized_values(expected.original_titles) & _normalized_values(
+        candidate.original_titles
+    )
+    if shared_original_titles:
+        confidence += 0.20
+        reasons.append("original-title")
+
     if expected.year and candidate.year:
         confidence += 0.08
         reasons.append("year")
@@ -126,7 +133,7 @@ def match_work_identity(expected: WorkIdentity, candidate: WorkIdentity) -> Matc
         confidence += 0.04
         reasons.append("episode-count")
 
-    confidence = min(confidence, 1.0)
+    confidence = round(min(confidence, 1.0), 4)
     accepted = confidence >= 0.92
     return MatchDecision(accepted, confidence, tuple(reasons), not accepted)
 

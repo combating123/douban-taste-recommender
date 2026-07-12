@@ -25,6 +25,8 @@ class Recommendation:
 
     def to_dict(self) -> dict[str, object]:
         item = self.item
+        raw = item.raw if isinstance(item.raw, dict) else {}
+        aliases = raw.get("aliases") if isinstance(raw.get("aliases"), list) else []
         return {
             "title": item.title,
             "year": item.year,
@@ -42,6 +44,7 @@ class Recommendation:
             "cover": item.cover,
             "summary": item.summary,
             "source": item.source,
+            "aliases": [str(value).strip() for value in aliases if str(value).strip()],
             "people_photos": item.raw.get("people_photos", {}) if isinstance(item.raw, dict) else {},
             "reasons": self.reasons,
             "warnings": self.warnings,

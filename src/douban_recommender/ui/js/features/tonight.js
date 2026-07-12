@@ -586,6 +586,16 @@ export async function restoreTonightSession(sessionId, { signal } = {}) {
   return response.json();
 }
 
+export async function restoreLatestTonightSession({ signal } = {}) {
+  const response = await fetch("/api/v2/recommend/sessions/latest", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  return response.json();
+}
+
 function batchOperation(channel) {
   return batchOperations.get(channel) || batchOperations.get("movie");
 }

@@ -518,6 +518,21 @@ class RecommendationApi:
         session = self._restore_session(session_id)
         return self._serialize_session(session)
 
+    def latest_session(self) -> dict[str, object]:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM recommendation_sessions
+                WHERE status='active'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            raise RecommendationApiNotFound("recommendation session not found")
+        return self.get_session(str(row["id"]))
+
     def next_batch(self, session_id: str, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
         self._validate_batch_payload(payload)
