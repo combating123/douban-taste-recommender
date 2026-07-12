@@ -37,6 +37,30 @@ COUNTRY_WORDS = [
     "印度",
     "加拿大",
     "澳大利亚",
+    "南非",
+    "爱尔兰",
+    "丹麦",
+    "瑞典",
+    "挪威",
+    "芬兰",
+    "荷兰",
+    "比利时",
+    "俄罗斯",
+    "墨西哥",
+    "巴西",
+    "阿根廷",
+    "新西兰",
+    "新加坡",
+    "马来西亚",
+    "伊朗",
+    "波兰",
+    "土耳其",
+    "以色列",
+    "冰岛",
+    "奥地利",
+    "瑞士",
+    "希腊",
+    "葡萄牙",
     "泰国",
 ]
 
@@ -139,7 +163,8 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
         rating_match = re.search(r"rating(\d)-t", block)
         my_rating = float(rating_match.group(1)) if rating_match else None
         cover = html.unescape(first_match(r'''<img[^>]+src=["']([^"']+)["']''', block))
-        people_parts = [part.strip() for part in re.split(r"\s*/\s*", intro) if part.strip()]
+        parse_intro = _strip_intro_urls(intro)
+        people_parts = [part.strip() for part in re.split(r"\s*/\s*", parse_intro) if part.strip()]
         genres = []
         for part in people_parts:
             for genre in KNOWN_GENRES:
@@ -147,7 +172,12 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
                     genres.append(genre)
         countries = [country for country in COUNTRY_WORDS if country in intro]
         runtime_minutes = intro_runtime_minutes(people_parts)
-        directors, casts = split_people_from_intro(people_parts, genres=genres, countries=countries)
+        directors, casts = split_people_from_intro(
+            people_parts,
+            genres=genres,
+            countries=countries,
+            title_variants=[title, *title_parts],
+        )
         tag = "想看" if status == "wish" else "看过"
         media_type = infer_media_type(title, intro)
         aliases = [part for part in title_parts[1:] if part != title]
@@ -285,7 +315,12 @@ def intro_runtime_minutes(parts: list[str]) -> int | None:
 
 def _split_people_names(value: str) -> list[str]:
     text = str(value or "").strip()
-    if not text or re.search(r"(?:https?://|www\.|\.[a-z]{2,}/)", text, flags=re.I):
+    if (
+        not text
+        or re.search(r"(?:https?://|www\.|\.[a-z]{2,}/)", text, flags=re.I)
+        or re.fullmatch(r"(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}(?:\s+\d{1,2}:\d{2})?", text)
+        or re.fullmatch(r"[a-z0-9._-]+", text)
+    ):
         return []
     chunks = [part.strip() for part in re.split(r"[、,，]|\s{2,}", text) if part.strip()]
     if len(chunks) == 1:
@@ -299,6 +334,7 @@ def split_people_from_intro(
     parts: list[str],
     genres: list[str] | None = None,
     countries: list[str] | None = None,
+    title_variants: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     if len(parts) < 4:
         return [], []
@@ -316,6 +352,7 @@ def split_people_from_intro(
             last_country = countries_before_runtime[-1]
             casts = [name for part in parts[release_end:first_country] for name in _split_people_names(part)]
             directors = [name for part in parts[last_country + 1:runtime_index] for name in _split_people_names(part)]
+            directors = [name for name in directors if not _matches_title_fragment(name, title_variants)]
             if directors or casts:
                 return directors[:4], casts[:12]
 
@@ -333,6 +370,27 @@ def split_people_from_intro(
     directors = _split_people_names(parts[-2])
     casts = _split_people_names(parts[-1])
     return directors[:4], casts[:12]
+
+
+def _strip_intro_urls(value: str) -> str:
+    return re.sub(
+        r"(?:(?:https?://)?(?:www\.)?[a-z0-9.-]+\.[a-z]{2,}(?:/[a-z0-9._~!$&'()*+,;=:@%/-]*)?)",
+        "",
+        str(value or ""),
+        flags=re.I,
+    )
+
+
+def _matches_title_fragment(value: str, title_variants: list[str] | None) -> bool:
+    candidate = re.sub(r"[^\w\u3400-\u9fff]", "", str(value or "")).casefold()
+    if len(candidate) < 3:
+        return False
+    for title in title_variants or []:
+        normalized = re.sub(r"[^\w\u3400-\u9fff]", "", str(title or "")).casefold()
+        base = re.sub(r"(?:第?[一二三四五六七八九十\d]+季|[一二三四五六七八九十\d]+)$", "", normalized)
+        if candidate in {normalized, base} or (len(base) >= 3 and base.startswith(candidate)):
+            return True
+    return False
 
 
 def first_match(pattern: str, text: str) -> str:

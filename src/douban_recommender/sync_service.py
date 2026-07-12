@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import threading
@@ -164,7 +165,7 @@ class SyncService:
             reverse=True,
         )
         selected = [item for _, item in indexed[: self.enrich_limit]]
-        before = [media_item_to_dict(item) for item in selected]
+        before = [copy.deepcopy(media_item_to_dict(item)) for item in selected]
         fetcher = None
         if self.detail_fetcher is not None:
             fetcher = lambda url: self.detail_fetcher(url, cookie=cookie)

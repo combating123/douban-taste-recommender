@@ -421,6 +421,28 @@ class CrawlerParserVariantTests(unittest.TestCase):
 
         self.assertEqual([item.media_type for item in items], ["电影", "动漫"])
 
+    def test_intro_filters_official_urls_showtimes_and_title_fragments_from_directors(self):
+        html = """
+        <div class="item comment-item">
+          <a href="https://movie.douban.com/subject/1/"><em>卢旺达饭店</em></a>
+          <li class="intro">2004 / 唐·钱德尔 / 英国 / 南非 / www.mgm.com/ua/hotelrwanda/main.html / 特瑞·乔治 / 121分钟 / 剧情 / 传记</li>
+        </div>
+        <div class="item comment-item">
+          <a href="https://movie.douban.com/subject/2/"><em>封神第一部：朝歌风云</em></a>
+          <li class="intro">2023 / 费翔 / 中国大陆 / 乌尔善 / 2023-07-15 21:30 / 148分钟 / 动作 / 奇幻</li>
+        </div>
+        <div class="item comment-item">
+          <a href="https://movie.douban.com/subject/3/"><em>爱情公寓4</em></a>
+          <li class="intro">2014 / 娄艺潇 / 中国大陆 / 韦正 / 爱情公寓 / 45分钟 / 喜剧 / 爱情</li>
+        </div>
+        """
+
+        items = parse_user_collection_html(html, status="collect")
+
+        self.assertEqual(items[0].directors, ["特瑞·乔治"])
+        self.assertEqual(items[1].directors, ["乌尔善"])
+        self.assertEqual(items[2].directors, ["韦正"])
+
     def test_parse_subject_links_when_item_class_missing(self):
         from douban_recommender.crawler import parse_user_collection_html
 

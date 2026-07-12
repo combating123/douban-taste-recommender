@@ -230,6 +230,29 @@ class RecommendationApiV2Tests(unittest.TestCase):
             {"电影": 2, "电视剧": 2, "动漫": 2},
         )
 
+    def test_visible_enrichment_detects_nested_people_photo_only_change(self):
+        from douban_recommender.recommendation_api import RecommendationApi
+
+        def detail_enricher(items, **_kwargs):
+            items[0].raw["people_photos"] = {"演员甲": "https://upload.wikimedia.org/actor.jpg"}
+            return items
+
+        api = RecommendationApi(
+            self.api.database,
+            media_store=self.media_store,
+            detail_enricher=detail_enricher,
+            enrich_limit=1,
+        )
+        candidate = MediaItem(title="Nested portrait", media_type="电影", douban_id="9701")
+
+        changed = api._enrich_visible_candidates(
+            [candidate],
+            {"电影": {"items": [media_item_to_dict(candidate)]}, "电视剧": {"items": []}, "动漫": {"items": []}},
+            {"电影": 1, "电视剧": 1, "动漫": 1},
+        )
+
+        self.assertTrue(changed)
+
     def insert_library_item(self, item, state, source="douban-sync"):
         payload = media_item_to_dict(media_item_from_dict(dict(item)))
         key = recommendation_item_key(payload)

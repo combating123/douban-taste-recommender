@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -500,7 +501,7 @@ class RecommendationApi:
             depth += 1
         if not selected:
             return False
-        before = [media_item_to_dict(item) for item in selected]
+        before = [copy.deepcopy(media_item_to_dict(item)) for item in selected]
         try:
             self.detail_enricher(
                 selected,

@@ -1721,8 +1721,16 @@ def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
         item.year = detail.year
     if detail.cover and not item.cover:
         item.cover = detail.cover
-    if detail.summary and not item.summary:
-        item.summary = detail.summary
+    if detail.summary:
+        if str(item.source or "").startswith("douban_user:"):
+            if not isinstance(item.raw, dict):
+                item.raw = {}
+            existing_summary = str(item.summary or "").strip()
+            if existing_summary and not item.raw.get("user_comment"):
+                item.raw["user_comment"] = existing_summary
+            item.summary = detail.summary
+        elif not item.summary:
+            item.summary = detail.summary
     def should_replace_people_field(current: list[str], incoming: list[str]) -> bool:
         return bool(incoming) and (not current or any(is_curated_placeholder_person(value) for value in current))
 

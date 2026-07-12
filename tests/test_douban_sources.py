@@ -17,6 +17,7 @@ from douban_recommender.douban_sources import (
     fetch_tmdb_api_suggestions,
     fetch_tvmaze_suggestions,
     fetch_wikipedia_image_suggestions,
+    merge_subject_detail,
     parse_anilist_results,
     parse_jikan_results,
     parse_subject_search_html,
@@ -31,6 +32,20 @@ from douban_recommender.models import MediaItem
 
 
 class SubjectDetailParseTests(unittest.TestCase):
+    def test_merge_subject_detail_preserves_user_comment_separately_and_uses_real_synopsis(self):
+        item = MediaItem(
+            title="同步作品",
+            summary="这是我的短评",
+            source="douban_user:collect",
+            raw={},
+        )
+        detail = MediaItem(title="同步作品", summary="这是作品的官方剧情简介", source="douban_subject_detail")
+
+        merge_subject_detail(item, detail)
+
+        self.assertEqual(item.summary, "这是作品的官方剧情简介")
+        self.assertEqual(item.raw["user_comment"], "这是我的短评")
+
     def test_parse_subject_detail_html_extracts_summary_people_and_metadata(self):
         from douban_recommender.douban_sources import parse_subject_detail_html
 

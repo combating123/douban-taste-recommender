@@ -271,6 +271,29 @@ class SyncServiceTests(unittest.TestCase):
         )
         self.assertNotIn(secret, dump)
 
+    def test_sync_enrichment_counts_nested_people_photo_only_change(self):
+        def crawler(**_kwargs):
+            return CrawlResult(items=[MediaItem(title="Nested only", douban_id="9202", source="douban_user:collect")], pages_ok=1)
+
+        def detail_enricher(items, **_kwargs):
+            items[0].raw["people_photos"] = {"演员甲": "https://upload.wikimedia.org/actor.jpg"}
+            return items
+
+        service = SyncService(
+            self.database,
+            crawler=crawler,
+            detail_enricher=detail_enricher,
+            enrich_limit=1,
+            max_workers=1,
+        )
+        try:
+            job_id = service.start({"user": "272042071"})
+            status = self.wait_for_terminal(job_id, service=service)
+        finally:
+            service.close()
+
+        self.assertEqual(status["enrichment"], {"attempted": 1, "enriched": 1})
+
     def test_registry_failure_rolls_back_sync_items_and_marks_the_job_failed(self):
         def complete_crawler(**_kwargs):
             return CrawlResult(
