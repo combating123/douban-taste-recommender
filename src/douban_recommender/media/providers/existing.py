@@ -13,7 +13,9 @@ from ...douban_sources import (
 )
 from ...identity_service import PersonIdentity, WorkIdentity
 from ...models import MediaItem
+from ..public_people import resolve_public_people_photos
 from .base import AssetCandidate, AssetQuery
+from .inline import InlineProvider
 
 
 SearchFunction = Callable[..., list[MediaItem]]
@@ -189,7 +191,9 @@ class WikidataProvider(ExistingPosterProvider):
         people_resolver: PeopleResolver | None = None,
     ):
         super().__init__(searcher or fetch_wikipedia_image_suggestions)
-        self.people_resolver = people_resolver
+        self.people_resolver = (
+            people_resolver if people_resolver is not None else resolve_public_people_photos
+        )
 
     def search(self, query: AssetQuery) -> list[AssetCandidate]:
         if query.kind != "portrait":
@@ -223,12 +227,12 @@ def providers_for(kind: str, media_type: str) -> list[Any]:
     normalized_type = str(media_type or "").strip()
     if normalized_kind == "portrait":
         if normalized_type == "电视剧":
-            return [TvMazeProvider(), WikidataProvider(), DoubanProvider()]
+            return [InlineProvider(), TvMazeProvider(), WikidataProvider(), DoubanProvider()]
         if normalized_type in {"动漫", "动画"}:
-            return [JikanProvider(), WikidataProvider(), DoubanProvider()]
-        return [TmdbProvider(), WikidataProvider(), DoubanProvider()]
+            return [InlineProvider(), JikanProvider(), WikidataProvider(), DoubanProvider()]
+        return [InlineProvider(), TmdbProvider(), WikidataProvider(), DoubanProvider()]
     if normalized_type in {"动漫", "动画"}:
-        return [AniListProvider(), JikanProvider(), TmdbProvider(), WikidataProvider(), DoubanProvider()]
+        return [InlineProvider(), AniListProvider(), JikanProvider(), TmdbProvider(), WikidataProvider(), DoubanProvider()]
     if normalized_type == "电视剧":
-        return [TvMazeProvider(), TmdbProvider(), WikidataProvider(), DoubanProvider()]
-    return [TmdbProvider(), WikidataProvider(), DoubanProvider()]
+        return [InlineProvider(), TvMazeProvider(), TmdbProvider(), WikidataProvider(), DoubanProvider()]
+    return [InlineProvider(), TmdbProvider(), WikidataProvider(), DoubanProvider()]

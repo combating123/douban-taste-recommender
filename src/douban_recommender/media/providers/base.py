@@ -21,6 +21,7 @@ class AssetQuery:
     aliases: tuple[str, ...] = ()
     occupations: tuple[str, ...] = ()
     work_context: tuple[str, ...] = ()
+    source_urls: tuple[str, ...] = ()
     provider_ids: Mapping[str, str] = field(default_factory=dict)
 
 

@@ -77,6 +77,12 @@ class MediaApi:
             aliases=_strings(payload.get("aliases")),
             occupations=_strings(payload.get("occupations")),
             work_context=_strings(payload.get("work_context") or payload.get("workContext")),
+            source_urls=_strings(
+                payload.get("source_urls")
+                or payload.get("sourceUrls")
+                or payload.get("source_url")
+                or payload.get("sourceUrl")
+            ),
             provider_ids=_provider_ids(payload.get("provider_ids") or payload.get("providerIds")),
         )
         request = MediaResolutionRequest(
@@ -86,7 +92,7 @@ class MediaApi:
             query=query,
         )
         job_id = self.orchestrator.enqueue(request)
-        job = self.orchestrator.job(job_id)
+        job = self._public_job(self.orchestrator.job(job_id))
         return {
             "schema_version": 2,
             "job_id": job_id,
@@ -99,7 +105,49 @@ class MediaApi:
         job = self.orchestrator.job(str(job_id or "").strip())
         if not job:
             return {"error": "media job not found", "job_id": str(job_id or "")}
-        return {"schema_version": 2, **job}
+        return {"schema_version": 2, **self._public_job(job)}
+
+    def _public_job(self, job: dict[str, object]) -> dict[str, object]:
+        public = dict(job or {})
+        result_value = public.get("result")
+        result = dict(result_value) if isinstance(result_value, dict) else {}
+        if str(public.get("state") or "") != "ready":
+            public["result"] = result
+            return public
+
+        local_url = str(result.get("local_url") or "").strip()
+        stored = self.store.lookup(local_url.removeprefix("/media/")) if local_url.startswith("/media/") else None
+        expected_asset_id = str(result.get("asset_id") or "").strip().lower()
+        expected_kind = str(public.get("kind") or "").strip().lower()
+        if (
+            stored is None
+            or stored.status != "ready"
+            or stored.local_url != local_url
+            or (expected_asset_id and stored.asset_id != expected_asset_id)
+            or (expected_kind and stored.kind != expected_kind)
+        ):
+            public["state"] = "degraded"
+            public["error"] = ""
+            public["degradation_reason"] = "ready asset is not a verified local /media asset"
+            public["result"] = {
+                "status": "degraded",
+                "asset_id": "",
+                "local_url": "",
+                "source": "",
+                "confidence": 0.0,
+                "attempts": [],
+            }
+            return public
+
+        result.update(
+            {
+                "status": "ready",
+                "asset_id": stored.asset_id,
+                "local_url": stored.local_url,
+            }
+        )
+        public["result"] = result
+        return public
 
     def health(self) -> dict[str, object]:
         with self.store.database.connection() as connection:

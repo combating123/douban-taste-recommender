@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import tempfile
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping
 
 from ..database import AppDatabase
-from ..privacy import sanitize_source_url
+from ..privacy import sanitize_source_url, scrub_sensitive
 from .models import StoredAsset, ValidatedImage
 from .validator import validate_image_bytes
 
@@ -64,6 +65,7 @@ class MediaStore:
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)
                 ON CONFLICT(asset_id) DO UPDATE SET
                     last_verified_at = excluded.last_verified_at,
+                    source_url = excluded.source_url,
                     status = 'ready'
                 """,
                 (
@@ -105,6 +107,116 @@ class MediaStore:
         if not row:
             return None
         return self._validated_row(row, key, route_extension)
+
+    def bind_asset(
+        self,
+        entity_kind: str,
+        entity_id: str,
+        kind: str,
+        stored: StoredAsset,
+        source: str,
+        confidence: float,
+        metadata: Mapping[str, object] | None,
+    ) -> None:
+        clean_entity_kind = str(entity_kind or "").strip().lower()
+        clean_entity_id = str(entity_id or "").strip()
+        clean_kind = str(kind or "").strip().lower()
+        clean_source = str(source or "unknown").strip() or "unknown"
+        if clean_entity_kind not in {"media", "person"} or not clean_entity_id:
+            raise ValueError("invalid asset binding identity")
+        if clean_kind not in {"poster", "backdrop", "portrait"}:
+            raise ValueError("invalid asset binding kind")
+        if stored.status != "ready":
+            raise ValueError("stored asset is not ready")
+        if not str(stored.local_url or "").startswith("/media/"):
+            raise ValueError("stored asset must use a local /media route")
+        if stored.kind != clean_kind:
+            raise ValueError("stored asset kind does not match binding")
+
+        verified = self.lookup(stored.asset_id)
+        if verified is None or verified.local_url != stored.local_url or verified.status != "ready":
+            raise ValueError("stored asset is not locally verified")
+
+        try:
+            clean_confidence = max(0.0, min(1.0, float(confidence)))
+        except (TypeError, ValueError):
+            clean_confidence = 0.0
+        safe_metadata = scrub_sensitive(dict(metadata or {}))
+        if not isinstance(safe_metadata, dict):
+            safe_metadata = {}
+        safe_metadata.update(
+            {
+                "asset_id": verified.asset_id,
+                "local_url": verified.local_url,
+                "mime_type": verified.mime_type,
+                "width": verified.width,
+                "height": verified.height,
+                "byte_size": verified.byte_size,
+            }
+        )
+        metadata_json = json.dumps(
+            safe_metadata,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        candidate_id = hashlib.sha256(
+            f"candidate\0{clean_entity_kind}\0{clean_entity_id}\0{clean_kind}\0{clean_source}\0{verified.asset_id}".encode(
+                "utf-8"
+            )
+        ).hexdigest()
+        override_id = hashlib.sha256(
+            f"override\0{clean_entity_kind}\0{clean_entity_id}\0{clean_kind}".encode("utf-8")
+        ).hexdigest()
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO asset_candidates(
+                    id, entity_kind, entity_id, kind, source, url, confidence,
+                    status, metadata_json, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    url = excluded.url,
+                    confidence = excluded.confidence,
+                    status = 'ready',
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    candidate_id,
+                    clean_entity_kind,
+                    clean_entity_id,
+                    clean_kind,
+                    clean_source,
+                    verified.source_url,
+                    clean_confidence,
+                    metadata_json,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO user_asset_overrides(
+                    id, entity_kind, entity_id, kind, asset_id, decision, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'selected', ?, ?)
+                ON CONFLICT(entity_kind, entity_id, kind) DO UPDATE SET
+                    asset_id = excluded.asset_id,
+                    decision = 'selected',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    override_id,
+                    clean_entity_kind,
+                    clean_entity_id,
+                    clean_kind,
+                    verified.asset_id,
+                    now,
+                    now,
+                ),
+            )
 
     def _validated_row(self, row: Any, key: str, route_extension: str = "") -> StoredAsset | None:
         row_asset_id = str(row["asset_id"] or "").strip()

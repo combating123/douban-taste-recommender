@@ -1,7 +1,9 @@
 import io
 import hashlib
+import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -93,6 +95,91 @@ class MediaStoreTests(unittest.TestCase):
         self.assertNotIn("secret-token", source_url)
         self.assertNotIn("?", source_url)
         self.assertNotIn("#", source_url)
+
+    def test_bind_asset_writes_ready_candidate_and_selected_override(self):
+        stored = self.store.put(
+            validate_image_bytes(image_bytes()),
+            "https://img9.doubanio.com/poster.png?token=secret",
+            "poster",
+        )
+        self.assertTrue(hasattr(self.store, "bind_asset"), "MediaStore.bind_asset must exist")
+
+        self.store.bind_asset(
+            "media",
+            "media-odd-taxi",
+            "poster",
+            stored,
+            "douban",
+            0.96,
+            {"provider_url": "https://movie.douban.com/subject/1/?token=secret", "evidence": "title-year"},
+        )
+
+        with self.database.connection() as connection:
+            candidate = connection.execute(
+                """
+                SELECT source, url, confidence, status, metadata_json
+                FROM asset_candidates
+                WHERE entity_kind = 'media' AND entity_id = 'media-odd-taxi' AND kind = 'poster'
+                """
+            ).fetchone()
+            override = connection.execute(
+                """
+                SELECT asset_id, decision
+                FROM user_asset_overrides
+                WHERE entity_kind = 'media' AND entity_id = 'media-odd-taxi' AND kind = 'poster'
+                """
+            ).fetchone()
+
+        self.assertEqual((candidate["source"], candidate["status"]), ("douban", "ready"))
+        self.assertEqual(candidate["url"], "https://img9.doubanio.com/poster.png")
+        self.assertAlmostEqual(candidate["confidence"], 0.96)
+        metadata = json.loads(candidate["metadata_json"])
+        self.assertEqual(metadata["asset_id"], stored.asset_id)
+        self.assertEqual(metadata["local_url"], stored.local_url)
+        self.assertNotIn("secret", candidate["metadata_json"])
+        self.assertEqual((override["asset_id"], override["decision"]), (stored.asset_id, "selected"))
+
+    def test_bind_asset_rejects_anything_not_verified_under_local_media_route(self):
+        stored = self.store.put(
+            validate_image_bytes(image_bytes()),
+            "https://img.example/poster.png",
+            "poster",
+        )
+        self.assertTrue(hasattr(self.store, "bind_asset"), "MediaStore.bind_asset must exist")
+
+        with self.assertRaisesRegex(ValueError, "local /media"):
+            self.store.bind_asset(
+                "media",
+                "media-1",
+                "poster",
+                replace(stored, local_url="https://img.example/poster.png"),
+                "inline",
+                1.0,
+                {},
+            )
+        with self.assertRaisesRegex(ValueError, "ready"):
+            self.store.bind_asset(
+                "media",
+                "media-1",
+                "poster",
+                replace(stored, status="degraded"),
+                "inline",
+                1.0,
+                {},
+            )
+
+    def test_reused_bytes_bind_the_source_url_that_actually_resolved(self):
+        validated = validate_image_bytes(image_bytes())
+        self.store.put(validated, "https://img.example/old.png", "poster")
+        stored = self.store.put(validated, "https://img.example/resolved.png", "poster")
+
+        self.store.bind_asset("media", "media-1", "poster", stored, "inline", 1.0, {})
+
+        with self.database.connection() as connection:
+            source_url = connection.execute(
+                "SELECT url FROM asset_candidates WHERE entity_id = 'media-1' AND kind = 'poster'"
+            ).fetchone()[0]
+        self.assertEqual(source_url, "https://img.example/resolved.png")
 
     def test_unknown_or_unsafe_asset_id_returns_none(self):
         self.assertIsNone(self.store.lookup("../web.py"))

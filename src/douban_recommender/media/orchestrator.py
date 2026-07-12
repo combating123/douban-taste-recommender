@@ -21,6 +21,7 @@ from ..identity_service import (
 from .providers.base import AssetCandidate, AssetQuery, MediaProvider
 from .providers.existing import providers_for
 from .store import MediaStore
+from .url_candidates import image_request_headers, image_url_candidates
 from .validator import MediaValidationError, validate_image_bytes
 
 
@@ -58,10 +59,7 @@ FetchImage = Callable[[str], tuple[bytes, str]]
 def _default_fetch(url: str) -> tuple[bytes, str]:
     request = urllib.request.Request(
         str(url),
-        headers={
-            "User-Agent": "CineScopeLocalPersonalRecommender/3.0",
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        },
+        headers=image_request_headers(url),
     )
     with build_url_opener().open(request, timeout=12) as response:
         return response.read(), str(response.headers.get("Content-Type") or "")
@@ -134,14 +132,48 @@ class MediaOrchestrator:
         if query.kind == "portrait":
             if candidate.person_identity is None:
                 return MatchDecision(False, 0.0, ("missing-person-identity",), False)
-            return match_person_identity(
+            decision = match_person_identity(
                 self._expected_person(query),
                 candidate.person_identity,
                 set(query.work_context),
             )
+            if (
+                not decision.accepted
+                and bool(candidate.metadata.get("embedded"))
+                and "name-or-alias" in decision.reasons
+            ):
+                return MatchDecision(
+                    True,
+                    max(decision.confidence, 0.96),
+                    (*decision.reasons, "embedded-source"),
+                    False,
+                )
+            return decision
         if candidate.work_identity is None:
             return MatchDecision(False, 0.0, ("missing-work-identity",), False)
-        return match_work_identity(self._expected_work(query), candidate.work_identity)
+        decision = match_work_identity(self._expected_work(query), candidate.work_identity)
+        if decision.accepted:
+            return decision
+        exact_year = (
+            query.year is not None
+            and candidate.work_identity.year is not None
+            and int(query.year) == int(candidate.work_identity.year)
+        )
+        if exact_year and "title" in decision.reasons and "year" in decision.reasons:
+            return MatchDecision(
+                True,
+                max(decision.confidence, 0.94),
+                (*decision.reasons, "exact-title-year"),
+                False,
+            )
+        if bool(candidate.metadata.get("embedded")) and "title" in decision.reasons:
+            return MatchDecision(
+                True,
+                max(decision.confidence, 0.96),
+                (*decision.reasons, "embedded-source"),
+                False,
+            )
+        return decision
 
     def resolve(self, request: MediaResolutionRequest) -> MediaResolutionResult:
         attempts: list[dict[str, object]] = []
@@ -166,41 +198,62 @@ class MediaOrchestrator:
 
             for candidate in candidates:
                 decision = self._match(request.query, candidate)
-                attempt: dict[str, object] = {
+                identity_attempt: dict[str, object] = {
                     "source": provider_name,
                     "candidate_source": candidate.source,
                     "confidence": round(decision.confidence, 4),
                     "reasons": list(decision.reasons),
                 }
                 if not decision.accepted:
-                    attempt["status"] = "identity-rejected"
-                    attempts.append(attempt)
+                    identity_attempt["status"] = "identity-rejected"
+                    attempts.append(identity_attempt)
                     continue
-                try:
-                    data, content_type = self.fetch(candidate.url)
-                    min_width, min_height = (64, 64) if request.kind == "portrait" else (80, 80)
-                    validated = validate_image_bytes(
-                        data,
-                        content_type or candidate.declared_type,
-                        min_width=min_width,
-                        min_height=min_height,
+                candidate_urls = image_url_candidates(candidate.url)
+                if not candidate_urls:
+                    identity_attempt["status"] = "asset-rejected"
+                    identity_attempt["error"] = "invalid image url"
+                    attempts.append(identity_attempt)
+                    continue
+                for candidate_url in candidate_urls:
+                    attempt = dict(identity_attempt)
+                    try:
+                        data, content_type = self.fetch(candidate_url)
+                        min_width, min_height = (64, 64) if request.kind == "portrait" else (80, 80)
+                        validated = validate_image_bytes(
+                            data,
+                            content_type or candidate.declared_type,
+                            min_width=min_width,
+                            min_height=min_height,
+                        )
+                        stored = self.store.put(validated, candidate_url, request.kind)
+                        self.store.bind_asset(
+                            "person" if request.kind == "portrait" else "media",
+                            request.identity_key,
+                            request.kind,
+                            stored,
+                            candidate.source or provider_name,
+                            decision.confidence,
+                            {
+                                **dict(candidate.metadata),
+                                "provider": provider_name,
+                                "identity_reasons": list(decision.reasons),
+                            },
+                        )
+                    except (OSError, ValueError, MediaValidationError) as exc:
+                        attempt["status"] = "asset-rejected"
+                        attempt["error"] = str(exc)
+                        attempts.append(attempt)
+                        continue
+                    attempt["status"] = "ready"
+                    attempts.append(attempt)
+                    return MediaResolutionResult(
+                        status="ready",
+                        asset_id=stored.asset_id,
+                        local_url=stored.local_url,
+                        source=provider_name,
+                        confidence=decision.confidence,
+                        attempts=tuple(attempts),
                     )
-                    stored = self.store.put(validated, candidate.url, request.kind)
-                except (OSError, ValueError, MediaValidationError) as exc:
-                    attempt["status"] = "asset-rejected"
-                    attempt["error"] = str(exc)
-                    attempts.append(attempt)
-                    continue
-                attempt["status"] = "ready"
-                attempts.append(attempt)
-                return MediaResolutionResult(
-                    status="ready",
-                    asset_id=stored.asset_id,
-                    local_url=stored.local_url,
-                    source=provider_name,
-                    confidence=decision.confidence,
-                    attempts=tuple(attempts),
-                )
         return MediaResolutionResult(status="degraded", attempts=tuple(attempts))
 
     def enqueue(self, request: MediaResolutionRequest) -> str:
