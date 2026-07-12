@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from douban_recommender.catalog_registry import CatalogRegistry
 from douban_recommender.crawler import CrawlResult, PageDiagnostic
 from douban_recommender.database import AppDatabase
 from douban_recommender.models import MediaItem
@@ -83,12 +84,13 @@ class SyncServiceTests(unittest.TestCase):
         self.service.close()
         self.temp.cleanup()
 
-    def wait_for_terminal(self, job_id):
+    def wait_for_terminal(self, job_id, service=None):
+        service = service or self.service
         deadline = time.time() + 3
-        status = self.service.status(job_id)
+        status = service.status(job_id)
         while status.get("state") in {"queued", "running"} and time.time() < deadline:
             time.sleep(0.02)
-            status = self.service.status(job_id)
+            status = service.status(job_id)
         return status
 
     def test_start_uses_safety_cap_persists_items_and_never_persists_cookie(self):
@@ -110,6 +112,124 @@ class SyncServiceTests(unittest.TestCase):
             item_count = connection.execute("SELECT COUNT(*) FROM sync_items").fetchone()[0]
         self.assertNotIn("secret-cookie-value", stored)
         self.assertEqual(item_count, 1)
+
+    def test_completed_job_registers_library_and_identities_in_the_sync_items_transaction(self):
+        secret = "bid=secret-cookie-value"
+
+        def complete_crawler(**kwargs):
+            return CrawlResult(
+                items=[
+                    MediaItem(
+                        title="Registered Film",
+                        media_type="movie",
+                        douban_id="200",
+                        source="douban_user:collect",
+                        tags=["watched"],
+                        directors=["Director One"],
+                        casts=["Actor Two"],
+                        summary=kwargs["cookie"].split("=", 1)[1],
+                        raw={
+                            "cookie": kwargs["cookie"],
+                            "diagnostic": f"Cookie: {kwargs['cookie']}",
+                        },
+                    )
+                ],
+                pages_ok=1,
+                pages_failed=0,
+                stopped_reason=f"done with {kwargs['cookie']}",
+                diagnostics=[
+                    {
+                        "classification": "ok_with_items",
+                        "message": f"Cookie: {kwargs['cookie']}",
+                        "cookie": kwargs["cookie"],
+                    }
+                ],
+                completeness={
+                    "is_complete": True,
+                    "cookie": kwargs["cookie"],
+                    "note": f"Cookie: {kwargs['cookie']}",
+                },
+            )
+
+        service = SyncService(self.database, crawler=complete_crawler, max_workers=1)
+        original_register = CatalogRegistry.register_sync_items
+        observations = []
+
+        def observing_register(connection, user_id, items, now):
+            observations.append(
+                (
+                    connection.in_transaction,
+                    connection.execute("SELECT COUNT(*) FROM sync_items").fetchone()[0],
+                )
+            )
+            return original_register(connection, user_id, items, now)
+
+        try:
+            with mock.patch.object(CatalogRegistry, "register_sync_items", side_effect=observing_register):
+                job_id = service.start({"user": "272042071"}, cookie=secret)
+                status = self.wait_for_terminal(job_id, service=service)
+        finally:
+            service.close()
+
+        self.assertEqual(status["state"], "complete")
+        self.assertEqual(observations, [(True, 1)])
+        with self.database.connection() as connection:
+            dump = "\n".join(connection.iterdump())
+            sync_count = connection.execute("SELECT COUNT(*) FROM sync_items").fetchone()[0]
+            library = connection.execute(
+                "SELECT item_key, state FROM library_items WHERE item_key='douban:200'"
+            ).fetchone()
+            media_count = connection.execute("SELECT COUNT(*) FROM media_identities").fetchone()[0]
+            people_count = connection.execute("SELECT COUNT(*) FROM person_identities").fetchone()[0]
+            provider = connection.execute(
+                """
+                SELECT entity_id, provider_id FROM provider_identities
+                WHERE entity_kind='media' AND provider='douban'
+                """
+            ).fetchone()
+            active_user = connection.execute(
+                "SELECT value FROM schema_meta WHERE key='active_douban_user_id'"
+            ).fetchone()[0]
+
+        self.assertEqual(sync_count, 1)
+        self.assertEqual((library["item_key"], library["state"]), ("douban:200", "watched"))
+        self.assertEqual(media_count, 1)
+        self.assertEqual(people_count, 2)
+        self.assertEqual((provider["entity_id"], provider["provider_id"]), ("douban:200", "200"))
+        self.assertEqual(active_user, "272042071")
+        self.assertNotIn("secret-cookie-value", dump)
+
+    def test_registry_failure_rolls_back_sync_items_and_marks_the_job_failed(self):
+        def complete_crawler(**_kwargs):
+            return CrawlResult(
+                items=[
+                    MediaItem(
+                        title="Atomic Failure Film",
+                        douban_id="201",
+                        source="douban_user:collect",
+                    )
+                ],
+                pages_ok=1,
+            )
+
+        service = SyncService(self.database, crawler=complete_crawler, max_workers=1)
+        try:
+            with mock.patch.object(
+                CatalogRegistry,
+                "register_sync_items",
+                side_effect=RuntimeError("registry write failed"),
+            ):
+                job_id = service.start({"user": "272042071"})
+                service.close()
+            status = service.status(job_id)
+        finally:
+            service.close()
+
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("registry write failed", status["errors"][-1])
+        with self.database.connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM sync_items").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM library_items").fetchone()[0], 0)
 
     def test_resume_uses_failed_page_offsets_and_seed_items(self):
         first_id = self.service.start({"user": "272042071"})

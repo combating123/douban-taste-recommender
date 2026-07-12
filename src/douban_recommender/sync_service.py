@@ -9,9 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, is_dataclass
 from typing import Callable
 
+from .catalog_registry import CatalogRegistry
 from .crawler import CrawlResult, crawl_user_collections, redact_cookie_from_message
 from .database import AppDatabase
 from .network_policy import DEFAULT_SYNC_SAFETY_CAP, normalize_douban_user
+from .privacy import scrub_sensitive
 from .serialization import media_item_from_dict, media_item_to_dict
 
 
@@ -120,6 +122,17 @@ class SyncService:
         return {"message": str(diag)}
 
     @staticmethod
+    def _scrub_persisted(value, cookie: str):
+        scrubbed = scrub_sensitive(value)
+        if isinstance(scrubbed, dict):
+            return {str(key): SyncService._scrub_persisted(nested, cookie) for key, nested in scrubbed.items()}
+        if isinstance(scrubbed, list):
+            return [SyncService._scrub_persisted(nested, cookie) for nested in scrubbed]
+        if isinstance(scrubbed, str):
+            return redact_cookie_from_message(scrubbed, cookie)
+        return scrubbed
+
+    @staticmethod
     def _counts(result: CrawlResult) -> dict[str, int]:
         collect = sum(1 for item in result.items if str(item.source or "").endswith(":collect"))
         wish = sum(1 for item in result.items if str(item.source or "").endswith(":wish"))
@@ -185,23 +198,47 @@ class SyncService:
             "stopped_reason": str(result.stopped_reason or ""),
             "completeness": dict(result.completeness or {}),
         }
-        with self.database.connection() as connection:
-            for item in result.items:
-                payload = media_item_to_dict(item)
-                item_key = item.identity or uuid.uuid4().hex
-                connection.execute(
-                    """
-                    INSERT OR REPLACE INTO sync_items(job_id, item_key, payload_json, source, status)
-                    VALUES(?, ?, ?, ?, ?)
-                    """,
-                    (
-                        job_id,
-                        item_key,
-                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                        str(item.source or ""),
-                        "ready",
-                    ),
+        public = self._scrub_persisted(public, cookie)
+        registration_items = []
+        registration_now = time.time()
+        try:
+            with self.database.connection() as connection:
+                for item in result.items:
+                    scrubbed = self._scrub_persisted(media_item_to_dict(item), cookie)
+                    payload = scrubbed if isinstance(scrubbed, dict) else {}
+                    safe_item = media_item_from_dict(payload)
+                    registration_items.append(safe_item)
+                    item_key = safe_item.identity or uuid.uuid4().hex
+                    connection.execute(
+                        """
+                        INSERT OR REPLACE INTO sync_items(job_id, item_key, payload_json, source, status)
+                        VALUES(?, ?, ?, ?, ?)
+                        """,
+                        (
+                            job_id,
+                            item_key,
+                            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                            str(safe_item.source or ""),
+                            "ready",
+                        ),
+                    )
+                CatalogRegistry.register_sync_items(
+                    connection,
+                    str(request["user_id"]),
+                    registration_items,
+                    registration_now,
                 )
+        except Exception as exc:
+            safe_error = redact_cookie_from_message(str(exc), cookie)
+            prior_errors = public.get("errors") if isinstance(public, dict) else []
+            failed_public = {
+                **public,
+                "state": "failed",
+                "errors": [*(prior_errors if isinstance(prior_errors, list) else []), safe_error],
+                "stopped_reason": "sync result registration failed",
+            }
+            self._finish(job_id, failed_public, safe_error)
+            return
         self._finish(job_id, public, "")
 
     def _finish(self, job_id: str, public: dict[str, object], error: str) -> None:
