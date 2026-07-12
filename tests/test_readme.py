@@ -46,6 +46,19 @@ class ReadmeTests(unittest.TestCase):
             with self.subTest(boundary=boundary):
                 self.assertIn(boundary, text)
 
+    def test_readme_privacy_promise_covers_v3_and_legacy_visible_input_only(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        for promise in (
+            "V3 与显式 legacy 回滚界面",
+            "都只接受可见 Cookie 输入框中手动粘贴的 Cookie 字符串",
+            "不调用剪贴板读取",
+            "不解析整段请求头",
+            "多行文本、带字段名前缀的内容或其他说明文字会被拒绝",
+        ):
+            with self.subTest(promise=promise):
+                self.assertIn(promise, text)
+
     def test_readme_explains_profile_url_is_not_cookie(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("主页链接不是 Cookie", text)

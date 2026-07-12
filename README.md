@@ -29,6 +29,8 @@ python -m douban_recommender.web
 
 Cookie 只由用户输入，且只由可见输入获得；Cookie 只保存在 sessionStorage（当前标签页）和本次本机请求内，关闭标签页即失效。应用不读取浏览器 Profile、磁盘、环境转储或任何隐藏存储，也不会将 Cookie 写入数据库、缓存、日志或报告。
 
+V3 与显式 legacy 回滚界面都只接受可见 Cookie 输入框中手动粘贴的 Cookie 字符串；不调用剪贴板读取，不解析整段请求头。多行文本、带字段名前缀的内容或其他说明文字会被拒绝。
+
 如需临时回到旧界面，在启动前显式设置 `CINESCOPE_UI_VERSION=legacy`：
 
 ```powershell

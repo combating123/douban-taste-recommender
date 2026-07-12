@@ -465,3 +465,44 @@ Fresh verification is bound to code commit `d439db8857e6439f7baa451bf906b96100ac
 - Ports `7921` and `7922` were released. Existing `127.0.0.1:7860` PID `15948` was unchanged. No Cookie was entered; browser Cookie/profile/storage/request-header/hidden state was not read. Task 6 timing remains historical-only and is not relabeled as a new performance measurement.
 
 Machine evidence: `output/final-edge-fix/final-evidence.json`, `browser-smoke.json`, `batch-refresh.json`, `long-title.json`, `cache-http.json`, `legacy-http.json`, `legacy-browser.json`, `db-hash.json`, `service-cleanup.json`, screenshots, RED/GREEN transcripts, and automation logs in the same directory.
+
+## Final closure fix wave — six Important findings and uncropped evidence (2026-07-12)
+
+This closure supersedes `output/final-edge-fix/` as current proof. That directory remains historical only; in particular, its general-route mobile PNGs are not accepted because the DPR 1.5 raster was cropped to the CSS viewport dimensions. No screenshot or JSON from that directory is reused by this closure.
+
+### Bound source and fixes
+
+- Evidence source commit: `193b85c5d94b2e9a7c80240fbe59ca979a4f25b1` (`fix: close final review findings`).
+- Evidence source tree: `8c34778fd4bb25c29ce94f3443ca5f0743d0be63`.
+- Recovery now uses the sanitized pre-render live stable state as the canonical recovery body. Remembered state is only a fallback when live state has no valid active path; remembered/live scroll maps still merge in recency order with live overlap winning, a last-100 cap, independent clones, nullable candidate counts, privacy filtering, the existing `900px` case, and failed-render side effects excluded.
+- Scroll persistence sanitizes every valid route before retaining the latest `100`. Updating an existing route deletes and reinserts it in both the reducer and `saveScroll()`, so in-memory and restored state retain the newest live routes.
+- Direct overlapping navigation recaptures the latest departure `scrollY` before moving pending generation ownership, including the previously uncovered direct `slow -> real` path.
+- V3 sync start and resume share one visible-value/sessionStorage rule: non-empty visible input sets the current-tab value and empty visible input removes it. Clearing the field, resuming, disposing, and remounting no longer revives an older value.
+- Explicit legacy rollback remains reachable on legal deep links, but clipboard reads, the one-click clipboard importer, full-header extraction, and header-dump instructions are removed. The visible textarea accepts only a directly pasted `name=value; ...` Cookie string and rejects multiline, prefixed, or explanatory content.
+- `audit.js` now exposes visual viewport, DPR, document viewport, fixed bottom-navigation bounds, essential element rects, and clipped-essential results. `evidence_validation.py` validates PNG format and decoded dimensions, one declared capture mode, viewport/DPR geometry, bottom-navigation bounds, essential clipping, artifact hashes/sizes, and the lower-right marker that rejects the known top-left crop regression.
+
+Strict RED/GREEN transcripts for all six findings are under `output/final-closure-fix/tdd/`; the final full-suite, recursive JavaScript syntax, diff hygiene, and placeholder-scan logs are stored beside the browser evidence.
+
+### Fresh screenshot and browser gate
+
+All current screenshots were captured from the bound source through `playwright-core@1.61.1` and system Chrome in fresh, profile-free contexts. The single declared mode is `raw-device-pixels` with `deviceScaleFactor=1`; post-processing is `none` (`cropped=false`, `resized=false`). Requested viewport, `innerWidth/innerHeight`, `visualViewport` size/scale, DPR, decoded PNG size, document viewport, bottom-navigation rect, and essential rects are recorded per capture.
+
+- Desktop captures: requested/inner/PNG `1440x900`, DPR `1`, visual viewport scale `1`.
+- Mobile captures: requested/inner/PNG `390x844`, DPR `1`, visual viewport scale `1`; the fixed bottom navigation is visible and fully within `left=0`, `right=390`, `bottom=844`.
+- The V3 matrix passed `10/10` rows across `/tonight`, `/tonight/anime-series`, `/title/douban:1291879`, `/person/derived:6buR5rO95piO`, and `/health` at both viewports. Every row had non-empty main content, correct responsive navigation, no broken/external image, no document horizontal overflow, no focus failure, and no clipped essential element.
+- Visible images, where present, remain successful same-origin `/media/*`; unavailable media remains a non-image designed fallback. No external image is counted as delivered media.
+- Chrome emitted one generic resource-404 console line with no attributable HTTP failure; it is recorded separately as `ignored_generic_resource_404`. The failure-bearing console array is empty.
+
+The anime route changed through the visible reason input from non-empty batch `1` (nine titles) to a different non-empty batch `2` (nine titles). Browser Back and a full-document reload each retained `/tonight/anime-series`, batch `2`, all nine titles, and the settled `1310px` scroll position. The before/after and refresh screenshots use the same DPR-1 raw capture contract.
+
+At a real `390x844` viewport, the detail H1 was temporarily replaced with `InterstellarDirectorCutRestoredEdition` repeated `24` times. The H1 measured `clientWidth=scrollWidth=194`; the document measured `clientWidth=scrollWidth=390`; reload restored `罗生门`. The lower-right marker regression fixture separately proves that a DPR raster top-left crop is rejected.
+
+### Cache, legacy, privacy, data, and cleanup
+
+- V3 root/deep-link HTML and served assets remain `no-cache, no-store, must-revalidate`; content-addressed `/media/<hash>.png` remains `public, max-age=31536000, immutable`. Served `app.js` SHA-256 equals the bound source file.
+- Explicit legacy on the isolated service rendered the shell for root and the three required legal deep links. Encoded unsafe/service paths, missing assets, and invalid media remained `404`.
+- Browser privacy behavior used only a synthetic header-shaped fixture typed into the visible legacy textarea: it was rejected and cleared. Clipboard-read calls were `0`; the importer and request-header copy were absent. No real Cookie was entered or read, and no browser Cookie store, profile, local/session storage value, request header, environment dump, disk Cookie, or hidden state was inspected.
+- The isolated legacy database SHA-256 remained `cc13ac43b47d50e6613fba435eedfe14eb279b63d6ef8dc956b0b6c37e0e7c72` before and after rollback verification.
+- Temporary ports `7941` and `7942` were released, and the temporary data and Playwright directories were removed. The existing `127.0.0.1:7860` listener remained owned by PID `15948` and was not stopped or restarted.
+
+Current machine evidence is under `output/final-closure-fix/`: `browser-smoke.json`, `batch-refresh.json`, `long-title.json`, `cache-http.json`, `legacy-http.json`, `legacy-browser.json`, `db-hash.json`, `service-cleanup.json`, both screenshot-capture maps, fresh screenshots, TDD transcripts, final verification logs, `final-evidence.json`, and the hash/size-complete `manifest.json`.
