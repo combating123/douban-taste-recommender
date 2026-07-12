@@ -190,6 +190,72 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("session-series", restored["recommendation"]["channels"]["series"]["sessionId"])
         self.assertEqual(["title-1"], restored["candidateTray"]["itemIds"])
 
+    def test_store_scroll_cap_sanitizes_all_routes_then_retains_latest_one_hundred(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createEmptyUiState, createStore, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const values = new Map();
+            const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            globalThis.localStorage = storage;
+            const routes = {{ "//unsafe.example": 10, "/negative": -1 }};
+            for (let index = 0; index <= 100; index += 1) routes[`/route-${{String(index).padStart(3, "0")}}`] = index;
+            const persisted = persistUiState({{ ...createEmptyUiState(), scrollByRoute: routes }}, storage);
+            const restored = restoreUiState(storage);
+            for (const candidate of [persisted.scrollByRoute, restored.scrollByRoute]) {{
+              const keys = Object.keys(candidate);
+              if (keys.length !== 100) throw new Error(`scroll cap retained ${{keys.length}} entries instead of 100`);
+              if (keys[0] !== "/route-001" || keys.at(-1) !== "/route-100") throw new Error(`scroll cap kept the wrong recency window: ${{keys[0]}}..${{keys.at(-1)}}`);
+              if ("/route-000" in candidate || !("/route-100" in candidate)) throw new Error("latest valid route was dropped");
+            }}
+            const store = createStore(createEmptyUiState(), reduceUiState);
+            for (let index = 0; index <= 100; index += 1) store.dispatch({{ type: "route/scrollSaved", path: `/live-${{String(index).padStart(3, "0")}}`, y: 1000 + index }});
+            if (store.getState().scrollByRoute["/live-100"] !== 1100) throw new Error("in-memory store lost the latest live route");
+            console.log(JSON.stringify({{ persisted: Object.keys(persisted.scrollByRoute), restored: Object.keys(restored.scrollByRoute), live: Object.keys(store.getState().scrollByRoute).slice(-2) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("/route-001", result["persisted"][0])
+        self.assertEqual("/route-100", result["restored"][-1])
+        self.assertEqual("/live-100", result["live"][-1])
+
+    def test_store_scroll_updates_reinsert_existing_route_before_reducer_and_direct_persistence(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createEmptyUiState, createStore, persistUiState, restoreUiState, saveScroll }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const values = new Map();
+            const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            globalThis.localStorage = storage;
+            const firstHundred = Object.fromEntries(Array.from({{ length: 100 }}, (_, index) => [`/route-${{String(index).padStart(3, "0")}}`, index]));
+
+            const store = createStore({{ ...createEmptyUiState(), scrollByRoute: firstHundred }}, reduceUiState);
+            store.subscribe((state) => persistUiState(state, storage));
+            store.dispatch({{ type: "route/scrollSaved", path: "/route-000", y: 9000 }});
+            if (Object.keys(store.getState().scrollByRoute).at(-1) !== "/route-000") throw new Error("reducer update did not become the most recent route");
+            store.dispatch({{ type: "route/scrollSaved", path: "/route-100", y: 100 }});
+            const reducerRestored = restoreUiState(storage);
+            const reducerKeys = Object.keys(reducerRestored.scrollByRoute);
+            if (reducerKeys.length !== 100 || reducerKeys.at(-2) !== "/route-000" || reducerKeys.at(-1) !== "/route-100") throw new Error(`reducer persistence lost latest routes: ${{reducerKeys.slice(-3)}}`);
+            if ("/route-001" in reducerRestored.scrollByRoute) throw new Error("reducer persistence evicted a newer route instead of the oldest route");
+
+            persistUiState({{ ...createEmptyUiState(), scrollByRoute: firstHundred }}, storage);
+            saveScroll("/route-000", 9100);
+            saveScroll("/route-100", 100);
+            const directRestored = restoreUiState(storage);
+            const directKeys = Object.keys(directRestored.scrollByRoute);
+            if (directKeys.length !== 100 || directKeys.at(-2) !== "/route-000" || directKeys.at(-1) !== "/route-100") throw new Error(`saveScroll persistence lost latest routes: ${{directKeys.slice(-3)}}`);
+            if ("/route-001" in directRestored.scrollByRoute) throw new Error("saveScroll persistence evicted a newer route instead of the oldest route");
+            console.log(JSON.stringify({{ memory: Object.keys(store.getState().scrollByRoute).slice(-3), reducerKeys: reducerKeys.slice(-3), directKeys: directKeys.slice(-3) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["/route-000", "/route-100"], result["memory"][-2:])
+        self.assertEqual(["/route-000", "/route-100"], result["reducerKeys"][-2:])
+        self.assertEqual(["/route-000", "/route-100"], result["directKeys"][-2:])
+
     def test_command_lens_runtime_and_persisted_state_reject_sensitive_text_content(self):
         output = run_node_module(
             f'''
@@ -830,7 +896,7 @@ class UiV3ContractTests(unittest.TestCase):
             await slowNavigation; await Promise.resolve();
             if (router.currentRoute?.name !== "fast" || browser.scrollY !== 88) throw new Error("slow route performed stale commit or scroll");
             const saved = restoreUiState();
-            if (saved.scrollByRoute["/home"] !== 31 || events.includes("scroll:777")) throw new Error(`outgoing/stale scroll was wrong: ${{JSON.stringify({{ saved, events }})}}`);
+            if (saved.scrollByRoute["/home"] !== 44 || events.includes("scroll:777")) throw new Error(`outgoing/stale scroll was wrong: ${{JSON.stringify({{ saved, events }})}}`);
             const beforeBlocked = events.length;
             const blockedNavigation = router.navigate("/blocked");
             await blockedNavigation;
@@ -842,6 +908,49 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("fast", result["current"])
         self.assertEqual(88, result["scrollY"])
         self.assertNotIn("scroll:777", result["events"])
+
+    def test_direct_overlapping_navigation_recaptures_last_departure_scroll(self):
+        output = run_node_module(
+            f'''
+            import {{ createRouter }} from "{module_url('js/core/router.js')}";
+            import {{ restoreUiState }} from "{module_url('js/core/store.js')}";
+            const deferred = () => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }};
+            const slow = deferred(); const values = new Map(); const listeners = new Map(); const events = [];
+            const browser = {{
+              location: {{ pathname: "/home" }}, scrollY: 0,
+              history: {{ state: null, scrollRestoration: "auto", pushState(state, _title, path) {{ this.state = state; browser.location.pathname = path; }} }},
+              localStorage: {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }},
+              addEventListener(type, listener) {{ listeners.set(type, listener); }}, removeEventListener(type) {{ listeners.delete(type); }},
+              dispatchEvent(event) {{ return listeners.get(event.type)?.(event); }},
+              requestAnimationFrame(callback) {{ callback(); return 1; }},
+              scrollTo(options) {{ this.scrollY = options.top; events.push(`scroll:${{options.top}}`); }},
+              PopStateEvent: class {{ constructor(type, init) {{ this.type = type; this.state = init.state; }} }},
+            }};
+            globalThis.window = browser; globalThis.history = browser.history; globalThis.localStorage = browser.localStorage;
+            globalThis.requestAnimationFrame = browser.requestAnimationFrame.bind(browser); globalThis.PopStateEvent = browser.PopStateEvent;
+            const router = createRouter([
+              {{ pattern: "/home", name: "home" }}, {{ pattern: "/slow", name: "slow" }}, {{ pattern: "/real", name: "real" }},
+            ], {{
+              async onRoute(route) {{ events.push(`render:${{route.name}}`); if (route.name === "slow") return slow.promise; return true; }},
+            }});
+            await router.start(); events.length = 0;
+            browser.scrollY = 31;
+            const slowNavigation = router.navigate("/slow");
+            await Promise.resolve();
+            browser.scrollY = 44;
+            const realNavigation = router.navigate("/real");
+            await realNavigation;
+            slow.resolve(true);
+            await slowNavigation;
+            const saved = restoreUiState();
+            if (saved.scrollByRoute["/home"] !== 44) throw new Error(`last departure scroll was not recaptured: ${{JSON.stringify(saved.scrollByRoute)}}`);
+            if (router.currentRoute?.name !== "real") throw new Error(`latest navigation did not retain ownership: ${{router.currentRoute?.name}}`);
+            console.log(JSON.stringify({{ saved: saved.scrollByRoute, current: router.currentRoute.name, events }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(44, result["saved"]["/home"])
+        self.assertEqual("real", result["current"])
 
     def test_blocked_and_stale_navigation_release_marker_before_real_departure(self):
         output = run_node_module(
@@ -3330,6 +3439,47 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(250, result["post"]["maxPages"])
         self.assertIn("默认自动翻页到末页", result["text"])
+
+    def test_sync_resume_clears_stale_tab_cookie_when_visible_field_is_empty(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const sessionValues = new Map([["cinescope.sync.cookie.tab", "bid=stale-tab-secret; ck=hidden"]]);
+            const storage = {{ getItem(key) {{ return sessionValues.get(key) ?? null; }}, setItem(key, value) {{ sessionValues.set(key, String(value)); }}, removeItem(key) {{ sessionValues.delete(key); }} }};
+            const posts = [];
+            const postJson = async (path, payload) => {{
+              posts.push({{ path, payload }});
+              return {{ job_id: "job-resumed", state: "complete", user_id: "272042071", counts: {{ items: 8, collect_count: 6, wish_count: 2, pages_ok: 2, pages_failed: 0 }}, diagnostics: [] }};
+            }};
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const firstRoot = new FakeElement("div");
+            const first = renderSyncPanel(firstRoot, {{ storage, fetchJson: async () => ({{}}), postJson }});
+            if (first.elements.cookie.value !== "bid=stale-tab-secret; ck=hidden") throw new Error("preloaded tab cookie was not visible");
+            first.acceptJob({{
+              id: "job-resume-source", state: "needs_cookie", user_id: "272042071",
+              counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }},
+              diagnostics: [{{ status: "collect", start: 0, classification: "login_required" }}],
+            }});
+            first.elements.cookie.value = "";
+            await first.resume("job-resume-source");
+            if (posts.length !== 1 || posts[0].payload.cookie !== "") throw new Error("resume did not use the empty visible Cookie value");
+            if (sessionValues.has("cinescope.sync.cookie.tab")) throw new Error("resume left the stale tab Cookie in sessionStorage");
+            first.dispose();
+
+            const secondRoot = new FakeElement("div");
+            const second = renderSyncPanel(secondRoot, {{ storage, fetchJson: async () => ({{}}), postJson }});
+            if (second.elements.cookie.value !== "") throw new Error("remount restored a Cookie the user cleared visibly");
+            const publicState = JSON.stringify(second.snapshot());
+            if (publicState.includes("stale-tab-secret") || secondRoot.textContent.includes("stale-tab-secret")) throw new Error("cleared Cookie escaped into remounted public state");
+            second.dispose();
+            console.log(JSON.stringify({{ post: posts[0], stored: sessionValues.has("cinescope.sync.cookie.tab"), remounted: second.elements }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("", result["post"]["payload"]["cookie"])
+        self.assertFalse(result["stored"])
+        self.assertIsNone(result["remounted"])
 
     def test_sync_job_visibly_distinguishes_collect_wish_and_page_counts(self):
         prelude = fake_dom_module_prelude()

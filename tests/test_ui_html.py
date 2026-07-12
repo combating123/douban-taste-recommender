@@ -1,6 +1,26 @@
-﻿import unittest
+﻿import json
+import subprocess
+import textwrap
+import unittest
 
 from douban_recommender.web_ui import INDEX_HTML, _canonical_poster_by_title
+
+
+def run_node(script):
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode:
+        raise AssertionError(
+            "Node behavior test failed:\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return json.loads(result.stdout)
 
 
 class UiHtmlTests(unittest.TestCase):
@@ -660,17 +680,48 @@ class UiHtmlTests(unittest.TestCase):
         ]:
             self.assertIn(token, INDEX_HTML)
 
-    def test_cookie_import_assistant_extracts_request_headers_and_clipboard_cookie(self):
-        for token in [
-            "normalizeCookieInput",
+    def test_cookie_input_accepts_only_direct_visible_cookie_strings(self):
+        normalizer = INDEX_HTML[
+            INDEX_HTML.index("function normalizeCookieInput"):
+            INDEX_HTML.index("function normalizeCookieBox")
+        ]
+        result = run_node(
+            f'''
+            {normalizer}
+            console.log(JSON.stringify({{
+              direct: normalizeCookieInput("bid=abc123; ck=xyz987; dbcl2=quoted-value"),
+              prefixed: normalizeCookieInput("Cookie: bid=abc123; ck=xyz987"),
+              headers: normalizeCookieInput("GET / HTTP/1.1\\nHost: movie.douban.com\\nCookie: bid=abc123; ck=xyz987\\nUser-Agent: private"),
+              multiline: normalizeCookieInput("bid=abc123;\\n ck=xyz987"),
+              headerLike: normalizeCookieInput("Authorization: Bearer private-token"),
+              plainText: normalizeCookieInput("not-a-cookie"),
+            }}));
+            '''
+        )
+        self.assertEqual("bid=abc123; ck=xyz987; dbcl2=quoted-value", result["direct"])
+        for rejected in ("prefixed", "headers", "multiline", "headerLike", "plainText"):
+            with self.subTest(rejected=rejected):
+                self.assertEqual("", result[rejected])
+
+    def test_cookie_help_has_no_clipboard_reader_or_request_header_importer(self):
+        for forbidden in (
+            "navigator.clipboard.readText",
             "importCookieFromClipboard",
-            "setCookieBoxValue",
-            "Cookie 快速导入",
             "一键读取剪贴板 Cookie",
-            "粘贴完整 Request Headers 会自动提取 Cookie",
-            "自动启用本次会话记忆",
-        ]:
-            self.assertIn(token, INDEX_HTML)
+            "完整 Request Headers",
+            "Request Headers",
+            "自动提取 Cookie",
+            "自动抽取 Cookie",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, INDEX_HTML)
+        for required in (
+            "手动粘贴你已有的 Cookie 字符串",
+            "只处理上方可见 Cookie 输入框中的内容",
+            "整理可见 Cookie 格式",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, INDEX_HTML)
 
 
     def test_people_portraits_have_status_badges_and_no_broken_image_experience(self):

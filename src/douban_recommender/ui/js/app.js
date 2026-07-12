@@ -209,7 +209,10 @@ export function reduceUiState(state, action) {
         : "";
       if (!path) return state;
       const y = Number.isFinite(action.y) && action.y >= 0 ? Math.floor(action.y) : 0;
-      return { ...state, scrollByRoute: { ...state.scrollByRoute, [path]: y } };
+      const scrollByRoute = { ...state.scrollByRoute };
+      delete scrollByRoute[path];
+      scrollByRoute[path] = y;
+      return { ...state, scrollByRoute };
     }
     case "rail/changed":
       return { ...state, rail: { mode: action.mode } };

@@ -10,6 +10,16 @@ const ALLOWED_OVERFLOW_CLASSES = new Set([
   "person-sheet",
   "person-sheet__body",
 ]);
+const ESSENTIAL_RECT_SELECTOR = [
+  ".tonight-intro__title",
+  ".tonight-intro__deck",
+  ".space-title",
+  ".space-summary",
+  ".detail-hero__content",
+  ".detail-hero__title",
+  ".detail-hero__metadata",
+  ".detail-hero__summary",
+].join(", ");
 
 function locationUrl(locationLike) {
   if (!locationLike) return null;
@@ -93,6 +103,28 @@ function numberDimension(value) {
   return Number.isFinite(Number(value)) ? Math.max(0, Math.round(Number(value))) : 0;
 }
 
+function numberCoordinate(value) {
+  return Number.isFinite(Number(value)) ? Math.round(Number(value) * 100) / 100 : 0;
+}
+
+function nodeRect(node) {
+  if (typeof node?.getBoundingClientRect !== "function") return null;
+  try {
+    const rect = node.getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      left: numberCoordinate(rect.left),
+      right: numberCoordinate(rect.right),
+      top: numberCoordinate(rect.top),
+      bottom: numberCoordinate(rect.bottom),
+      width: numberCoordinate(rect.width),
+      height: numberCoordinate(rect.height),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function structuralPath(node) {
   const parts = [];
   for (let current = node; current?.tagName; current = current.parentElement) {
@@ -113,6 +145,7 @@ function describeNode(node) {
       client: [numberDimension(node?.clientWidth), numberDimension(node?.clientHeight)],
       scroll: [numberDimension(node?.scrollWidth), numberDimension(node?.scrollHeight)],
     },
+    rect: nodeRect(node),
   };
 }
 
@@ -122,6 +155,42 @@ function describe(nodes) {
 
 function isAllowedOverflowNode(node) {
   return [...ALLOWED_OVERFLOW_CLASSES].some((className) => node?.classList?.contains?.(className));
+}
+
+function isWithinAllowedOverflow(node) {
+  return elementChain(node).some(isAllowedOverflowNode);
+}
+
+function clippedByAncestor(node) {
+  const rect = nodeRect(node);
+  if (!rect) return false;
+  for (const ancestor of elementChain(node).slice(1)) {
+    if (isAllowedOverflowNode(ancestor)) return false;
+    const style = computedStyle(ancestor);
+    if (!["auto", "clip", "hidden", "scroll"].includes(style.overflowX)) continue;
+    const ancestorRect = nodeRect(ancestor);
+    if (ancestorRect && (rect.left < ancestorRect.left - 2 || rect.right > ancestorRect.right + 2)) return true;
+  }
+  return false;
+}
+
+function visualViewport(browser) {
+  const viewport = browser?.visualViewport;
+  return {
+    width: numberCoordinate(viewport?.width ?? browser?.innerWidth ?? globalThis.innerWidth),
+    height: numberCoordinate(viewport?.height ?? browser?.innerHeight ?? globalThis.innerHeight),
+    scale: numberCoordinate(viewport?.scale ?? 1) || 1,
+    offsetLeft: numberCoordinate(viewport?.offsetLeft ?? 0),
+    offsetTop: numberCoordinate(viewport?.offsetTop ?? 0),
+  };
+}
+
+function rectWithinViewport(rect, viewport) {
+  if (!rect) return false;
+  return rect.left >= viewport.offsetLeft - 2
+    && rect.right <= viewport.offsetLeft + viewport.width + 2
+    && rect.top >= viewport.offsetTop - 2
+    && rect.bottom <= viewport.offsetTop + viewport.height + 2;
 }
 
 function validMediaImage(image, locationLike) {
@@ -175,11 +244,24 @@ export function runAudit({
   const brokenImages = images.filter((image) => image.complete && image.naturalWidth === 0);
   const externalImages = images.filter((image) => !validMediaImage(image, locationLike));
   const overflowNodes = [...(documentRef?.querySelectorAll?.("body *") || [])].filter((node) => {
-    if (!isVisible(node) || isAllowedOverflowNode(node)) return false;
+    if (!isVisible(node) || isWithinAllowedOverflow(node)) return false;
     const style = computedStyle(node);
     return Number(node.scrollWidth) > Number(node.clientWidth) + 2 && style.overflowX === "visible";
   });
+  const visual = visualViewport(browser);
+  const essentialNodes = [...(documentRef?.querySelectorAll?.(ESSENTIAL_RECT_SELECTOR) || [])].filter(isVisible);
+  const clippedEssentials = essentialNodes.filter((node) => {
+    if (isWithinAllowedOverflow(node)) return false;
+    const rect = nodeRect(node);
+    if (!rect) return false;
+    const horizontallyOutside = rect.left < visual.offsetLeft - 2 || rect.right > visual.offsetLeft + visual.width + 2;
+    return horizontallyOutside || clippedByAncestor(node);
+  });
   const main = documentRef?.querySelector?.("#app-view") || documentRef?.querySelector?.("main");
+  const bottomNavNode = documentRef?.querySelector?.("#bottom-nav");
+  const bottomNavVisible = isVisible(bottomNavNode);
+  const bottomNavRect = nodeRect(bottomNavNode);
+  const documentElement = documentRef?.documentElement;
   const focusFailures = modalDialogs(documentRef).filter((dialog) => {
     const activeElement = documentRef?.activeElement;
     const activeInside = Boolean(activeElement && dialog.contains?.(activeElement));
@@ -193,9 +275,24 @@ export function runAudit({
       numberDimension(browser?.innerWidth ?? globalThis.innerWidth),
       numberDimension(browser?.innerHeight ?? globalThis.innerHeight),
     ],
+    visualViewport: visual,
+    devicePixelRatio: Number.isFinite(Number(browser?.devicePixelRatio)) && Number(browser.devicePixelRatio) > 0
+      ? Number(browser.devicePixelRatio)
+      : 1,
+    documentViewport: {
+      client: [numberDimension(documentElement?.clientWidth), numberDimension(documentElement?.clientHeight)],
+      scroll: [numberDimension(documentElement?.scrollWidth), numberDimension(documentElement?.scrollHeight)],
+    },
+    bottomNav: {
+      visible: bottomNavVisible,
+      rect: bottomNavRect,
+      withinViewport: !bottomNavVisible || rectWithinViewport(bottomNavRect, visual),
+    },
     brokenImages: describe(brokenImages),
     externalImages: describe(externalImages),
     overflowNodes: describe(overflowNodes),
+    essentialRects: describe(essentialNodes),
+    clippedEssentials: describe(clippedEssentials),
     emptyMain: !String(main?.textContent || "").trim(),
     focusFailures: describe(focusFailures),
     reducedMotion: Boolean(browser?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches),

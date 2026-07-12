@@ -149,13 +149,13 @@ function sanitizeChannels(channels) {
 function sanitizeScrollByRoute(scrollByRoute) {
   if (!scrollByRoute || typeof scrollByRoute !== "object" || Array.isArray(scrollByRoute)) return {};
 
-  const result = {};
-  for (const [path, position] of Object.entries(scrollByRoute).slice(0, 100)) {
+  const safeEntries = [];
+  for (const [path, position] of Object.entries(scrollByRoute)) {
     if (!isSafePath(path)) continue;
     if (!Number.isFinite(position) || position < 0) continue;
-    result[path] = Math.floor(position);
+    safeEntries.push([path, Math.floor(position)]);
   }
-  return result;
+  return Object.fromEntries(safeEntries.slice(-100));
 }
 
 export function sanitizeCommandLensChips(chips) {
@@ -293,6 +293,7 @@ export function restoreUiState(storage = browserStorage()) {
 export function saveScroll(routeKey, y = globalThis.window?.scrollY ?? 0) {
   if (typeof routeKey !== "string" || !routeKey.startsWith("/")) return;
   const state = restoreUiState();
+  delete state.scrollByRoute[routeKey];
   state.scrollByRoute[routeKey] = Number.isFinite(y) && y >= 0 ? Math.floor(y) : 0;
   persistUiState(state);
 }

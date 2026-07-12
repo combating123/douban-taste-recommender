@@ -518,6 +518,90 @@ class UiV3MigrationTests(unittest.TestCase):
         for forbidden in ("pre-render-drop", "failed-render", "failed renderer draft", "999", "1200"):
             self.assertNotIn(forbidden, serialized)
 
+    def test_failed_route_recovers_newer_live_body_captured_before_renderer(self):
+        result = run_node_module(
+            f'''
+            {fake_recovery_dom()}
+            console.error = () => {{}};
+            const {{ configureRecoveryBoundary, rememberLastStableState, renderSafely, restoreLastStableState }} = await import("{module_url('js/core/recovery.js')}");
+            const remembered = {{
+              activePath: "/tonight/anime-series", activeParams: {{ channel: "anime-series" }},
+              scrollByRoute: {{ "/tonight/anime-series": 100, "/remembered-only": 240 }},
+              rail: {{ mode: "collapsed" }},
+              recommendation: {{
+                activeChannel: "anime-series",
+                channels: {{
+                  "anime-series": {{ sessionId: "session-old", batchIndex: 1, batchIds: ["batch-old"], candidate_counts: {{ target_size: 24, returned_size: 9 }} }},
+                }},
+              }},
+              candidateTray: {{ context: {{ universeFocusId: "douban:old", expandedIds: ["douban:old-child"] }} }},
+              library: {{ state: "all" }},
+              sync: {{ profile: "old_user", options: {{ maxPages: 30, includeWish: true, includeDo: false }}, knownJobIds: ["job-old"] }},
+            }};
+            const live = structuredClone(remembered);
+            live.scrollByRoute["/tonight/anime-series"] = 900;
+            live.scrollByRoute["/live-only"] = 810;
+            live.rail.mode = "hidden";
+            live.recommendation.channels["anime-series"] = {{
+              sessionId: "session-live", batchIndex: 2, batchIds: ["batch-old", "batch-live"],
+              candidate_counts: {{ target_size: null, returned_size: 18 }},
+            }};
+            live.candidateTray.context = {{ universeFocusId: "douban:live", expandedIds: ["douban:live-child"] }};
+            live.library.state = "wish";
+            live.sync = {{
+              profile: "live_user",
+              options: {{ maxPages: 77, includeWish: false, includeDo: true, expectedCollect: 242, expectedWish: 34 }},
+              knownJobIds: ["job-old", "job-live"],
+            }};
+            let reads = 0; const retries = [];
+            rememberLastStableState(remembered);
+            configureRecoveryBoundary({{
+              root: appView,
+              getCurrentPath: () => "/taste",
+              getStableState: () => {{ reads += 1; return live; }},
+              onRetry: (state) => retries.push(state),
+            }});
+            const rendered = await renderSafely({{ path: "/taste" }}, () => {{
+              live.rail.mode = "expanded";
+              live.recommendation.channels["anime-series"].batchIndex = 99;
+              live.recommendation.channels["anime-series"].batchIds.push("batch-failed");
+              live.candidateTray.context.universeFocusId = "douban:failed";
+              live.library.state = "archived";
+              live.sync.profile = "failed_user";
+              live.scrollByRoute["/tonight/anime-series"] = 1200;
+              throw new Error("failed next route");
+            }});
+            const button = appView.querySelector("button"); button.listeners.get("click")({{ preventDefault() {{}} }});
+            const restored = restoreLastStableState();
+            console.log(JSON.stringify({{ rendered, retries, restored, reads }}));
+            '''
+        )
+        stable = result["rendered"]["previousStable"]
+        anime = stable["recommendation"]["channels"]["anime-series"]
+        self.assertEqual(1, result["reads"])
+        self.assertEqual("hidden", stable["rail"]["mode"])
+        self.assertEqual("session-live", anime["sessionId"])
+        self.assertEqual(2, anime["batchIndex"])
+        self.assertEqual(["batch-old", "batch-live"], anime["batchIds"])
+        self.assertIsNone(anime["candidate_counts"]["target_size"])
+        self.assertEqual(18, anime["candidate_counts"]["returned_size"])
+        self.assertEqual("wish", stable["library"]["state"])
+        self.assertEqual("douban:live", stable["candidateTray"]["context"]["universeFocusId"])
+        self.assertEqual(["douban:live-child"], stable["candidateTray"]["context"]["expandedIds"])
+        self.assertEqual("live_user", stable["sync"]["profile"])
+        self.assertEqual(77, stable["sync"]["options"]["maxPages"])
+        self.assertFalse(stable["sync"]["options"]["includeWish"])
+        self.assertTrue(stable["sync"]["options"]["includeDo"])
+        self.assertEqual(["job-old", "job-live"], stable["sync"]["knownJobIds"])
+        self.assertEqual(900, stable["scrollByRoute"]["/tonight/anime-series"])
+        self.assertEqual(240, stable["scrollByRoute"]["/remembered-only"])
+        self.assertEqual(810, stable["scrollByRoute"]["/live-only"])
+        self.assertEqual(stable, result["retries"][0])
+        self.assertEqual(stable, result["restored"])
+        serialized = json.dumps(result, ensure_ascii=False)
+        for forbidden in ("batch-failed", "douban:failed", "failed_user", "99", "1200"):
+            self.assertNotIn(forbidden, serialized)
+
     def test_recovery_canonicalizes_high_cardinality_scroll_with_live_routes_first(self):
         result = run_node_module(
             f'''

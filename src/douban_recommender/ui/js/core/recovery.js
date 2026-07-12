@@ -163,13 +163,14 @@ export function restoreLastStableState() {
 }
 
 function canonicalRecoverySnapshot(rememberedStable, liveStable) {
-  if (!rememberedStable) return sanitizeStableState(liveStable);
-  const scrollByRoute = { ...rememberedStable.scrollByRoute };
-  for (const [path, position] of Object.entries(liveStable.scrollByRoute)) {
+  const body = liveStable?.activePath ? liveStable : rememberedStable;
+  if (!body) return sanitizeStableState(liveStable);
+  const scrollByRoute = { ...(rememberedStable?.scrollByRoute || {}) };
+  for (const [path, position] of Object.entries(liveStable?.scrollByRoute || {})) {
     delete scrollByRoute[path];
     scrollByRoute[path] = position;
   }
-  return sanitizeStableState({ ...rememberedStable, scrollByRoute });
+  return sanitizeStableState({ ...body, scrollByRoute });
 }
 
 function recoveryPanel(stableState) {

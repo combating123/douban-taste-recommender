@@ -113,6 +113,58 @@ def browser_prelude(origin):
 
 
 class UiV3AuditTests(unittest.TestCase):
+    def test_audit_exposes_visual_viewport_bottom_nav_and_clipped_essential_rects(self):
+        output = run_node_module(
+            f'''
+            function node(tagName, rect, options = {{}}) {{
+              return {{
+                tagName: tagName.toUpperCase(), hidden: false, parentElement: options.parentElement || null,
+                clientWidth: options.clientWidth ?? rect.width, clientHeight: options.clientHeight ?? rect.height,
+                scrollWidth: options.scrollWidth ?? rect.width, scrollHeight: options.scrollHeight ?? rect.height,
+                classList: {{ contains(name) {{ return (options.classes || []).includes(name); }} }},
+                getClientRects() {{ return [rect]; }}, getBoundingClientRect() {{ return rect; }},
+                getAttribute() {{ return null; }}, hasAttribute() {{ return false; }},
+              }};
+            }}
+            const inside = node("h1", {{ left: 16, right: 374, top: 20, bottom: 72, width: 358, height: 52 }});
+            const clipped = node("p", {{ left: 16, right: 410, top: 80, bottom: 120, width: 394, height: 40 }});
+            const rail = node("div", {{ left: 0, right: 390, top: 140, bottom: 300, width: 390, height: 160 }}, {{ classes: ["title-shelf__rail"] }});
+            const intentional = node("h1", {{ left: 380, right: 700, top: 150, bottom: 210, width: 320, height: 60 }}, {{ parentElement: rail }});
+            const bottomNav = node("nav", {{ left: 0, right: 390, top: 776, bottom: 844, width: 390, height: 68 }});
+            const main = {{ textContent: "ready" }};
+            globalThis.document = {{
+              images: [], activeElement: null,
+              documentElement: {{ clientWidth: 390, clientHeight: 844, scrollWidth: 390, scrollHeight: 1600 }},
+              querySelector(selector) {{ if (selector === "#app-view") return main; if (selector === "#bottom-nav") return bottomNav; return null; }},
+              querySelectorAll(selector) {{
+                if (selector === "body *") return [inside, clipped, rail, intentional, bottomNav];
+                if (selector.includes(".tonight-intro__title")) return [inside, clipped, intentional];
+                return [];
+              }},
+            }};
+            globalThis.location = new URL("http://localhost/health");
+            globalThis.window = {{
+              location: globalThis.location, innerWidth: 390, innerHeight: 844, devicePixelRatio: 1.5,
+              visualViewport: {{ width: 390, height: 844, scale: 1, offsetLeft: 0, offsetTop: 0 }},
+              matchMedia() {{ return {{ matches: false }}; }},
+            }};
+            globalThis.getComputedStyle = (target) => ({{ display: target === bottomNav ? "grid" : "block", visibility: "visible", overflowX: target === rail ? "auto" : "visible" }});
+            const {{ runAudit }} = await import("{module_url('js/core/audit.js')}");
+            console.log(JSON.stringify(runAudit()));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual({"width": 390, "height": 844, "scale": 1, "offsetLeft": 0, "offsetTop": 0}, result["visualViewport"])
+        self.assertEqual(1.5, result["devicePixelRatio"])
+        self.assertEqual([390, 844], result["documentViewport"]["client"])
+        self.assertEqual([390, 1600], result["documentViewport"]["scroll"])
+        self.assertTrue(result["bottomNav"]["visible"])
+        self.assertTrue(result["bottomNav"]["withinViewport"])
+        self.assertEqual(844, result["bottomNav"]["rect"]["bottom"])
+        self.assertEqual(3, len(result["essentialRects"]))
+        self.assertEqual(1, len(result["clippedEssentials"]))
+        self.assertEqual(410, result["clippedEssentials"][0]["rect"]["right"])
+
     def test_audit_keeps_visually_rendered_aria_hidden_images_in_scope(self):
         output = run_node_module(
             f'''

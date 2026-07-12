@@ -308,6 +308,15 @@ export function renderSyncPanel(root, {
     return job;
   }
 
+  function syncVisibleCookie(secret) {
+    try {
+      if (secret) tabStorage?.setItem(COOKIE_SESSION_KEY, secret);
+      else tabStorage?.removeItem?.(COOKIE_SESSION_KEY);
+    } catch {
+      // Same-tab storage is optional; the visible textarea remains usable.
+    }
+  }
+
   async function refreshJob(rawJobId) {
     const jobId = safeJobId(rawJobId);
     if (!jobId || disposed) return null;
@@ -353,12 +362,7 @@ export function renderSyncPanel(root, {
       errorNode.textContent = visibleUser ? "请输入有效的豆瓣主页 URL 或用户 ID。" : "请输入豆瓣主页 URL 或用户 ID。";
       return null;
     }
-    try {
-      if (secret) tabStorage?.setItem(COOKIE_SESSION_KEY, secret);
-      else tabStorage?.removeItem?.(COOKIE_SESSION_KEY);
-    } catch {
-      // Same-tab storage is optional; the visible textarea remains usable.
-    }
+    syncVisibleCookie(secret);
     const selected = currentOptions();
     const payload = {
       user,
@@ -394,11 +398,7 @@ export function renderSyncPanel(root, {
     const previous = jobs.get(jobId);
     if (!jobId || !previous?.canResume || disposed) return null;
     const secret = secretInput.value;
-    try {
-      if (secret) tabStorage?.setItem(COOKIE_SESSION_KEY, secret);
-    } catch {
-      // Keep the visible field usable if session storage is unavailable.
-    }
+    syncVisibleCookie(secret);
     const controller = new AbortController();
     mutations.add(controller);
     errorNode.textContent = "";

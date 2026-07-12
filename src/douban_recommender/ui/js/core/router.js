@@ -114,6 +114,8 @@ export function createRouter(routes, { onRoute, onScrollSaved } = {}) {
     };
 
     if (currentRoute && pendingDeparture?.path === currentRoute.path) {
+      if (onScrollSaved) onScrollSaved(currentRoute.path, browser.scrollY);
+      else saveScroll(currentRoute.path, browser.scrollY);
       pendingDeparture = { ...pendingDeparture, generation: requestGeneration };
     } else if (currentRoute && currentRoute.path !== nextRoute.path) {
       if (onScrollSaved) onScrollSaved(currentRoute.path, browser.scrollY);
