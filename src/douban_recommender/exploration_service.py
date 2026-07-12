@@ -345,6 +345,7 @@ class ExplorationService:
     def serialize_title(self, record: LibraryRecord, *, include_schema: bool = True) -> dict[str, object]:
         identity = self.repository.media_identity_for_item(record)
         identity_id = identity.id if identity else ""
+        asset_entity_id = identity_id or record.item_key
         result: dict[str, object] = {
             "id": identity_id or record.item_key,
             "item_key": record.item_key,
@@ -353,8 +354,8 @@ class ExplorationService:
             "media_type": record.item.media_type,
             "year": record.item.year,
             "item": self._safe_item_payload(record),
-            "poster": self._media_asset("media", identity_id, "poster", record.payload.get("cover")),
-            "backdrop": self._media_asset("media", identity_id, "backdrop", record.payload.get("backdrop") or _raw_value(record.payload, "backdrop")),
+            "poster": self._media_asset("media", asset_entity_id, "poster", record.payload.get("cover")),
+            "backdrop": self._media_asset("media", asset_entity_id, "backdrop", record.payload.get("backdrop") or _raw_value(record.payload, "backdrop")),
             "people": self._people_for_title(record),
             "updated_at": record.updated_at,
         }
@@ -438,7 +439,7 @@ class ExplorationService:
         ):
             return ""
         stored = self.media_store.lookup(f"{asset_id}{extension}")
-        if stored is None or stored.kind != kind or stored.status != "ready":
+        if stored is None or stored.kind not in {kind, "shared"} or stored.status != "ready":
             return ""
         return stored.local_url
 
@@ -456,7 +457,7 @@ class ExplorationService:
 
     def _node_payload(self, record: LibraryRecord) -> dict[str, object]:
         identity = self.repository.media_identity_for_item(record)
-        return {"id": record.item_key, "title": record.item.title, "media_type": record.item.media_type, "year": record.item.year, "poster": self._media_asset("media", identity.id if identity else "", "poster", record.payload.get("cover"))}
+        return {"id": record.item_key, "title": record.item.title, "media_type": record.item.media_type, "year": record.item.year, "poster": self._media_asset("media", identity.id if identity else record.item_key, "poster", record.payload.get("cover"))}
 
     def _taste_groups(self, records: list[LibraryRecord], feedback_rows: list[dict[str, Any]]) -> dict[str, list[dict[str, object]]]:
         positive: dict[str, dict[str, Any]] = {}

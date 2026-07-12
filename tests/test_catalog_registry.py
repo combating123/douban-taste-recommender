@@ -85,7 +85,7 @@ class CatalogRegistryTests(unittest.TestCase):
         self.assertEqual(by_key["douban:101"]["state"], "watched")
         self.assertEqual(by_key["douban:102"]["state"], "wish")
         self.assertEqual(by_key["douban:103"]["state"], "candidate")
-        self.assertEqual(by_key["douban:101"]["source"], "douban_user:collect")
+        self.assertEqual(by_key["douban:101"]["source"], "douban-sync:272042071:watched")
         self.assertEqual(
             json.loads(str(by_key["douban:101"]["payload_json"]))["summary"],
             "authoritative watched payload",
@@ -115,7 +115,7 @@ class CatalogRegistryTests(unittest.TestCase):
                 "SELECT payload_json, state, source FROM library_items WHERE item_key='douban:101'"
             ).fetchone()
         self.assertEqual(row["state"], "watched")
-        self.assertEqual(row["source"], "douban_user:collect")
+        self.assertEqual(row["source"], "douban-sync:272042071:watched")
         self.assertEqual(json.loads(str(row["payload_json"]))["summary"], "authoritative watched payload")
 
     def test_creates_deterministic_media_people_and_douban_provider_identities(self):
@@ -179,6 +179,40 @@ class CatalogRegistryTests(unittest.TestCase):
             ("media", "douban:9001", "douban", "9001"),
         )
         self.assertEqual(provider["confidence"], 1.0)
+
+    def test_person_identity_keeps_only_matching_credit_portrait_sources(self):
+        item = MediaItem(
+            title="Portrait source film",
+            directors=["Director One"],
+            casts=["Actor Two"],
+            source="douban_user:collect",
+            raw={
+                "people_photos": {
+                    "导演:Director One": "https://img9.doubanio.com/director.jpg",
+                    "Actor Two": "https://upload.wikimedia.org/actor.jpg",
+                    "剧照:Director One": "https://img9.doubanio.com/director-still.jpg",
+                    "Unrelated Still": "https://img9.doubanio.com/wrong-film.jpg",
+                }
+            },
+        )
+
+        self.register([item])
+
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT name, metadata_json FROM person_identities ORDER BY name"
+            ).fetchall()
+        metadata = {row["name"]: json.loads(row["metadata_json"]) for row in rows}
+        self.assertEqual(
+            metadata["Director One"]["portrait_source_urls"],
+            ["https://img9.doubanio.com/director.jpg"],
+        )
+        self.assertEqual(
+            metadata["Actor Two"]["portrait_source_urls"],
+            ["https://upload.wikimedia.org/actor.jpg"],
+        )
+        self.assertNotIn("https://img9.doubanio.com/director-still.jpg", json.dumps(metadata))
+        self.assertNotIn("https://img9.doubanio.com/wrong-film.jpg", json.dumps(metadata))
 
     def test_repeated_registration_is_idempotent_and_records_active_profile(self):
         item = MediaItem(
@@ -257,6 +291,66 @@ class CatalogRegistryTests(unittest.TestCase):
                     "SELECT value FROM schema_meta WHERE key='active_douban_user_id'"
                 ).fetchone()
             )
+
+    def test_switching_profiles_replaces_only_prior_synced_library_and_empty_sync_does_not_switch(self):
+        first = MediaItem(title="First user title", douban_id="8101", source="douban_user:collect")
+        second = MediaItem(title="Second user title", douban_id="8102", source="douban_user:wish")
+        self.register([first], user_id="first-user")
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES('manual:keep', '{"title":"Manual keep"}', 'candidate', 'manual', 1, 1)
+                """
+            )
+
+        self.register([], now=150.0, user_id="empty-user")
+        with self.database.connection() as connection:
+            active_after_empty = connection.execute(
+                "SELECT value FROM schema_meta WHERE key='active_douban_user_id'"
+            ).fetchone()[0]
+        self.assertEqual(active_after_empty, "first-user")
+
+        self.register([second], now=200.0, user_id="second-user")
+        with self.database.connection() as connection:
+            rows = connection.execute("SELECT item_key, source FROM library_items ORDER BY item_key").fetchall()
+            active = connection.execute(
+                "SELECT value FROM schema_meta WHERE key='active_douban_user_id'"
+            ).fetchone()[0]
+        self.assertEqual(active, "second-user")
+        self.assertEqual([row["item_key"] for row in rows], ["douban:8102", "manual:keep"])
+        self.assertTrue(str(rows[0]["source"]).startswith("douban-sync:second-user:"))
+
+    def test_lower_state_richer_payload_merges_without_downgrading_state_or_source(self):
+        watched = MediaItem(
+            title="Merge title",
+            douban_id="8201",
+            my_rating=5,
+            source="douban_user:collect",
+        )
+        self.register([watched])
+        richer_candidate = MediaItem(
+            title="Merge title",
+            douban_id="8201",
+            douban_rating=9.1,
+            summary="Rich public synopsis",
+            directors=["Director Rich"],
+            source="recommendation:candidate",
+        )
+
+        self.register([richer_candidate], now=200.0)
+
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT payload_json, state, source FROM library_items WHERE item_key='douban:8201'"
+            ).fetchone()
+        payload = json.loads(row["payload_json"])
+        self.assertEqual(row["state"], "watched")
+        self.assertTrue(str(row["source"]).startswith("douban-sync:272042071:watched"))
+        self.assertEqual(payload["my_rating"], 5)
+        self.assertEqual(payload["douban_rating"], 9.1)
+        self.assertEqual(payload["summary"], "Rich public synopsis")
+        self.assertEqual(payload["directors"], ["Director Rich"])
 
 
 if __name__ == "__main__":

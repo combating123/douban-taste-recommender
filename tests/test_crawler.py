@@ -290,6 +290,22 @@ class CrawlerDiagnosticTests(unittest.TestCase):
         self.assertEqual(classification, "parse_failed_nonempty")
         self.assertIn("页面有内容", message)
 
+    def test_nonempty_parse_failure_is_not_reported_as_successful_empty_page(self):
+        from douban_recommender.crawler import crawl_user_collections
+
+        result = crawl_user_collections(
+            "moviefan123",
+            max_pages=1,
+            include_wish=False,
+            fetcher=lambda *args, **kwargs: "<html><body><p>大量未识别内容</p>" + ("x" * 200) + "</body></html>",
+            sleep_seconds=0,
+        )
+
+        self.assertEqual(result.pages_ok, 0)
+        self.assertEqual(result.pages_failed, 1)
+        self.assertEqual(result.diagnostics[0].classification, "parse_failed_nonempty")
+        self.assertNotEqual(result.stopped_reason, "已到达空白分页")
+
 
 class CrawlerScaleTests(unittest.TestCase):
     def make_page(self, status, start, count):

@@ -69,6 +69,20 @@ class MediaAuditTests(unittest.TestCase):
             ),
         )
 
+    def test_shared_manifest_is_valid_for_ready_poster_audit(self):
+        asset = self.put_asset("silver", kind="poster")
+        shared = self.store.put(
+            validate_image_bytes(png_bytes("silver")),
+            "https://images.invalid/shared-backdrop.png",
+            "backdrop",
+        )
+
+        audit = audit_recommendation_media([self.row(shared.local_url)], self.db)
+
+        self.assertEqual(shared.asset_id, asset.asset_id)
+        self.assertEqual(shared.kind, "shared")
+        self.assertEqual((audit.ready, audit.degraded), (1, 0))
+
     def test_empty_external_invalid_and_unmanifested_covers_are_missing(self):
         absent = "/media/" + ("f" * 64) + ".png"
         rows = [

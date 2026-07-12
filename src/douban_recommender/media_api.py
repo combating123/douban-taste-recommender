@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -43,22 +44,50 @@ def _provider_ids(value: object) -> dict[str, str]:
     }
 
 
+def _json_object(value: object) -> dict[str, Any]:
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _json_strings(value: object) -> list[str]:
+    try:
+        decoded = json.loads(str(value or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return [str(item).strip() for item in decoded if str(item).strip()] if isinstance(decoded, list) else []
+
+
+def _merge_unique(*values: object) -> list[str]:
+    merged: list[str] = []
+    for value in values:
+        for item in _strings(value):
+            if item not in merged:
+                merged.append(item)
+    return merged
+
+
 class MediaApi:
     def __init__(self, store: MediaStore, orchestrator: MediaOrchestrator):
         self.store = store
         self.orchestrator = orchestrator
 
     def create_job(self, payload: dict[str, Any]) -> dict[str, object]:
+        payload = dict(payload or {})
         kind = str(payload.get("kind") or "poster").strip().lower()
         if kind not in {"poster", "backdrop", "portrait"}:
             raise ValueError("unsupported media kind")
+        identity_key = str(payload.get("identity_key") or payload.get("identityKey") or "").strip()
+        if identity_key:
+            payload = self._hydrate_registered_payload(payload, identity_key, kind)
         title = str(payload.get("title") or "").strip()
         person_name = str(payload.get("person_name") or payload.get("personName") or "").strip()
         if kind == "portrait" and not person_name:
             raise ValueError("person_name is required for portrait jobs")
         if kind != "portrait" and not title:
             raise ValueError("title is required for work media jobs")
-        identity_key = str(payload.get("identity_key") or payload.get("identityKey") or "").strip()
         if not identity_key:
             raw_identity = f"{kind}:{person_name or title}:{payload.get('year') or ''}"
             identity_key = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:24]
@@ -101,6 +130,82 @@ class MediaApi:
             "identity_key": identity_key,
         }
 
+    def _hydrate_registered_payload(self, payload: dict[str, Any], identity_key: str, kind: str) -> dict[str, Any]:
+        hydrated = dict(payload)
+        with self.store.database.connection() as connection:
+            if kind == "portrait":
+                row = connection.execute(
+                    "SELECT name, aliases_json, metadata_json FROM person_identities WHERE id=?",
+                    (identity_key,),
+                ).fetchone()
+                if row:
+                    metadata = _json_object(row["metadata_json"])
+                    hydrated.setdefault("person_name", str(row["name"] or ""))
+                    if not hydrated.get("aliases"):
+                        hydrated["aliases"] = _json_strings(row["aliases_json"])
+                    if not hydrated.get("occupations"):
+                        hydrated["occupations"] = metadata.get("roles") or []
+                    if not hydrated.get("work_context") and not hydrated.get("workContext"):
+                        hydrated["work_context"] = metadata.get("known_works") or []
+                    hydrated["source_urls"] = _merge_unique(
+                        hydrated.get("source_urls") or hydrated.get("sourceUrls") or hydrated.get("source_url") or hydrated.get("sourceUrl"),
+                        metadata.get("portrait_source_urls"),
+                        metadata.get("portrait_source_url"),
+                    )
+                provider_rows = connection.execute(
+                    "SELECT provider, provider_id FROM provider_identities WHERE entity_kind='person' AND entity_id=?",
+                    (identity_key,),
+                ).fetchall()
+            else:
+                media_row = connection.execute(
+                    """
+                    SELECT id, title, original_titles_json, year, media_type, countries_json, metadata_json
+                    FROM media_identities
+                    WHERE id=? OR json_extract(metadata_json, '$.item_key')=?
+                    ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
+                    """,
+                    (identity_key, identity_key, identity_key),
+                ).fetchone()
+                library_row = connection.execute(
+                    "SELECT payload_json FROM library_items WHERE item_key=?",
+                    (identity_key,),
+                ).fetchone()
+                library = _json_object(library_row["payload_json"]) if library_row else {}
+                metadata = _json_object(media_row["metadata_json"]) if media_row else {}
+                if media_row:
+                    hydrated.setdefault("title", str(media_row["title"] or ""))
+                    hydrated.setdefault("year", media_row["year"])
+                    hydrated.setdefault("media_type", str(media_row["media_type"] or ""))
+                    if not hydrated.get("original_titles") and not hydrated.get("originalTitles"):
+                        hydrated["original_titles"] = _json_strings(media_row["original_titles_json"])
+                    if not hydrated.get("countries"):
+                        hydrated["countries"] = _json_strings(media_row["countries_json"])
+                for key in ("title", "year", "media_type", "countries", "directors", "casts"):
+                    if not hydrated.get(key):
+                        hydrated[key] = metadata.get(key) or library.get(key)
+                source_keys = (
+                    ("backdrop_url", "backdrop") if kind == "backdrop"
+                    else ("cover_url", "cover")
+                )
+                raw = library.get("raw") if isinstance(library.get("raw"), dict) else {}
+                hydrated["source_urls"] = _merge_unique(
+                    hydrated.get("source_urls") or hydrated.get("sourceUrls") or hydrated.get("source_url") or hydrated.get("sourceUrl"),
+                    metadata.get(source_keys[0]),
+                    library.get(source_keys[1]),
+                    raw.get(source_keys[1]),
+                )
+                entity_ids = [identity_key]
+                if media_row and str(media_row["id"]) not in entity_ids:
+                    entity_ids.append(str(media_row["id"]))
+                placeholders = ",".join("?" for _ in entity_ids)
+                provider_rows = connection.execute(
+                    f"SELECT provider, provider_id FROM provider_identities WHERE entity_kind='media' AND entity_id IN ({placeholders})",
+                    entity_ids,
+                ).fetchall()
+        discovered_ids = {str(row["provider"]): str(row["provider_id"]) for row in provider_rows}
+        hydrated["provider_ids"] = {**discovered_ids, **_provider_ids(hydrated.get("provider_ids") or hydrated.get("providerIds"))}
+        return hydrated
+
     def get_job(self, job_id: str) -> dict[str, object]:
         job = self.orchestrator.job(str(job_id or "").strip())
         if not job:
@@ -124,7 +229,7 @@ class MediaApi:
             or stored.status != "ready"
             or stored.local_url != local_url
             or (expected_asset_id and stored.asset_id != expected_asset_id)
-            or (expected_kind and stored.kind != expected_kind)
+            or (expected_kind and stored.kind not in {expected_kind, "shared"})
         ):
             public["state"] = "degraded"
             public["error"] = ""

@@ -218,7 +218,7 @@ def _audit_recommendation_media(
         if route_filename not in lookup_cache:
             lookup_cache[route_filename] = store.lookup(route_filename)
         stored = lookup_cache[route_filename]
-        if stored is None or stored.status != "ready" or stored.kind != "poster":
+        if stored is None or stored.status != "ready" or stored.kind not in {"poster", "shared"}:
             counts["degraded"] += 1
             continue
 

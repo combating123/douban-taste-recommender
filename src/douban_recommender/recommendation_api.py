@@ -309,13 +309,50 @@ def _normalize_batch_item(item: dict[str, object], media_store: MediaStore) -> d
     payload = scrubbed if isinstance(scrubbed, dict) else {}
     had_cover = bool(str(payload.get("cover") or "").strip())
     payload["url"] = _safe_url(payload.get("url"))
-    payload["cover"] = _safe_media_url(payload.get("cover"), media_store)
+    payload["item_key"] = recommendation_item_key(payload)
+    payload["cover"] = _safe_media_url(payload.get("cover"), media_store) or _bound_media_url(
+        payload["item_key"], "poster", media_store
+    )
     payload["source"] = _safe_source(payload.get("source"))
     payload["people_photos"] = _safe_people_photos(payload.get("people_photos"), media_store)
-    payload["item_key"] = recommendation_item_key(payload)
     payload["conflicts"] = _conflicts(payload)
     payload["media_status"] = _media_status(payload, had_cover=had_cover)
     return payload
+
+
+def _bound_media_url(item_key: str, kind: str, media_store: MediaStore) -> str:
+    entity_ids = [str(item_key or "").strip()]
+    if not entity_ids[0]:
+        return ""
+    with media_store.database.connection() as connection:
+        identity_rows = connection.execute(
+            "SELECT id FROM media_identities WHERE json_extract(metadata_json, '$.item_key')=?",
+            (entity_ids[0],),
+        ).fetchall()
+        for row in identity_rows:
+            identity_id = str(row["id"] or "").strip()
+            if identity_id and identity_id not in entity_ids:
+                entity_ids.append(identity_id)
+        placeholders = ",".join("?" for _ in entity_ids)
+        rows = connection.execute(
+            f"""
+            SELECT o.entity_id, o.asset_id, o.decision, a.extension, a.kind, a.status
+            FROM user_asset_overrides o
+            JOIN asset_files a ON a.asset_id=o.asset_id
+            WHERE o.entity_kind='media' AND o.kind=? AND o.entity_id IN ({placeholders})
+            ORDER BY CASE WHEN o.entity_id=? THEN 0 ELSE 1 END, o.updated_at DESC
+            """,
+            (kind, *entity_ids, entity_ids[0]),
+        ).fetchall()
+    for row in rows:
+        if str(row["decision"] or "").lower() not in {"selected", "approved", "accepted", "chosen"}:
+            continue
+        if str(row["status"] or "") != "ready" or str(row["kind"] or "") not in {kind, "shared"}:
+            continue
+        stored = media_store.lookup(f"{row['asset_id']}{row['extension']}")
+        if stored is not None and stored.status == "ready" and stored.kind in {kind, "shared"}:
+            return stored.local_url
+    return ""
 
 
 def _safe_url(value: object) -> str:

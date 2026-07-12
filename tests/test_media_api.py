@@ -11,6 +11,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from douban_recommender.catalog_registry import CatalogRegistry
 from douban_recommender.catalog_api import CatalogApi
 from douban_recommender.database import AppDatabase
 from douban_recommender.media.orchestrator import MediaOrchestrator
@@ -128,6 +129,93 @@ class MediaApiRouteTests(unittest.TestCase):
             ("https://upload.wikimedia.org/actor.png",),
         )
 
+    def test_media_job_hydrates_registered_work_source_and_provider_identity(self):
+        item = MediaItem(
+            title="Registered work",
+            year=2024,
+            media_type="电影",
+            douban_id="9911",
+            cover="https://img9.doubanio.com/view/photo/s_ratio_poster/public/p9911.jpg",
+            source="douban_user:collect",
+        )
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES('douban:9911', ?, 'watched', 'douban-sync:user:watched', ?, ?)
+                """,
+                (json.dumps(media_item_to_dict(item), ensure_ascii=False), now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO media_identities(id, title, original_titles_json, year, media_type, countries_json, metadata_json, created_at, updated_at)
+                VALUES('douban:9911', 'Registered work', '[]', 2024, '电影', '[]', ?, ?, ?)
+                """,
+                (json.dumps({"item_key": "douban:9911", "cover_url": item.cover}), now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO provider_identities(entity_kind, entity_id, provider, provider_id, confidence, metadata_json, created_at, updated_at)
+                VALUES('media', 'douban:9911', 'douban', '9911', 1, '{}', ?, ?)
+                """,
+                (now, now),
+            )
+
+        created = self.api.create_job({"kind": "poster", "identity_key": "douban:9911"})
+
+        request = self.orchestrator.requests[-1]
+        self.assertEqual(created["identity_key"], "douban:9911")
+        self.assertEqual(request.query.title, "Registered work")
+        self.assertEqual(request.query.year, 2024)
+        self.assertEqual(request.query.source_urls, (item.cover,))
+        self.assertEqual(request.query.provider_ids, {"douban": "9911"})
+
+    def test_media_job_hydrates_registered_person_portrait_sources(self):
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO person_identities(id, name, aliases_json, metadata_json, created_at, updated_at)
+                VALUES('person:actor', '演员甲', '[]', ?, ?, ?)
+                """,
+                (json.dumps({"roles": ["cast"], "known_works": ["作品甲"], "portrait_source_urls": ["https://upload.wikimedia.org/actor.jpg"]}), now, now),
+            )
+
+        self.api.create_job({"kind": "portrait", "identity_key": "person:actor"})
+
+        query = self.orchestrator.requests[-1].query
+        self.assertEqual(query.person_name, "演员甲")
+        self.assertEqual(query.occupations, ("cast",))
+        self.assertEqual(query.work_context, ("作品甲",))
+        self.assertEqual(query.source_urls, ("https://upload.wikimedia.org/actor.jpg",))
+
+    def test_portrait_job_needs_only_registered_person_identity_key(self):
+        item = MediaItem(
+            title="Registered portrait work",
+            directors=["导演甲"],
+            casts=["演员乙"],
+            source="douban_user:collect",
+            raw={
+                "people_photos": {
+                    "导演:导演甲": "https://img9.doubanio.com/director-real.jpg",
+                    "演员乙": "https://upload.wikimedia.org/actor-real.jpg",
+                    "无关剧照": "https://img9.doubanio.com/unrelated.jpg",
+                }
+            },
+        )
+        with self.database.connection() as connection:
+            CatalogRegistry.register_sync_items(connection, "272042071", [item], time.time())
+            person_id = connection.execute(
+                "SELECT id FROM person_identities WHERE name='导演甲'"
+            ).fetchone()["id"]
+
+        self.api.create_job({"kind": "portrait", "identity_key": person_id})
+
+        query = self.orchestrator.requests[-1].query
+        self.assertEqual(query.person_name, "导演甲")
+        self.assertEqual(query.source_urls, ("https://img9.doubanio.com/director-real.jpg",))
+
     def test_media_job_and_health_routes_report_public_state(self):
         asset = self.store.put(
             validate_image_bytes(png_bytes()),
@@ -164,6 +252,27 @@ class MediaApiRouteTests(unittest.TestCase):
         self.assertEqual(payload["state"], "degraded")
         self.assertEqual(payload["result"]["status"], "degraded")
         self.assertNotIn("https://img.example", json.dumps(payload))
+
+    def test_media_job_accepts_shared_asset_for_requested_kind(self):
+        validated = validate_image_bytes(png_bytes())
+        self.store.put(validated, "https://img.example/poster.png", "poster")
+        shared = self.store.put(validated, "https://img.example/backdrop.png", "backdrop")
+        self.orchestrator.jobs["job-shared"] = {
+            "id": "job-shared",
+            "kind": "backdrop",
+            "state": "ready",
+            "result": {
+                "status": "ready",
+                "asset_id": shared.asset_id,
+                "local_url": shared.local_url,
+            },
+        }
+
+        status, _, body = self.request("/api/v2/media/jobs/job-shared")
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["state"], "ready")
 
     def test_inline_job_is_immediately_visible_through_catalog_local_media(self):
         now = time.time()

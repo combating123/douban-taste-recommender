@@ -543,17 +543,29 @@ class RecommendationSessionService:
             INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
             VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(item_key) DO UPDATE SET
-                payload_json = excluded.payload_json,
+                payload_json = CASE
+                    WHEN excluded.state = 'candidate'
+                         AND library_items.state IN ('watched', 'wanted', 'wish', 'collect', 'rated')
+                         AND (library_items.source LIKE 'douban-sync:%' OR library_items.source LIKE 'douban_user:%')
+                    THEN library_items.payload_json
+                    ELSE excluded.payload_json
+                END,
                 state = CASE
                     WHEN excluded.state = 'candidate'
-                         AND library_items.state IN ('watched', 'wanted')
+                         AND library_items.state IN ('watched', 'wanted', 'wish', 'collect', 'rated')
                     THEN library_items.state
                     WHEN excluded.state = 'wanted'
                          AND library_items.state = 'watched'
                     THEN library_items.state
                     ELSE excluded.state
                 END,
-                source = excluded.source,
+                source = CASE
+                    WHEN excluded.state = 'candidate'
+                         AND library_items.state IN ('watched', 'wanted', 'wish', 'collect', 'rated')
+                         AND (library_items.source LIKE 'douban-sync:%' OR library_items.source LIKE 'douban_user:%')
+                    THEN library_items.source
+                    ELSE excluded.source
+                END,
                 updated_at = excluded.updated_at
             """,
             (

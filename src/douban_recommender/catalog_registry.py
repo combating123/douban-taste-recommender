@@ -177,6 +177,31 @@ def _person_id(name: str) -> str:
     return f"derived:{encoded}"
 
 
+def _person_photo_sources(item: MediaItem, name: str) -> list[str]:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    photos = raw.get("people_photos")
+    if not isinstance(photos, dict):
+        return []
+    target = unicodedata.normalize("NFKC", str(name or "").strip())
+    sources: list[str] = []
+    for raw_key, raw_value in photos.items():
+        key = unicodedata.normalize("NFKC", str(raw_key or "").strip())
+        if ":" in key:
+            prefix, matched_name = (part.strip() for part in key.split(":", 1))
+            if prefix not in {"导演", "主演", "演员", "配音"}:
+                continue
+        else:
+            matched_name = key
+        if matched_name != target:
+            continue
+        values = raw_value if isinstance(raw_value, (list, tuple, set)) else (raw_value,)
+        for value in values:
+            url = str(value or "").strip()
+            if url.startswith(("https://", "http://")) and url not in sources:
+                sources.append(url)
+    return sources
+
+
 class CatalogRegistry:
     @staticmethod
     def register_sync_items(
@@ -186,12 +211,36 @@ class CatalogRegistry:
         now: float,
     ) -> dict[str, int]:
         registrations = _coalesce_items(items)
+        if not registrations:
+            return {
+                "library_items": 0,
+                "media_identities": 0,
+                "person_identities": 0,
+                "provider_identities": 0,
+            }
+        clean_user_id = str(user_id or "").strip()
+        active_row = connection.execute(
+            "SELECT value FROM schema_meta WHERE key='active_douban_user_id'"
+        ).fetchone()
+        active_user_id = str(active_row[0] or "").strip() if active_row else ""
+        if active_user_id and clean_user_id and active_user_id != clean_user_id:
+            connection.execute(
+                """
+                DELETE FROM library_items
+                WHERE source LIKE 'douban-sync:%' OR source LIKE 'douban_user:%'
+                """
+            )
         people: dict[str, dict[str, object]] = {}
         provider_ids: set[str] = set()
 
         for item_key in sorted(registrations):
             registration = registrations[item_key]
-            effective = CatalogRegistry._upsert_library_item(connection, registration, float(now))
+            effective = CatalogRegistry._upsert_library_item(
+                connection,
+                registration,
+                clean_user_id,
+                float(now),
+            )
             CatalogRegistry._upsert_media_identity(connection, item_key, effective, float(now))
             if effective.douban_id:
                 CatalogRegistry._upsert_douban_identity(connection, item_key, effective, float(now))
@@ -203,11 +252,17 @@ class CatalogRegistry:
                         continue
                     person = people.setdefault(
                         clean_name,
-                        {"roles": set(), "evidence_title_ids": set(), "known_works": set()},
+                        {
+                            "roles": set(),
+                            "evidence_title_ids": set(),
+                            "known_works": set(),
+                            "portrait_source_urls": set(),
+                        },
                     )
                     person["roles"].add(role)
                     person["evidence_title_ids"].add(item_key)
                     person["known_works"].add(effective.title)
+                    person["portrait_source_urls"].update(_person_photo_sources(effective, clean_name))
 
         for name in sorted(people):
             CatalogRegistry._upsert_person_identity(connection, name, people[name], float(now))
@@ -217,7 +272,7 @@ class CatalogRegistry:
             INSERT INTO schema_meta(key, value) VALUES('active_douban_user_id', ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value
             """,
-            (str(user_id or "").strip(),),
+            (clean_user_id,),
         )
         return {
             "library_items": len(registrations),
@@ -227,18 +282,32 @@ class CatalogRegistry:
         }
 
     @staticmethod
-    def _upsert_library_item(connection, registration: _RegistrationItem, now: float) -> MediaItem:
+    def _upsert_library_item(
+        connection,
+        registration: _RegistrationItem,
+        user_id: str,
+        now: float,
+    ) -> MediaItem:
         existing = connection.execute(
             "SELECT payload_json, state, source FROM library_items WHERE item_key=?",
             (registration.item_key,),
         ).fetchone()
-        if existing is not None and _state_rank(existing["state"]) > _state_rank(registration.state):
-            return media_item_from_dict(_json_object(existing["payload_json"]))
         payload = dict(registration.payload)
+        state = registration.state
+        source = (
+            f"douban-sync:{user_id}:{state}"
+            if user_id and state in {"watched", "wish"}
+            else str(registration.item.source or "")
+        )
         if existing is not None:
-            payload = _merge_payload(payload, _json_object(existing["payload_json"]))
+            existing_payload = _json_object(existing["payload_json"])
+            if _state_rank(existing["state"]) > _state_rank(registration.state):
+                payload = _merge_payload(existing_payload, payload)
+                state = str(existing["state"] or state)
+                source = str(existing["source"] or source)
+            else:
+                payload = _merge_payload(payload, existing_payload)
         item = media_item_from_dict(payload)
-        source = str(item.source or (existing["source"] if existing is not None else "") or "")
         connection.execute(
             """
             INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
@@ -252,7 +321,7 @@ class CatalogRegistry:
             (
                 registration.item_key,
                 _json_dumps(payload),
-                registration.state,
+                state,
                 source,
                 now,
                 now,
@@ -355,12 +424,13 @@ class CatalogRegistry:
             "roles": sorted(evidence["roles"]),
             "evidence_title_ids": sorted(evidence["evidence_title_ids"]),
             "known_works": sorted(evidence["known_works"]),
+            "portrait_source_urls": sorted(evidence.get("portrait_source_urls") or []),
         }
         aliases: list[str] = []
         if row is not None:
             aliases = _json_list(row["aliases_json"])
             metadata = _merge_metadata(_json_object(row["metadata_json"]), metadata)
-        for key in ("roles", "evidence_title_ids", "known_works"):
+        for key in ("roles", "evidence_title_ids", "known_works", "portrait_source_urls"):
             metadata[key] = sorted(_dedupe(metadata.get(key) if isinstance(metadata.get(key), list) else []))
         connection.execute(
             """

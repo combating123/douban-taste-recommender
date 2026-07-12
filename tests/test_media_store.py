@@ -65,6 +65,29 @@ class MediaStoreTests(unittest.TestCase):
             count = connection.execute("SELECT COUNT(*) FROM asset_files").fetchone()[0]
         self.assertEqual(count, 1)
 
+    def test_same_bytes_can_bind_as_poster_and_backdrop(self):
+        validated = validate_image_bytes(image_bytes(size=(320, 480)))
+        poster = self.store.put(validated, "https://img.example/poster.png", "poster")
+        backdrop = self.store.put(validated, "https://img.example/backdrop.png", "backdrop")
+
+        self.assertEqual(poster.asset_id, backdrop.asset_id)
+        self.assertEqual(backdrop.kind, "shared")
+        self.store.bind_asset("media", "media-shared", "poster", backdrop, "inline", 1.0, {})
+        self.store.bind_asset("media", "media-shared", "backdrop", backdrop, "inline", 1.0, {})
+
+        with self.database.connection() as connection:
+            manifest_kind = connection.execute(
+                "SELECT kind FROM asset_files WHERE asset_id=?", (poster.asset_id,)
+            ).fetchone()[0]
+            bindings = connection.execute(
+                "SELECT kind, asset_id FROM user_asset_overrides WHERE entity_id='media-shared' ORDER BY kind"
+            ).fetchall()
+        self.assertEqual(manifest_kind, "shared")
+        self.assertEqual(
+            [(row["kind"], row["asset_id"]) for row in bindings],
+            [("backdrop", poster.asset_id), ("poster", poster.asset_id)],
+        )
+
     def test_lookup_accepts_route_filename_and_returns_metadata(self):
         stored = self.store.put(
             validate_image_bytes(image_bytes(image_format="JPEG")),

@@ -475,10 +475,15 @@ def crawl_user_collections(
                     classification=classification,
                     message=message,
                 ))
-                result.pages_ok += 1
-                if not page_items:
+                if classification == "true_empty_page":
+                    result.pages_ok += 1
                     empty_page_seen = True
                     break
+                if classification != "ok_with_items":
+                    result.pages_failed += 1
+                    result.errors.append(f"{status} start={start}: {message}")
+                    break
+                result.pages_ok += 1
                 for item in page_items:
                     key_value = item.douban_id or item.title
                     key = f"{status}:{key_value}" if key_value else ""

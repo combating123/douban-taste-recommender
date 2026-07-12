@@ -66,6 +66,10 @@ class MediaStore:
                 ON CONFLICT(asset_id) DO UPDATE SET
                     last_verified_at = excluded.last_verified_at,
                     source_url = excluded.source_url,
+                    kind = CASE
+                        WHEN asset_files.kind = excluded.kind THEN asset_files.kind
+                        ELSE 'shared'
+                    END,
                     status = 'ready'
                 """,
                 (
@@ -130,12 +134,14 @@ class MediaStore:
             raise ValueError("stored asset is not ready")
         if not str(stored.local_url or "").startswith("/media/"):
             raise ValueError("stored asset must use a local /media route")
-        if stored.kind != clean_kind:
+        if stored.kind not in {clean_kind, "shared"}:
             raise ValueError("stored asset kind does not match binding")
 
         verified = self.lookup(stored.asset_id)
         if verified is None or verified.local_url != stored.local_url or verified.status != "ready":
             raise ValueError("stored asset is not locally verified")
+        if verified.kind not in {clean_kind, "shared"}:
+            raise ValueError("verified asset kind does not match binding")
 
         try:
             clean_confidence = max(0.0, min(1.0, float(confidence)))

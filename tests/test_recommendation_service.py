@@ -594,7 +594,7 @@ class RecommendationSessionServiceTests(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
-                VALUES(?, ?, 'watched', 'fixture', ?, ?)
+                VALUES(?, ?, 'watched', 'douban-sync:user:watched', ?, ?)
                 """,
                 (watched_key, json.dumps({"title": "already watched"}, ensure_ascii=False), now, now),
             )
@@ -605,7 +605,27 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         catalog = {row["item_key"]: row for row in self.service.library_items(states=["candidate", "watched"])}
         self.assertTrue(set(movie_keys).issubset(catalog))
         self.assertEqual(catalog[watched_key]["state"], "watched")
-        self.assertEqual(catalog[watched_key]["payload"]["title"], watched_item["title"])
+        self.assertEqual(catalog[watched_key]["payload"]["title"], "already watched")
+        self.assertEqual(catalog[watched_key]["source"], "douban-sync:user:watched")
+
+    def test_create_session_does_not_downgrade_or_overwrite_synced_wish(self):
+        wished_item = pools()["电影"][0] if isinstance(pools()["电影"], list) else pools()["电影"]["items"][0]
+        wished_key = recommendation_item_key(wished_item)
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES(?, ?, 'wish', 'douban-sync:user:wish', 1, 1)
+                """,
+                (wished_key, json.dumps({"title": "synced wish", "tags": ["想看"]}, ensure_ascii=False)),
+            )
+
+        self.create()
+
+        row = self._library_row(wished_key)
+        self.assertEqual(row["state"], "wish")
+        self.assertEqual(row["source"], "douban-sync:user:wish")
+        self.assertEqual(json.loads(row["payload_json"])["title"], "synced wish")
 
     def test_apply_feedback_unknown_session_and_key_raise_value_error(self):
         session = self.create()

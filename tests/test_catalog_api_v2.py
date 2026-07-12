@@ -323,6 +323,28 @@ class CatalogApiV2Tests(unittest.TestCase):
         self.assertEqual(people["Actor External"]["evidence_title_ids"], [item_key("1001")])
         self.assert_local_only_media(payload)
 
+    def test_title_without_media_identity_uses_item_key_asset_binding(self):
+        key = "item:no-identity"
+        self._insert_library(
+            key,
+            {"title": "No identity title", "media_type": "电影", "cover": "https://img.example/external.jpg"},
+            "candidate",
+            55,
+        )
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_asset_overrides(id, entity_kind, entity_id, kind, asset_id, decision, created_at, updated_at)
+                VALUES('override-no-identity', 'media', ?, 'poster', ?, 'selected', ?, ?)
+                """,
+                (key, self.poster_asset, self.now, self.now),
+            )
+
+        payload = self.api.get_title(key)
+
+        self.assertEqual(payload["poster"]["media_status"], "ready")
+        self.assertTrue(payload["poster"]["url"].startswith("/media/"))
+
     def test_person_lookup_returns_identity_and_derived_known_for_with_local_portrait(self):
         status, payload = self.request("/api/v2/people/person-director")
         self.assertEqual(status, 200, payload)
@@ -533,6 +555,19 @@ class CatalogApiV2Tests(unittest.TestCase):
                 self.assertEqual(status, 200, payload)
                 self.assertEqual(payload[field]["url"], expected_url)
                 self.assertNotEqual(payload[field]["media_status"], "ready")
+
+    def test_shared_manifest_asset_remains_ready_for_its_bound_kind(self):
+        with self.database.connection() as connection:
+            connection.execute(
+                "UPDATE asset_files SET kind='shared' WHERE asset_id=?",
+                (self.poster_asset,),
+            )
+
+        status, payload = self.request("/api/v2/titles/douban:1001")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["poster"]["media_status"], "ready")
+        self.assertTrue(payload["poster"]["url"].startswith("/media/"))
 
     def test_person_lookup_and_legacy_asset_lookup_stay_inside_repository_boundary(self):
         class NoServiceSql:

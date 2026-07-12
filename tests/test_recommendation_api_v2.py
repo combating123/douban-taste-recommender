@@ -1310,6 +1310,31 @@ class RecommendationApiV2Tests(unittest.TestCase):
             self.assertEqual(media_response.status, 200)
             self.assertEqual(media_response.read(), stored.path.read_bytes())
 
+    def test_bound_poster_is_projected_into_existing_recommendation_batch(self):
+        created = self.create_session(batch_size=4)
+        channel_name, channel = self.first_nonempty_channel(created)
+        item = channel["batch"]["items"][0]
+        stored = self.create_verified_media_asset()
+        self.media_store.bind_asset(
+            "media",
+            item["item_key"],
+            "poster",
+            stored,
+            "test",
+            1.0,
+            {"identity": "verified"},
+        )
+
+        restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
+        refreshed = next(
+            row
+            for row in restored["channels"][channel_name]["batch"]["items"]
+            if row["item_key"] == item["item_key"]
+        )
+
+        self.assertEqual(refreshed["cover"], stored.local_url)
+        self.assertEqual(refreshed["media_status"]["poster"], "ready")
+
     def test_candidate_url_fetch_results_do_not_echo_input_secrets_in_session_or_batch(self):
         secret_input_url = "https://viewer:input-secret@example.com/list?token=input-token#input-fragment"
         secret_item_url = "https://service:result-secret@example.com/subject/200/?token=result-token#result-fragment"
