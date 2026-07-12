@@ -76,6 +76,22 @@ def classify_collection_page(page_html: str, parsed_count: int) -> tuple[str, st
         return "security_check", "豆瓣返回安全验证页，建议稍后重试或减少页数"
     if "仅自己可见" in text or "没有权限" in text:
         return "privacy_or_permission", "页面可能受隐私或权限限制"
+    subject_num = re.search(
+        r'''class=["'][^"']*\bsubject-num\b[^"']*["'][^>]*>(.*?)</span>''',
+        page_html or "",
+        flags=re.I | re.S,
+    )
+    empty_grid = re.search(
+        r'''<div\b[^>]*class=["'][^"']*\bgrid-view\b[^"']*["'][^>]*>\s*</div>''',
+        page_html or "",
+        flags=re.I | re.S,
+    )
+    if subject_num and empty_grid:
+        page_range = re.search(r"(\d+)\s*-\s*(\d+)\s*/\s*(\d+)", clean_html(subject_num.group(1)))
+        if page_range:
+            first, last, total = (int(value) for value in page_range.groups())
+            if first > last or first > total:
+                return "true_empty_page", "已到达列表末页"
     if "movie.douban.com/subject/" in (page_html or ""):
         return "parse_failed_nonempty", "页面有内容但当前解析器未识别到标准条目"
     if len(text.strip()) < 80:

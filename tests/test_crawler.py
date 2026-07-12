@@ -5,6 +5,7 @@ from pathlib import Path
 
 from douban_recommender.crawler import (
     build_user_collection_url,
+    classify_collection_page,
     normalize_douban_user_id,
     parse_user_collection_html,
 )
@@ -289,6 +290,19 @@ class CrawlerDiagnosticTests(unittest.TestCase):
 
         self.assertEqual(classification, "parse_failed_nonempty")
         self.assertIn("页面有内容", message)
+
+    def test_classify_out_of_range_empty_grid_as_true_terminal_page(self):
+        html = """
+        <html><body>
+          <span class="subject-num">256-244&nbsp;/&nbsp;244</span>
+          <div class="grid-view"></div>
+          <div class="paginator"><a href="?start=225">前页</a></div>
+        """ + ("navigation and stylesheet text " * 20) + "</body></html>"
+
+        classification, message = classify_collection_page(html, 0)
+
+        self.assertEqual(classification, "true_empty_page")
+        self.assertIn("末页", message)
 
     def test_nonempty_parse_failure_is_not_reported_as_successful_empty_page(self):
         from douban_recommender.crawler import crawl_user_collections
