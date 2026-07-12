@@ -24,11 +24,17 @@ class SyncService:
         self,
         database: AppDatabase,
         crawler: Callable[..., CrawlResult] = crawl_user_collections,
+        detail_enricher: Callable[..., list] | None = None,
+        detail_fetcher: Callable[..., object] | None = None,
+        enrich_limit: int = 12,
         max_workers: int = 1,
     ):
         self.database = database
         self.database.initialize()
         self.crawler = crawler
+        self.detail_enricher = detail_enricher
+        self.detail_fetcher = detail_fetcher
+        self.enrich_limit = max(0, min(40, int(enrich_limit)))
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)), thread_name_prefix="cinescope-sync")
         self._jobs: dict[str, dict[str, object]] = {}
         self._lock = threading.Lock()
@@ -144,6 +150,41 @@ class SyncService:
             "pages_failed": int(result.pages_failed),
         }
 
+    def _enrich_details(self, items: list, cookie: str) -> dict[str, int]:
+        if not self.detail_enricher or self.enrich_limit <= 0:
+            return {"attempted": 0, "enriched": 0}
+        indexed = list(enumerate(items or []))
+        indexed.sort(
+            key=lambda pair: (
+                float(getattr(pair[1], "my_rating", None) or 0),
+                str(getattr(pair[1], "source", "")).endswith(":collect"),
+                bool(getattr(pair[1], "douban_id", "") or getattr(pair[1], "url", "")),
+                -pair[0],
+            ),
+            reverse=True,
+        )
+        selected = [item for _, item in indexed[: self.enrich_limit]]
+        before = [media_item_to_dict(item) for item in selected]
+        fetcher = None
+        if self.detail_fetcher is not None:
+            fetcher = lambda url: self.detail_fetcher(url, cookie=cookie)
+        try:
+            self.detail_enricher(
+                selected,
+                fetcher=fetcher,
+                limit=len(selected),
+                sleep_seconds=0.0,
+                force_people_photos=True,
+            )
+        except Exception:
+            return {"attempted": len(selected), "enriched": 0}
+        enriched = sum(
+            1
+            for previous, item in zip(before, selected)
+            if media_item_to_dict(item) != previous
+        )
+        return {"attempted": len(selected), "enriched": enriched}
+
     def _run(
         self,
         job_id: str,
@@ -185,6 +226,7 @@ class SyncService:
 
         diagnostics = [self._diagnostic(diag) for diag in result.diagnostics]
         errors = [redact_cookie_from_message(error, cookie) for error in result.errors]
+        enrichment = self._enrich_details(result.items, cookie)
         login_required = any(diag.get("classification") == "login_required" for diag in diagnostics)
         state = "needs_cookie" if login_required and not result.items else ("partial" if result.pages_failed else "complete")
         public = {
@@ -197,6 +239,7 @@ class SyncService:
             "errors": errors,
             "stopped_reason": str(result.stopped_reason or ""),
             "completeness": dict(result.completeness or {}),
+            "enrichment": enrichment,
         }
         public = self._scrub_persisted(public, cookie)
         registration_items = []

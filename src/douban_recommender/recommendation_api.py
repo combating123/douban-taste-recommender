@@ -7,9 +7,10 @@ from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from .candidate_planner import build_candidate_plan
+from .catalog_enrichment import enrich_media_items_parallel
 from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
 from .database import AppDatabase
-from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
+from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates, fetch_douban_detail_html, fetch_url_candidates
 from .feedback_service import FeedbackEvent, FeedbackService
 from .intent_parser import RecommendationIntent, intent_to_chips, parse_recommendation_intent
 from .io import load_media_csv, load_media_csv_from_text
@@ -21,7 +22,7 @@ from .privacy import scrub_sensitive
 from .ranking import rank_candidates
 from .recommendation_service import RecommendationBatch, RecommendationSession, RecommendationSessionService
 from .runtime_paths import resolve_database_path, resolve_media_dir
-from .serialization import media_item_from_dict
+from .serialization import media_item_from_dict, media_item_to_dict
 
 
 SCHEMA_VERSION = 2
@@ -427,6 +428,9 @@ class RecommendationApi:
         language_adapter_factory: Callable[..., object] | None = None,
         media_store: MediaStore | None = None,
         media_root: Path | str | None = None,
+        detail_enricher: Callable[..., list[MediaItem]] | None = None,
+        detail_fetcher: Callable[[str], object] | None = None,
+        enrich_limit: int = 12,
     ):
         self.database = database
         self.database.initialize()
@@ -436,6 +440,9 @@ class RecommendationApi:
         self.sample_candidates_path = sample_candidates_path or DEFAULT_SAMPLE_CANDIDATES
         self.language_adapter_factory = language_adapter_factory or OpenAICompatibleLanguageAdapter
         self.media_store = media_store or MediaStore(media_root or resolve_media_dir(), database)
+        self.detail_enricher = detail_enricher
+        self.detail_fetcher = detail_fetcher
+        self.enrich_limit = max(0, min(36, int(enrich_limit)))
 
     def create_session(self, payload: dict[str, Any]) -> dict[str, object]:
         self._require_schema(payload)
@@ -446,6 +453,8 @@ class RecommendationApi:
         profile = self._profile(profile_key, rated_items, payload)
         candidates = self._candidates(payload, profile, rated_items)
         ranked_by_channel = self._ranked_channels(payload, intent, rated_items, candidates, profile)
+        if self._enrich_visible_candidates(candidates, ranked_by_channel, self._batch_sizes(payload)):
+            ranked_by_channel = self._ranked_channels(payload, intent, rated_items, candidates, profile)
         session = self.session_service.create_session(
             profile_key,
             intent,
@@ -455,6 +464,54 @@ class RecommendationApi:
         for channel in CHANNEL_ORDER:
             self.session_service.next_batch(session.id, channel)
         return self.get_session(session.id)
+
+    def _enrich_visible_candidates(
+        self,
+        candidates: list[MediaItem],
+        ranked_by_channel: dict[str, dict[str, object]],
+        batch_sizes: dict[str, int],
+    ) -> bool:
+        if not self.detail_enricher or self.enrich_limit <= 0:
+            return False
+        by_key = {recommendation_item_key(item): item for item in candidates}
+        selected: list[MediaItem] = []
+        seen: set[str] = set()
+        visible_rows = {
+            channel: list((ranked_by_channel.get(channel) or {}).get("items") or [])[
+                : max(1, int(batch_sizes.get(channel) or 1))
+            ]
+            for channel in CHANNEL_ORDER
+        }
+        depth = 0
+        while len(selected) < self.enrich_limit and any(depth < len(rows) for rows in visible_rows.values()):
+            for channel in CHANNEL_ORDER:
+                rows = visible_rows[channel]
+                if depth >= len(rows):
+                    continue
+                row = rows[depth]
+                key = recommendation_item_key(row)
+                item = by_key.get(key)
+                if item is None or key in seen:
+                    continue
+                seen.add(key)
+                selected.append(item)
+                if len(selected) >= self.enrich_limit:
+                    break
+            depth += 1
+        if not selected:
+            return False
+        before = [media_item_to_dict(item) for item in selected]
+        try:
+            self.detail_enricher(
+                selected,
+                fetcher=self.detail_fetcher,
+                limit=len(selected),
+                sleep_seconds=0.0,
+                force_people_photos=True,
+            )
+        except Exception:
+            return False
+        return any(media_item_to_dict(item) != previous for previous, item in zip(before, selected))
 
     def get_session(self, session_id: str) -> dict[str, object]:
         session = self._restore_session(session_id)
@@ -932,4 +989,9 @@ class RecommendationApi:
 def build_default_recommendation_api() -> RecommendationApi:
     database = AppDatabase(resolve_database_path())
     database.initialize()
-    return RecommendationApi(database)
+    return RecommendationApi(
+        database,
+        detail_enricher=enrich_media_items_parallel,
+        detail_fetcher=lambda url: fetch_douban_detail_html(url, timeout=5),
+        enrich_limit=6,
+    )

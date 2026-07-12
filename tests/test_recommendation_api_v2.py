@@ -135,6 +135,101 @@ class RecommendationApiV2Tests(unittest.TestCase):
         validated = validate_image_bytes(output.getvalue(), "image/png")
         return self.media_store.put(validated, "https://source.example/poster.png", "poster")
 
+    def test_visible_candidates_are_enriched_and_registered_as_catalog_identities(self):
+        from douban_recommender.recommendation_api import RecommendationApi
+
+        seen = []
+
+        def detail_enricher(items, fetcher=None, limit=12, sleep_seconds=0, force_people_photos=False):
+            seen.extend(item.douban_id for item in items)
+            for item in items:
+                item.summary = f"{item.title} 的真实剧情简介"
+                item.genres = ["剧情"]
+                item.directors = [f"{item.title}导演"]
+                item.casts = [f"{item.title}演员"]
+                item.raw["people_photos"] = {
+                    f"{item.title}导演": f"https://img9.doubanio.com/{item.douban_id}-director.jpg"
+                }
+            return items
+
+        api = RecommendationApi(
+            self.api.database,
+            media_store=self.media_store,
+            detail_enricher=detail_enricher,
+            enrich_limit=3,
+        )
+        session = api.create_session({
+            "schema_version": 2,
+            "candidates_csv": (
+                "title,media_type,douban_rating,douban_id,format\n"
+                "Visible Movie,电影,9.2,9301,MOVIE\n"
+                "Visible Series,电视剧,9.1,9302,TV_SERIES\n"
+                "Visible Anime,动漫,9.3,9303,SERIES\n"
+            ),
+            "batch_size": 1,
+            "limit": 3,
+            "include_movies": True,
+            "include_series": True,
+            "include_anime": True,
+        })
+
+        self.assertEqual(set(seen), {"9301", "9302", "9303"})
+        movie = session["channels"]["电影"]["batch"]["items"][0]
+        self.assertEqual(movie["summary"], "Visible Movie 的真实剧情简介")
+        title = CatalogApi(self.api.database, media_root=self.media_store.root).get_title("douban:9301")
+        self.assertEqual(title["item"]["summary"], "Visible Movie 的真实剧情简介")
+        self.assertEqual(title["people"][0]["name"], "Visible Movie导演")
+        with self.api.database.connection() as connection:
+            person = connection.execute(
+                "SELECT metadata_json FROM person_identities WHERE name='Visible Movie导演'"
+            ).fetchone()
+        self.assertIsNotNone(person)
+        self.assertEqual(
+            json.loads(person["metadata_json"])["portrait_source_urls"],
+            ["https://img9.doubanio.com/9301-director.jpg"],
+        )
+
+    def test_visible_enrichment_budget_is_shared_round_robin_across_channels(self):
+        from douban_recommender.recommendation_api import RecommendationApi
+
+        seen = []
+
+        def detail_enricher(items, **_kwargs):
+            seen.extend((item.media_type, item.title) for item in items)
+            for item in items:
+                item.summary = "enriched"
+            return items
+
+        api = RecommendationApi(
+            self.api.database,
+            media_store=self.media_store,
+            detail_enricher=detail_enricher,
+            enrich_limit=6,
+        )
+        candidates = [
+            MediaItem(title=f"{channel}-{index}", media_type=channel, douban_id=f"{offset}{index}")
+            for channel, offset in (("电影", 940), ("电视剧", 950), ("动漫", 960))
+            for index in range(3)
+        ]
+        ranked = {
+            channel: {
+                "items": [media_item_to_dict(item) for item in candidates if item.media_type == channel]
+            }
+            for channel in ("电影", "电视剧", "动漫")
+        }
+
+        changed = api._enrich_visible_candidates(
+            candidates,
+            ranked,
+            {"电影": 3, "电视剧": 3, "动漫": 3},
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            {channel: sum(1 for media_type, _ in seen if media_type == channel) for channel in ("电影", "电视剧", "动漫")},
+            {"电影": 2, "电视剧": 2, "动漫": 2},
+        )
+
     def insert_library_item(self, item, state, source="douban-sync"):
         payload = media_item_to_dict(media_item_from_dict(dict(item)))
         key = recommendation_item_key(payload)

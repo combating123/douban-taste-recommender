@@ -6,10 +6,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from .catalog_registry import CatalogRegistry
 from .database import AppDatabase
 from .intent_parser import RecommendationIntent
 from .models import recommendation_item_key
 from .privacy import scrub_sensitive
+from .serialization import media_item_from_dict
 
 _FEEDBACK_LIBRARY_STATES = {"watched": "watched", "want": "wanted"}
 _FEEDBACK_EXCLUSION_EVENTS = {"not-tonight", "watched"}
@@ -96,6 +98,17 @@ def _serialize_item(value) -> dict[str, object]:
 
 def _item_key(item: dict[str, object]) -> str:
     return recommendation_item_key(item)
+
+
+def _catalog_item(item: dict[str, object]):
+    payload = dict(item or {})
+    raw = dict(payload.get("raw")) if isinstance(payload.get("raw"), dict) else {}
+    people_photos = payload.get("people_photos")
+    if isinstance(people_photos, dict) and people_photos:
+        raw["people_photos"] = dict(people_photos)
+    payload["raw"] = raw
+    payload["source"] = str(payload.get("source") or "recommendation")
+    return media_item_from_dict(payload)
 
 
 def _json_dumps(payload: object) -> str:
@@ -373,17 +386,17 @@ class RecommendationSessionService:
                     now,
                 ),
             )
-            for state in channels.values():
-                for item in state.get("items", []):
-                    if isinstance(item, dict):
-                        self._upsert_library_item(
-                            connection,
-                            _item_key(item),
-                            item,
-                            "candidate",
-                            "recommendation",
-                            now,
-                        )
+            catalog_items = [
+                _catalog_item(item)
+                for state in channels.values()
+                for item in state.get("items", [])
+                if isinstance(item, dict)
+            ]
+            active_row = connection.execute(
+                "SELECT value FROM schema_meta WHERE key='active_douban_user_id'"
+            ).fetchone()
+            active_user_id = str(active_row[0] or "") if active_row else ""
+            CatalogRegistry.register_sync_items(connection, active_user_id, catalog_items, now)
         return RecommendationSession(
             id=session_id,
             profile_key=str(profile_key or "default"),

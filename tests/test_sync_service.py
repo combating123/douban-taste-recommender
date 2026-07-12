@@ -199,6 +199,78 @@ class SyncServiceTests(unittest.TestCase):
         self.assertEqual(active_user, "272042071")
         self.assertNotIn("secret-cookie-value", dump)
 
+    def test_sync_enrichment_persists_synopsis_credits_and_portrait_sources_without_cookie(self):
+        secret = "bid=visible-session-cookie"
+        fetched = []
+
+        def crawler(**_kwargs):
+            return CrawlResult(
+                items=[
+                    MediaItem(
+                        title="Enrichment Film",
+                        media_type="电影",
+                        douban_id="9201",
+                        source="douban_user:collect",
+                    )
+                ],
+                pages_ok=1,
+            )
+
+        def detail_fetcher(url, cookie=""):
+            fetched.append((url, cookie))
+            return b"detail"
+
+        def detail_enricher(items, fetcher=None, limit=1, sleep_seconds=0, force_people_photos=False):
+            self.assertEqual(fetcher("https://movie.douban.com/subject/9201/"), b"detail")
+            self.assertEqual(limit, 1)
+            self.assertTrue(force_people_photos)
+            items[0].summary = "Persisted real synopsis"
+            items[0].genres = ["剧情", "悬疑"]
+            items[0].directors = ["导演甲"]
+            items[0].casts = ["演员乙"]
+            items[0].cover = "https://img9.doubanio.com/poster-9201.jpg"
+            items[0].raw["people_photos"] = {
+                "导演甲": "https://img9.doubanio.com/director-9201.jpg",
+                "演员乙": "https://upload.wikimedia.org/actor-9201.jpg",
+            }
+            return items
+
+        service = SyncService(
+            self.database,
+            crawler=crawler,
+            detail_enricher=detail_enricher,
+            detail_fetcher=detail_fetcher,
+            enrich_limit=1,
+            max_workers=1,
+        )
+        try:
+            job_id = service.start({"user": "272042071"}, cookie=secret)
+            status = self.wait_for_terminal(job_id, service=service)
+        finally:
+            service.close()
+
+        self.assertEqual(status["enrichment"], {"attempted": 1, "enriched": 1})
+        self.assertEqual(fetched, [("https://movie.douban.com/subject/9201/", secret)])
+        with self.database.connection() as connection:
+            library = json.loads(connection.execute(
+                "SELECT payload_json FROM library_items WHERE item_key='douban:9201'"
+            ).fetchone()[0])
+            sync_item = json.loads(connection.execute(
+                "SELECT payload_json FROM sync_items WHERE item_key='douban:9201'"
+            ).fetchone()[0])
+            people = {
+                row["name"]: json.loads(row["metadata_json"])
+                for row in connection.execute("SELECT name, metadata_json FROM person_identities")
+            }
+            dump = "\n".join(connection.iterdump())
+        self.assertEqual(library["summary"], "Persisted real synopsis")
+        self.assertEqual(sync_item["genres"], ["剧情", "悬疑"])
+        self.assertEqual(
+            people["导演甲"]["portrait_source_urls"],
+            ["https://img9.doubanio.com/director-9201.jpg"],
+        )
+        self.assertNotIn(secret, dump)
+
     def test_registry_failure_rolls_back_sync_items_and_marks_the_job_failed(self):
         def complete_crawler(**_kwargs):
             return CrawlResult(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .database import AppDatabase
+from .catalog_enrichment import enrich_media_items_parallel
+from .douban_sources import fetch_douban_detail_html
 from .runtime_paths import resolve_database_path
 from .sync_service import SyncService
 
@@ -52,4 +54,9 @@ class SyncApi:
 def build_default_sync_api() -> SyncApi:
     database = AppDatabase(resolve_database_path())
     database.initialize()
-    return SyncApi(SyncService(database))
+    return SyncApi(SyncService(
+        database,
+        detail_enricher=enrich_media_items_parallel,
+        detail_fetcher=lambda url, cookie="": fetch_douban_detail_html(url, cookie=cookie, timeout=5),
+        enrich_limit=12,
+    ))

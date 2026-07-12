@@ -1839,6 +1839,21 @@ def http_get(url: str, accept_json: bool = True, timeout: int = 12) -> bytes:
         return response.read()
 
 
+def fetch_douban_detail_html(url: str, cookie: str = "", timeout: int = 10) -> bytes:
+    headers = dict(DEFAULT_HEADERS)
+    headers.update({
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://movie.douban.com/",
+    })
+    clean_cookie = str(cookie or "").strip()
+    if clean_cookie:
+        headers["Cookie"] = clean_cookie
+    request = urllib.request.Request(str(url), headers=headers)
+    opener = build_url_opener()
+    with opener.open(request, timeout=max(1, int(timeout))) as response:
+        return response.read()
+
+
 def configured_proxy_url() -> str:
     for name in ("DOUBAN_RECOMMENDER_HTTP_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
         value = os.environ.get(name) or os.environ.get(name.lower())
