@@ -506,3 +506,14 @@ At a real `390x844` viewport, the detail H1 was temporarily replaced with `Inter
 - Temporary ports `7941` and `7942` were released, and the temporary data and Playwright directories were removed. The existing `127.0.0.1:7860` listener remained owned by PID `15948` and was not stopped or restarted.
 
 Current machine evidence is under `output/final-closure-fix/`: `browser-smoke.json`, `batch-refresh.json`, `long-title.json`, `cache-http.json`, `legacy-http.json`, `legacy-browser.json`, `db-hash.json`, `service-cleanup.json`, both screenshot-capture maps, fresh screenshots, TDD transcripts, final verification logs, `final-evidence.json`, and the hash/size-complete `manifest.json`.
+
+## Final seal closure — live scroll equivalence and mandatory edge markers (2026-07-12)
+
+This seal supersedes `output/final-closure-fix/` as current proof. The wholly fresh bundle is `output/final-seal/` and is bound to production code commit `9132a8e87375bf085084210e0c76a496fbd7cb4e` and tree `c6f63159de4e5bc7883d0affa388fcc6e1e7c734`.
+
+- The live `route/scrollSaved` reducer, direct `saveScroll()`, persistence, and restoration now share one validated recency helper. Starting with 100 routes, refreshing `/route-000`, then adding `/route-100` leaves exactly 100 live entries, evicts `/route-001`, keeps the refreshed and new routes newest, and makes live, persisted, and restored maps deeply equal in key order and values.
+- Screenshot capture validation now requires `edge_marker` metadata for every screenshot. Existing coordinate, RGBA, tolerance, decoded-pixel, viewport, DPR, bottom-navigation, essential-rect, artifact-size, and SHA-256 checks remain active.
+- Every one of the 14 fresh screenshots injects a fixed 1 CSS-pixel marker at the right/bottom edge immediately before the viewport screenshot and removes it immediately afterward. Capture mode is exclusively `raw-device-pixels`, with DPR `1`, `visualViewport.scale=1`, and no crop or resize. `marker-audit.json` records every decoded device-pixel coordinate and RGBA match.
+- The fresh V3 browser matrix passed `10/10` route/viewport rows. Anime batches 1 and 2 were non-empty and different; Back and reload retained route, batch, all titles, and `1310px` scroll. The long-title proof remained within the `390x844` document width.
+- Cache behavior, same-origin `/media/*` honesty, explicit legacy legal deep links, unsafe/service `404` exclusions, visible-input-only Cookie behavior, database immutability, temporary-service cleanup, and protected `127.0.0.1:7860` PID `15948` remained intact.
+- Strict RED/GREEN transcripts for the two seal findings, focused/full unittest logs, all 23 JavaScript syntax checks, hygiene/privacy scans, capture maps, visual self-check, aggregate evidence, and the validated manifest are included in `output/final-seal/`.
