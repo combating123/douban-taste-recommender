@@ -433,3 +433,19 @@ Task 8 does not relabel historical timing as a fresh measurement. The retained p
 - Fresh route rows and restoration details: `output/task8-acceptance/browser-evidence.json`.
 - Fresh screenshots: `output/task8-acceptance/screenshots/1440x900`, `output/task8-acceptance/screenshots/390x844`, and `output/task8-acceptance/screenshots/legacy`.
 - Historical-only provenance is enumerated under `old_evidence_provenance` in the final machine evidence; those older JSON files are not substitutes for the Task 8 smoke matrix.
+
+## Final review fix wave closure (2026-07-12)
+
+Fresh verification is bound to code commit `0fed4e5df29f732ba8d1dab7d2ba1c0edd9058c0`; no Task 8 JSON is reused as evidence for this fix wave.
+
+- Fixed-URL V3 HTML shells and the complete `/assets/v3/*` graph now return `Cache-Control: no-cache, no-store, must-revalidate`. Content-addressed `/media/*` remains `public, max-age=31536000, immutable`. Therefore the documented normal origin `http://127.0.0.1:7861` can receive upgraded code without changing hostnames.
+- Explicit legacy mode now serves the legacy shell for all legal frontend deep links, including `/tonight/anime-series`, `/title/douban:1291879`, and `/person/derived:6buR5rO95piO`. Encoded traversal, encoded service roots, `/api/*`, missing `/assets/*`, and invalid `/media/*` remain excluded.
+- Recovery now captures the pre-render live store, merges only its sanitized route scroll values into the last stable snapshot, preserves sanitized `candidate_counts.target_size` and `returned_size` (including explicit `target_size: null`), and continues dropping failed-render candidate tray and command-lens mutations. The returned recovery state, retry callback, and remembered stable state use the same merged scroll.
+- Strict TDD RED/GREEN transcripts are under `output/final-review-fix/` for cache headers, legacy deep links, and recovery scroll/counts. Focused verification passed `30` tests; the complete suite passed `604` tests; all `23` V3 JavaScript files passed `node --check`.
+- Fresh V3 ran with `CINESCOPE_UI_VERSION` absent on `127.0.0.1:7911` and a dedicated data copy. HTTP evidence covers root HTML, deep HTML, `app.js`, and immutable media. Browser smoke passed `10/10` route/viewport rows at `1440x900` and `390x844`, with empty audit failure arrays, no document horizontal overflow, correct responsive navigation, and an empty visible Cookie field.
+- The anime route changed from non-empty batch 1 to a different non-empty batch 2 through the visible reason field and button. Back navigation and full-document refresh retained route, batch, all nine visible titles, and the same settled `520px` scroll.
+- At an actual `390x844` browser viewport, the real detail-route H1 was temporarily replaced with `InterstellarDirectorCutRestoredEdition` repeated exactly 24 times. The H1 measured `scrollWidth=179`, `clientWidth=179`; the document measured `scrollWidth=375`, `clientWidth=375`. Reload restored `罗生门`; no production hook was added.
+- Explicit legacy ran separately on `127.0.0.1:7912`. Root plus the three required deep links rendered the legacy shell in the browser; unsafe and service paths stayed `404`. The dedicated database SHA-256 remained `709fd2ab0b673a1eceea05730cef6d20f68482441ed9f772a62c50e65e3cf3e6` before and after rollback verification.
+- Ports `7911` and `7912` were released. Existing listener `127.0.0.1:7860` (PID `15948`) was unchanged. No Cookie was entered, and no browser profile, Cookie store, local/session storage value, request header, environment dump, or hidden state was read.
+
+Machine evidence: `output/final-review-fix/browser-smoke.json`, `batch-refresh.json`, `long-title.json`, `cache-http.json`, `legacy-http.json`, `legacy-browser.json`, `db-hash.json`, `service-cleanup.json`, plus the RED/GREEN and automation logs in the same directory.
