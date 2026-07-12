@@ -710,7 +710,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path in {"/", "/index.html"}:
                 html = load_index_html() if selected_ui_version(os.environ) == "v3" else INDEX_HTML
-                self.send_text(html, content_type="text/html; charset=utf-8")
+                self.send_text(
+                    html,
+                    content_type="text/html; charset=utf-8",
+                    cache_control="no-cache, no-store, must-revalidate",
+                )
             elif path.startswith("/assets/v3/"):
                 relative_path = path.removeprefix("/assets/v3/")
                 try:
@@ -718,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
                 except FileNotFoundError:
                     self.send_json({"error": "asset not found"}, status=404)
                     return
-                self.send_bytes(data, content_type=content_type, cache_control="public, max-age=31536000, immutable")
+                self.send_bytes(data, content_type=content_type, cache_control="no-cache, no-store, must-revalidate")
             elif path == "/sample/ratings":
                 self.send_text(read_text_file(SAMPLE_RATINGS), content_type="text/plain; charset=utf-8")
             elif path == "/sample/candidates":
@@ -783,8 +787,13 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("/api/poster-jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 self.send_json(self.handle_poster_job_get(job_id))
-            elif selected_ui_version(os.environ) == "v3" and is_v3_frontend_route(path):
-                self.send_text(load_index_html(), content_type="text/html; charset=utf-8")
+            elif is_v3_frontend_route(path):
+                html = load_index_html() if selected_ui_version(os.environ) == "v3" else INDEX_HTML
+                self.send_text(
+                    html,
+                    content_type="text/html; charset=utf-8",
+                    cache_control="no-cache, no-store, must-revalidate",
+                )
             else:
                 self.send_json({"error": "not found"}, status=404)
         except CatalogApiError as exc:
@@ -1192,11 +1201,19 @@ class Handler(BaseHTTPRequestHandler):
                 return {"error": "poster job not found", "job_id": job_id}
             return serialize_poster_job(job)
 
-    def send_text(self, text: str, content_type: str = "text/plain; charset=utf-8", status: int = 200) -> None:
+    def send_text(
+        self,
+        text: str,
+        content_type: str = "text/plain; charset=utf-8",
+        status: int = 200,
+        cache_control: str | None = None,
+    ) -> None:
         data = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(data)
 

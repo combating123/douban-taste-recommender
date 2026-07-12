@@ -53,6 +53,18 @@ function safeScroll(value) {
   return result;
 }
 
+function safeCandidateCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function safeCandidateCounts(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    target_size: source.target_size === null ? null : safeCandidateCount(source.target_size),
+    returned_size: safeCandidateCount(source.returned_size),
+  };
+}
+
 function safeChannels(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return Object.fromEntries(CHANNELS.map((channel) => {
@@ -63,6 +75,7 @@ function safeChannels(value) {
       batchIds: Array.isArray(entry.batchIds)
         ? [...new Set(entry.batchIds.map((item) => safeId(item)).filter(Boolean))].slice(-50)
         : [],
+      candidate_counts: safeCandidateCounts(entry.candidate_counts),
     }];
   }));
 }
@@ -167,7 +180,7 @@ function recoveryPanel(stableState) {
   retry.type = "button";
   retry.textContent = "恢复上次稳定状态";
   retry.addEventListener("click", () => {
-    const restored = restoreLastStableState() || sanitizeStableState(stableState);
+    const restored = stableState ? sanitizeStableState(stableState) : restoreLastStableState();
     if (restored?.activePath) boundary.onRetry(restored);
   });
   panel.append(eyebrow, heading, copy, retry);
@@ -235,7 +248,17 @@ export async function renderSafely(route, renderer, options = {}) {
   const getStableState = typeof options.getStableState === "function" ? options.getStableState : boundary.getStableState;
   const expectedPath = safePath(route?.path);
   const previousNodes = rootChildren(root);
-  const previousStable = restoreLastStableState() || sanitizeStableState(getStableState?.() || {});
+  const rememberedStable = restoreLastStableState();
+  const liveStable = sanitizeStableState(getStableState?.() || {});
+  const previousStable = rememberedStable
+    ? {
+        ...rememberedStable,
+        scrollByRoute: {
+          ...rememberedStable.scrollByRoute,
+          ...liveStable.scrollByRoute,
+        },
+      }
+    : liveStable;
   const generation = root ? (renderGenerations.get(root) || 0) + 1 : 1;
   if (root) {
     disconnectObserver(root);
@@ -277,6 +300,7 @@ export async function renderSafely(route, renderer, options = {}) {
     pending = false;
     reportRecovery(expectedPath);
     if (root && rootChildren(root).length === 0 && previousNodes.length) root.replaceChildren(...previousNodes);
+    if (previousStable?.activePath) rememberLastStableState(previousStable);
     commitRecoveryBoundary(error, previousStable, root);
     return { ok: false, recovered: true, stale: false, value: null, previousStable };
   } finally {

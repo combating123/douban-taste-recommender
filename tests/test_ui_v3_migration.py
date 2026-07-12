@@ -464,6 +464,60 @@ class UiV3MigrationTests(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual("safe_user", result["stable"]["sync"]["profile"])
 
+    def test_recovery_merges_fresh_scroll_preserves_candidate_counts_and_discards_failed_render_state(self):
+        result = run_node_module(
+            f'''
+            {fake_recovery_dom()}
+            console.error = () => {{}};
+            const {{ configureRecoveryBoundary, rememberLastStableState, renderSafely, restoreLastStableState }} = await import("{module_url('js/core/recovery.js')}");
+            const stableState = {{
+              activePath: "/library", activeParams: {{ filter: "wish" }}, scrollByRoute: {{ "/library": 100 }},
+              rail: {{ mode: "collapsed" }},
+              recommendation: {{
+                activeChannel: "movie",
+                channels: {{
+                  movie: {{ sessionId: "session-stable", batchIndex: 2, batchIds: ["batch-stable"], candidate_counts: {{ target_size: null, returned_size: 37 }} }},
+                  series: {{ sessionId: "session-series", candidate_counts: {{ target_size: -1, returned_size: 1.5 }} }},
+                }},
+              }},
+              candidateTray: {{ context: {{ universeFocusId: "douban:42" }} }},
+              library: {{ state: "wish" }}, sync: {{}},
+            }};
+            const liveState = JSON.parse(JSON.stringify(stableState));
+            liveState.scrollByRoute["/library"] = 900;
+            liveState.candidateTray.itemIds = ["douban:pre-render-drop"];
+            let reads = 0; const retries = [];
+            rememberLastStableState(stableState);
+            configureRecoveryBoundary({{
+              root: appView,
+              getCurrentPath: () => "/taste",
+              getStableState: () => {{ reads += 1; return liveState; }},
+              onRetry: (state) => retries.push(state),
+            }});
+            const result = await renderSafely({{ path: "/taste" }}, () => {{
+              liveState.scrollByRoute["/library"] = 1200;
+              liveState.recommendation.channels.movie.candidate_counts.returned_size = 999;
+              liveState.candidateTray.itemIds.push("douban:failed-render");
+              liveState.commandLens = {{ draft: "failed renderer draft" }};
+              throw new Error("failed");
+            }});
+            const button = appView.querySelector("button"); button.listeners.get("click")({{ preventDefault() {{}} }});
+            console.log(JSON.stringify({{ result, retries, restored: restoreLastStableState(), reads }}));
+            '''
+        )
+        self.assertEqual(1, result["reads"])
+        self.assertEqual("/library", result["result"]["previousStable"]["activePath"])
+        self.assertEqual(900, result["result"]["previousStable"]["scrollByRoute"]["/library"])
+        self.assertIsNone(result["result"]["previousStable"]["recommendation"]["channels"]["movie"]["candidate_counts"]["target_size"])
+        self.assertEqual(37, result["result"]["previousStable"]["recommendation"]["channels"]["movie"]["candidate_counts"]["returned_size"])
+        self.assertIsNone(result["result"]["previousStable"]["recommendation"]["channels"]["series"]["candidate_counts"]["target_size"])
+        self.assertIsNone(result["result"]["previousStable"]["recommendation"]["channels"]["series"]["candidate_counts"]["returned_size"])
+        self.assertEqual(result["result"]["previousStable"], result["retries"][0])
+        self.assertEqual(result["result"]["previousStable"], result["restored"])
+        serialized = json.dumps(result, ensure_ascii=False)
+        for forbidden in ("pre-render-drop", "failed-render", "failed renderer draft", "999", "1200"):
+            self.assertNotIn(forbidden, serialized)
+
     def test_failed_route_restores_runtime_persistence_router_and_retry_to_previous_stable(self):
         result = run_node_module(
             f'''

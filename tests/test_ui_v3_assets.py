@@ -32,6 +32,17 @@ class UiV3AssetTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=10) as response:
             return response.status, response.headers.get("Content-Type", ""), response.read()
 
+    def get_response(self, path):
+        request = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, dict(response.headers.items()), response.read()
+        except HTTPError as error:
+            try:
+                return error.code, dict(error.headers.items()), error.read()
+            finally:
+                error.close()
+
     def get_status(self, path):
         try:
             return self.get_raw(path)
@@ -141,6 +152,17 @@ class UiV3AssetTests(unittest.TestCase):
         self.assertIn("javascript", content_type)
         self.assertIn(b"bootstrapCineScopeShell", body)
 
+    def test_v3_shell_and_fixed_module_graph_cannot_be_reused_as_immutable(self):
+        expected = "no-cache, no-store, must-revalidate"
+        with mock.patch.dict(os.environ, {"CINESCOPE_UI_VERSION": "v3"}, clear=False):
+            for path in ("/", "/title/douban:1291879", "/assets/v3/js/app.js"):
+                with self.subTest(path=path):
+                    status, headers, body = self.get_response(path)
+                    self.assertEqual(200, status)
+                    self.assertEqual(expected, headers.get("Cache-Control"))
+                    self.assertNotIn("immutable", headers.get("Cache-Control", ""))
+                    self.assertTrue(body)
+
     def test_legacy_root_keeps_current_index_html(self):
         with mock.patch.dict(os.environ, {"CINESCOPE_UI_VERSION": "legacy"}, clear=False):
             status, content_type, body = self.get_raw("/")
@@ -148,6 +170,33 @@ class UiV3AssetTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("text/html", content_type)
         self.assertEqual(INDEX_HTML.encode("utf-8"), body)
+
+    def test_legacy_mode_recovers_legal_v3_deep_links_without_shadowing_service_or_unsafe_paths(self):
+        with mock.patch.dict(os.environ, {"CINESCOPE_UI_VERSION": "legacy"}, clear=False):
+            for path in (
+                "/tonight/anime-series",
+                "/title/douban:1291879",
+                "/person/derived:6buR5rO95piO",
+            ):
+                with self.subTest(path=path):
+                    status, headers, body = self.get_response(path)
+                    self.assertEqual(200, status)
+                    self.assertIn("text/html", headers.get("Content-Type", ""))
+                    self.assertEqual(INDEX_HTML.encode("utf-8"), body)
+
+            for path in (
+                "/api/v2/not-a-service",
+                "/assets/v3/not-found.js",
+                "/media/not-a-sha.png",
+                "/title/douban%2F1291879",
+                "/title/%2e%2e",
+                "/%61pi/v2/taste",
+            ):
+                with self.subTest(path=path):
+                    status, headers, body = self.get_response(path)
+                    self.assertEqual(404, status)
+                    self.assertIn("application/json", headers.get("Content-Type", ""))
+                    self.assertNotEqual(INDEX_HTML.encode("utf-8"), body)
 
 
 if __name__ == "__main__":
