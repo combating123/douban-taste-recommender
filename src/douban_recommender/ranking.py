@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from math import log10
 
 from .eligibility import ScoreSignal, evaluate_eligibility
@@ -102,6 +103,20 @@ def context_score(item: MediaItem, intent: RecommendationIntent) -> tuple[float,
     if country_hits:
         score += 6.0
         signals.append(ScoreSignal("context-country", "当前地区匹配", 6.0, tuple(sorted(country_hits))))
+
+    if item.year is not None and item.douban_rating is not None and float(item.douban_rating) >= 7.8:
+        age = datetime.now().year - int(item.year)
+        freshness = {0: 9.0, 1: 8.0, 2: 6.0, 3: 4.0}.get(max(0, age)) if -1 <= age <= 3 else None
+        if freshness:
+            score += freshness
+            signals.append(
+                ScoreSignal(
+                    "current-relevance",
+                    "近期高口碑",
+                    freshness,
+                    (str(item.year), f"rating={float(item.douban_rating):g}"),
+                )
+            )
 
     if intent.episode_runtime_max:
         runtime = _raw_number(item, "episode_runtime", "episodeRuntime", "episode_minutes", "duration_per_episode")

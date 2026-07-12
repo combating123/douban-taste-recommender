@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 
 from douban_recommender.intent_parser import RecommendationIntent
 from douban_recommender.models import MediaItem
@@ -15,6 +16,7 @@ def media(
     country="美国",
     genres=None,
     episode_runtime=None,
+    year=None,
     raw=None,
 ):
     payload = dict(raw or {})
@@ -28,11 +30,23 @@ def media(
         countries=[country] if country else [],
         genres=list(genres or ["剧情"]),
         summary="剧情完整，人物关系扎实。",
+        year=year,
         raw=payload,
     )
 
 
 class ExplainableRankingTests(unittest.TestCase):
+    def test_recent_high_quality_title_gets_current_relevance_without_excluding_classics(self):
+        current_year = datetime.now().year
+        recent = media("Recent acclaimed", rating=8.9, votes=120000, year=current_year - 1)
+        classic = media("Classic acclaimed", rating=8.9, votes=120000, year=1995)
+
+        ranked = rank_candidates([], [classic, recent], TasteProfile(), RecommendationIntent())
+
+        self.assertEqual(ranked[0].item.title, "Recent acclaimed")
+        self.assertTrue(any(signal["code"] == "current-relevance" for signal in ranked[0].score_breakdown["signals"]))
+        self.assertEqual({row.item.title for row in ranked}, {"Recent acclaimed", "Classic acclaimed"})
+
     def test_high_vote_quality_beats_tiny_vote_perfect_rating(self):
         stable = media("稳定高分", rating=9.1, votes=200000)
         tiny = media("小样本满分", rating=9.8, votes=12)

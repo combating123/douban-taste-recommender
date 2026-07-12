@@ -25,6 +25,8 @@ class CandidatePlannerTests(unittest.TestCase):
         self.assertIn("电影", tags)
         self.assertIn("电视剧", tags)
         self.assertIn("动画", tags)
+        self.assertIn("热门", tags)
+        self.assertTrue(any(query.sort == "R" for query in plan))
         self.assertTrue(any(query.start > 0 for query in plan))
 
     def test_plan_uses_wishlist_boost(self):

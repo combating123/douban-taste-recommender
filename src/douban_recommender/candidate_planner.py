@@ -57,16 +57,16 @@ def build_candidate_plan(
     out: list[CandidateQuery] = []
 
     if include_movies:
-        movie_tags = ["电影", "电影,剧情", "电影,高分", "电影,悬疑", "电影,犯罪"]
+        movie_tags = ["电影", "电影,热门", "电影,剧情", "电影,高分", "电影,悬疑", "电影,犯罪"]
         movie_tags.extend(f"电影,{term}" for term in terms[:3])
         _add_offsets(out, "movie_quality", movie_tags, "电影", starts)
 
     if include_series:
-        series_tags = ["电视剧", "电视剧,剧情", "电视剧,悬疑", "电视剧,犯罪", "电视剧,高分"]
+        series_tags = ["电视剧", "电视剧,热门", "电视剧,剧情", "电视剧,悬疑", "电视剧,犯罪", "电视剧,高分"]
         _add_offsets(out, "series_quality", series_tags, "电视剧", starts)
 
     if include_anime:
-        anime_tags = ["动画", "动漫", "日本动画", "电影,动画", "电视剧,动画"]
+        anime_tags = ["动画", "动漫", "动画,热门", "日本动画", "电视剧,动画", "电视剧,动画,热门"]
         _add_offsets(out, "anime_quality", anime_tags, "动漫", starts)
 
     for item in wishlist or []:
