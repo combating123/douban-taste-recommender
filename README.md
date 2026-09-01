@@ -36,7 +36,7 @@
 ### 六个空间，一眼看懂 CineScope
 
 <p align="center">
-  <a href="./assets/readme/showcase-radar-detail.webp"><img src="./assets/readme/showcase-radar-detail.webp" width="49%" alt="观影雷达空间"></a>
+  <a href="./assets/readme/showcase-observatory-graph.webp"><img src="./assets/readme/showcase-observatory-graph.webp" width="49%" alt="观影雷达神经网络节点图"></a>
   <a href="./assets/readme/showcase-tonight-wide.webp"><img src="./assets/readme/showcase-tonight-wide.webp" width="49%" alt="今晚推荐空间"></a>
 </p>
 <p align="center">
@@ -44,7 +44,7 @@
   <a href="./assets/readme/showcase-taste.webp"><img src="./assets/readme/showcase-taste.webp" width="49%" alt="口味 DNA 空间"></a>
 </p>
 <p align="center">
-  <a href="./assets/readme/showcase-detail.webp"><img src="./assets/readme/showcase-detail.webp" width="49%" alt="作品详情空间"></a>
+  <a href="./assets/readme/showcase-observatory.webp"><img src="./assets/readme/showcase-observatory.webp" width="49%" alt="观影雷达总览空间"></a>
   <a href="./assets/readme/showcase-settings.webp"><img src="./assets/readme/showcase-settings.webp" width="49%" alt="健康与同步空间"></a>
 </p>
 
