@@ -36,7 +36,7 @@
 ### 六个空间，一眼看懂 CineScope
 
 <p align="center">
-  <a href="./assets/readme/showcase-radar-detail.webp"><img src="./assets/readme/showcase-radar-detail.webp" width="49%" alt="观影雷达总览空间"></a>
+  <a href="./assets/readme/showcase-command-lens.webp"><img src="./assets/readme/showcase-command-lens.webp" width="49%" alt="Command Lens 自然语言搜索与结构化意图界面"></a>
   <a href="./assets/readme/showcase-tonight-wide.webp"><img src="./assets/readme/showcase-tonight-wide.webp" width="49%" alt="今晚推荐空间"></a>
 </p>
 <p align="center">
