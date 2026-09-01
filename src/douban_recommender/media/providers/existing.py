@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Callable, Iterable
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from ...douban_sources import (
     fetch_anilist_suggestions,
@@ -14,6 +16,7 @@ from ...douban_sources import (
 from ...identity_service import PersonIdentity, WorkIdentity
 from ...models import MediaItem
 from ..public_people import resolve_public_people_photos
+from ..url_candidates import is_placeholder_image_url
 from .base import AssetCandidate, AssetQuery
 from .inline import InlineProvider
 
@@ -115,31 +118,98 @@ def _declared_type(url: str) -> str:
     return ""
 
 
+def _normalized_token(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in text if character.isalnum())
+
+
+def _alias_proven_by_provider_url(url: str, aliases: tuple[str, ...]) -> str:
+    try:
+        provider_path = _normalized_token(unquote(urlsplit(str(url or "")).path))
+    except ValueError:
+        return ""
+    if not provider_path:
+        return ""
+    for alias in aliases:
+        normalized = _normalized_token(alias)
+        if len(normalized) >= 5 and normalized in provider_path:
+            return str(alias)
+    return ""
+
+
 class ExistingPosterProvider:
     name = "existing"
 
     def __init__(self, searcher: SearchFunction):
         self.searcher = searcher
 
-    def _search_items(self, query: AssetQuery) -> list[MediaItem]:
-        return list(self.searcher(query.title, media_type=query.media_type) or [])
+    def _search_title(self, title: str, query: AssetQuery) -> list[MediaItem]:
+        return list(self.searcher(title, media_type=query.media_type) or [])
+
+    def _search_items(self, query: AssetQuery) -> list[tuple[MediaItem, str]]:
+        queries: list[str] = []
+        for value in (*query.original_titles, query.title):
+            title = str(value or "").strip()
+            if title and title not in queries:
+                queries.append(title)
+        results: list[tuple[MediaItem, str]] = []
+        for title in queries:
+            results.extend((item, title) for item in self._search_title(title, query))
+        return results
 
     def search(self, query: AssetQuery) -> list[AssetCandidate]:
         if query.kind not in {"poster", "backdrop"} or not query.title:
             return []
         candidates: list[AssetCandidate] = []
-        for item in self._search_items(query):
+        seen_urls: set[str] = set()
+        for item, searched_title in self._search_items(query):
             url = str(item.cover or "").strip()
-            if not url.startswith(("http://", "https://")):
+            if (
+                not url.startswith(("http://", "https://"))
+                or url in seen_urls
+                or is_placeholder_image_url(url)
+            ):
                 continue
+            seen_urls.add(url)
+            identity = _work_identity(item)
+            verified_alias = (
+                searched_title
+                if searched_title in query.original_titles
+                else _alias_proven_by_provider_url(item.url, query.original_titles)
+            )
+            alias_evidence = tuple(
+                dict.fromkeys(
+                    (
+                        *identity.original_titles,
+                        *((verified_alias,) if verified_alias else ()),
+                    )
+                )
+            )
+            if alias_evidence != identity.original_titles:
+                identity = WorkIdentity(
+                    title=identity.title,
+                    original_titles=alias_evidence,
+                    year=identity.year,
+                    media_type=identity.media_type,
+                    countries=identity.countries,
+                    directors=identity.directors,
+                    casts=identity.casts,
+                    episode_count=identity.episode_count,
+                    provider_ids=identity.provider_ids,
+                )
             candidates.append(
                 AssetCandidate(
                     url=url,
                     source=self.name,
                     kind=query.kind,
-                    work_identity=_work_identity(item),
+                    work_identity=identity,
                     declared_type=_declared_type(url),
-                    metadata={"provider_source": item.source, "provider_url": item.url},
+                    metadata={
+                        "provider_source": item.source,
+                        "provider_url": item.url,
+                        "searched_title": searched_title,
+                        "alias_search": bool(verified_alias),
+                    },
                 )
             )
         return candidates
@@ -179,8 +249,8 @@ class DoubanProvider(ExistingPosterProvider):
     def __init__(self, searcher: SearchFunction | None = None):
         super().__init__(searcher or fetch_subject_suggestions)
 
-    def _search_items(self, query: AssetQuery) -> list[MediaItem]:
-        return list(self.searcher(query.title) or [])
+    def _search_title(self, title: str, query: AssetQuery) -> list[MediaItem]:
+        return list(self.searcher(title) or [])
 
 
 class WikidataProvider(ExistingPosterProvider):
@@ -202,7 +272,10 @@ class WikidataProvider(ExistingPosterProvider):
         name = str(query.person_name or "").strip()
         if not name or self.people_resolver is None:
             return []
-        resolved = self.people_resolver([name]) or {}
+        try:
+            resolved = self.people_resolver([name], work_context=query.work_context) or {}
+        except TypeError:
+            resolved = self.people_resolver([name]) or {}
         url = str(resolved.get(name) or "").strip()
         if not url.startswith(("http://", "https://")):
             return []

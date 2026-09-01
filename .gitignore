@@ -5,3 +5,24 @@ __pycache__/
 venv/
 output/
 .superpowers/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+.env
+.env.*
+!.env.example
+.worktrees/
+.vscode/
+tmdb.html
+
+# Local visual QA, browser captures, and debugging exports.
+/*.png
+/.tmp-*
+/current.diff
+/detail-failure.txt
+/fail-*.txt
+/live*.json
+/observatory-*.json
+/test_localsystem.txt
+/tmp_*.html

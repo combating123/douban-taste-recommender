@@ -1,23 +1,32 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from .candidate_origin import candidate_origin
 from .candidate_planner import build_candidate_plan
 from .catalog_enrichment import enrich_media_items_parallel
-from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
+from .curated_catalog import (
+    TITLE_PEOPLE_METADATA,
+    apply_curated_people_photos,
+    apply_curated_posters,
+    backfill_missing_media_types,
+    curated_metadata_for_title,
+)
 from .database import AppDatabase
 from .douban_sources import fetch_candidates_from_plan, fetch_douban_candidates, fetch_douban_detail_html, fetch_url_candidates
 from .feedback_service import FeedbackEvent, FeedbackService
+from .global_discovery import GlobalDiscoveryConfig, GlobalDiscoveryReport, discover_global_candidates
 from .intent_parser import RecommendationIntent, intent_to_chips, parse_recommendation_intent
 from .io import load_media_csv, load_media_csv_from_text
 from .language_adapter import LanguageService, LocalRuleLanguageAdapter, OpenAICompatibleLanguageAdapter
 from .media.store import MediaStore
-from .models import MediaItem, recommendation_item_key
+from .models import MediaItem, recommendation_identity_tokens, recommendation_item_key
 from .profiler import build_taste_profile
 from .privacy import scrub_sensitive
 from .ranking import rank_candidates
@@ -47,7 +56,7 @@ EVENT_SCOPE_RULES = {
     "data-error": {"permanent"},
 }
 SESSION_ONLY_EVENT_TYPES = {"not-tonight", "tonight-candidate"}
-SESSION_STATE_EVENT_TYPES = {"not-tonight", "watched", "want"}
+SESSION_STATE_EVENT_TYPES = {"not-tonight", "watched", "want", "permanent-avoid"}
 ITEM_TEXT_FIELDS = {
     "title",
     "media_type",
@@ -87,6 +96,8 @@ CREATE_SESSION_BOOL_FIELDS = {
     "include_series",
     "include_anime",
     "fetch_douban",
+    "fetch_global",
+    "use_local_index",
     "use_sample_ratings",
     "use_sample_candidates",
 }
@@ -283,6 +294,147 @@ def _item_dicts(value: object) -> list[MediaItem]:
     ]
 
 
+def _candidate_richness(item: MediaItem) -> tuple[int, int, int, int]:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    ratings = raw.get("ratings") if isinstance(raw.get("ratings"), dict) else {}
+    return (
+        int(bool(item.cover)) * 8
+        + int(bool(item.summary)) * 5
+        + int(bool(item.year)) * 2
+        + len(item.genres)
+        + len(item.directors)
+        + min(4, len(item.casts))
+        + len(ratings) * 2,
+        len(item.summary or ""),
+        int(item.vote_count or 0),
+        len(raw),
+    )
+
+
+def _merge_candidate_raw(primary: dict[str, object], secondary: dict[str, object]) -> dict[str, object]:
+    merged = copy.deepcopy(secondary)
+    for key, value in primary.items():
+        if value not in (None, "", [], {}):
+            merged[key] = copy.deepcopy(value)
+    for key in ("ratings", "provider_ids", "rating_votes"):
+        left = primary.get(key) if isinstance(primary.get(key), dict) else {}
+        right = secondary.get(key) if isinstance(secondary.get(key), dict) else {}
+        if left or right:
+            merged[key] = {**right, **left}
+    for key in ("aliases", "discovery_sources", "stills"):
+        left = primary.get(key) if isinstance(primary.get(key), list) else []
+        right = secondary.get(key) if isinstance(secondary.get(key), list) else []
+        values = []
+        markers: set[str] = set()
+        for value in [*left, *right]:
+            marker = repr(value)
+            if marker in markers:
+                continue
+            markers.add(marker)
+            values.append(copy.deepcopy(value))
+        if values:
+            merged[key] = values
+    return merged
+
+
+def _merge_candidate_items(left: MediaItem, right: MediaItem) -> MediaItem:
+    primary, secondary = (left, right) if _candidate_richness(left) >= _candidate_richness(right) else (right, left)
+    merged = copy.deepcopy(primary)
+    for field_name in ("genres", "countries", "languages", "directors", "casts", "tags"):
+        values: list[str] = []
+        for value in [*getattr(primary, field_name), *getattr(secondary, field_name)]:
+            clean = str(value or "").strip()
+            if clean and clean not in values:
+                values.append(clean)
+        setattr(merged, field_name, values)
+    if len(secondary.summary or "") > len(merged.summary or ""):
+        merged.summary = secondary.summary
+    for field_name in ("year", "douban_rating", "my_rating"):
+        if getattr(merged, field_name) is None:
+            setattr(merged, field_name, getattr(secondary, field_name))
+    for field_name in ("cover", "url", "douban_id"):
+        if not getattr(merged, field_name):
+            setattr(merged, field_name, getattr(secondary, field_name))
+    merged.vote_count = max(int(primary.vote_count or 0), int(secondary.vote_count or 0)) or None
+    sources = [source for source in [*str(primary.source or "").split("|"), *str(secondary.source or "").split("|")] if source]
+    merged.source = "|".join(dict.fromkeys(sources))
+    merged.raw = _merge_candidate_raw(
+        primary.raw if isinstance(primary.raw, dict) else {},
+        secondary.raw if isinstance(secondary.raw, dict) else {},
+    )
+    return merged
+
+
+def _is_generated_summary(value: object) -> bool:
+    summary = str(value or "").strip()
+    return not summary or any(
+        summary.startswith(prefix)
+        for prefix in (
+            "正在补齐这部",
+            "资料有限：本地片库暂未记录作品简介",
+            "由 CineScope 精选扩展池补入的",
+            "详情：点击卡片查看简介",
+        )
+    )
+
+
+def _hydrate_batch_item_from_catalog(item: dict[str, object], catalog: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(catalog, dict):
+        return dict(item)
+    hydrated = copy.deepcopy(dict(item))
+    stored = media_item_from_dict(catalog)
+    for field_name in ("title", "media_type", "url", "douban_id", "cover"):
+        value = str(getattr(stored, field_name) or "").strip()
+        if value and not str(hydrated.get(field_name) or "").strip():
+            hydrated[field_name] = value
+    stored_summary = str(stored.summary or "").strip()
+    current_summary = str(hydrated.get("summary") or "").strip()
+    if stored_summary and (_is_generated_summary(current_summary) or len(stored_summary) > len(current_summary)):
+        hydrated["summary"] = stored_summary
+    for field_name in ("genres", "countries", "languages", "directors", "casts"):
+        values = list(getattr(stored, field_name) or [])
+        if values:
+            hydrated[field_name] = values
+    if stored.tags:
+        hydrated["tags"] = list(dict.fromkeys([*(hydrated.get("tags") or []), *stored.tags]))
+    for field_name in ("year", "douban_rating", "my_rating"):
+        value = getattr(stored, field_name)
+        if value is not None and hydrated.get(field_name) is None:
+            hydrated[field_name] = value
+    if stored.vote_count is not None:
+        hydrated["vote_count"] = max(int(hydrated.get("vote_count") or 0), int(stored.vote_count or 0)) or None
+    current_raw = hydrated.get("raw") if isinstance(hydrated.get("raw"), dict) else {}
+    stored_raw = stored.raw if isinstance(stored.raw, dict) else {}
+    merged_raw = _merge_candidate_raw(stored_raw, current_raw)
+    hydrated["raw"] = merged_raw
+    if isinstance(merged_raw.get("ratings"), dict):
+        current_ratings = hydrated.get("source_ratings") if isinstance(hydrated.get("source_ratings"), dict) else {}
+        hydrated["source_ratings"] = {**current_ratings, **merged_raw["ratings"]}
+    for field_name in ("provider_ids", "stills", "episodes"):
+        value = merged_raw.get(field_name)
+        if value not in (None, "", [], {}):
+            hydrated[field_name] = copy.deepcopy(value)
+    return hydrated
+
+
+def _dedupe_candidate_items(items: list[MediaItem]) -> list[MediaItem]:
+    merged: dict[str, MediaItem] = {}
+    token_to_key: dict[str, str] = {}
+    for item in items:
+        tokens = recommendation_identity_tokens(item)
+        canonical = next((token_to_key[token] for token in tokens if token in token_to_key), "")
+        if not canonical:
+            canonical = recommendation_item_key(item)
+            merged[canonical] = item
+        else:
+            merged[canonical] = _merge_candidate_items(merged[canonical], item)
+        for token in recommendation_identity_tokens(merged[canonical]):
+            token_to_key[token] = canonical
+        for token in tokens:
+            token_to_key[token] = canonical
+    return list(merged.values())
+
+
 def _media_status(item: dict[str, object], *, had_cover: bool = False) -> dict[str, str]:
     cover = str(item.get("cover") or "").strip()
     if cover.startswith("/media/"):
@@ -309,6 +461,17 @@ def _conflicts(item: dict[str, object]) -> list[str]:
 def _normalize_batch_item(item: dict[str, object], media_store: MediaStore) -> dict[str, object]:
     scrubbed = scrub_sensitive(dict(item))
     payload = scrubbed if isinstance(scrubbed, dict) else {}
+    title = str(payload.get("title") or "").strip()
+    douban_id = str(payload.get("douban_id") or "").strip()
+    title_metadata = TITLE_PEOPLE_METADATA.get(title)
+    metadata = curated_metadata_for_title(title, douban_id)
+    if isinstance(title_metadata, dict):
+        metadata = {**metadata, **title_metadata}
+    if not payload.get("genres") and isinstance(metadata.get("genres"), list):
+        payload["genres"] = [str(value).strip() for value in metadata["genres"] if str(value).strip()]
+    if not payload.get("genres"):
+        media_type = str(payload.get("media_type") or payload.get("format") or "作品").strip()
+        payload["genres"] = [media_type] if media_type else ["作品"]
     had_cover = bool(str(payload.get("cover") or "").strip())
     payload["url"] = _safe_url(payload.get("url"))
     payload["item_key"] = recommendation_item_key(payload)
@@ -316,6 +479,7 @@ def _normalize_batch_item(item: dict[str, object], media_store: MediaStore) -> d
         payload["item_key"], "poster", media_store
     )
     payload["source"] = _safe_source(payload.get("source"))
+    payload["candidate_origin"] = candidate_origin(payload)
     payload["people_photos"] = _safe_people_photos(payload.get("people_photos"), media_store)
     payload["conflicts"] = _conflicts(payload)
     payload["media_status"] = _media_status(payload, had_cover=had_cover)
@@ -431,6 +595,7 @@ class RecommendationApi:
         media_root: Path | str | None = None,
         detail_enricher: Callable[..., list[MediaItem]] | None = None,
         detail_fetcher: Callable[[str], object] | None = None,
+        global_discoverer: Callable[..., GlobalDiscoveryReport] | None = None,
         enrich_limit: int = 12,
     ):
         self.database = database
@@ -443,6 +608,7 @@ class RecommendationApi:
         self.media_store = media_store or MediaStore(media_root or resolve_media_dir(), database)
         self.detail_enricher = detail_enricher
         self.detail_fetcher = detail_fetcher
+        self.global_discoverer = global_discoverer or discover_global_candidates
         self.enrich_limit = max(0, min(36, int(enrich_limit)))
 
     def create_session(self, payload: dict[str, Any]) -> dict[str, object]:
@@ -452,10 +618,24 @@ class RecommendationApi:
         intent = self._intent(payload)
         rated_items = self._rated_items(payload)
         profile = self._profile(profile_key, rated_items, payload)
-        candidates = self._candidates(payload, profile, rated_items)
-        ranked_by_channel = self._ranked_channels(payload, intent, rated_items, candidates, profile)
+        candidates, discovery = self._candidate_pool(payload, intent, profile, rated_items)
+        ranked_by_channel = self._ranked_channels(
+            payload,
+            intent,
+            rated_items,
+            candidates,
+            profile,
+            discovery=discovery,
+        )
         if self._enrich_visible_candidates(candidates, ranked_by_channel, self._batch_sizes(payload)):
-            ranked_by_channel = self._ranked_channels(payload, intent, rated_items, candidates, profile)
+            ranked_by_channel = self._ranked_channels(
+                payload,
+                intent,
+                rated_items,
+                candidates,
+                profile,
+                discovery=discovery,
+            )
         session = self.session_service.create_session(
             profile_key,
             intent,
@@ -662,6 +842,8 @@ class RecommendationApi:
             _validate_optional_integer_field(payload, field)
         for field in CREATE_SESSION_BOOL_FIELDS:
             _validate_optional_bool_field(payload, field)
+        if "global_discovery" in payload and not isinstance(payload["global_discovery"], dict):
+            _raise_schema_error("global_discovery", "must be object")
         self._validate_language_config(payload)
 
     def _validate_language_config(self, payload: dict[str, Any]) -> None:
@@ -766,13 +948,48 @@ class RecommendationApi:
         profile,
         rated_items: list[MediaItem],
     ) -> list[MediaItem]:
+        """Compatibility wrapper for callers that inspect the resolved local pool."""
+        candidates, _ = self._candidate_pool(payload, self._intent(payload), profile, rated_items)
+        return candidates
+
+    def _candidate_pool(
+        self,
+        payload: dict[str, Any],
+        intent: RecommendationIntent,
+        profile,
+        rated_items: list[MediaItem],
+    ) -> tuple[list[MediaItem], dict[str, object]]:
         candidates = _item_dicts(payload.get("candidate_items"))
         candidates_csv = _base_text(payload.get("candidates_csv"))
         has_custom_candidates = bool(candidates or candidates_csv)
+        discovery: dict[str, object] = {
+            "status": "disabled",
+            "local_index_size": 0,
+            "live_size": 0,
+            "source_counts": {},
+            "source_status": {},
+            "query_keywords": [],
+            "config": {},
+            "generated_at": None,
+        }
         if candidates_csv:
             candidates.extend(load_media_csv_from_text(candidates_csv, kind="candidates"))
         elif bool(payload.get("use_sample_candidates")):
             candidates.extend(load_media_csv(self.sample_candidates_path, kind="candidates"))
+
+        if bool(payload.get("use_local_index")):
+            local_items: list[MediaItem] = []
+            for record in self.session_service.library_items(states=["candidate"]):
+                stored = record.get("payload")
+                if not isinstance(stored, dict):
+                    continue
+                item = media_item_from_dict(stored)
+                if item.title:
+                    local_items.append(item)
+            candidates.extend(local_items)
+            discovery["local_index_size"] = len(local_items)
+            if local_items:
+                discovery["status"] = "local-index"
 
         urls = _strings(payload.get("candidate_urls"))
         if urls:
@@ -797,6 +1014,40 @@ class RecommendationApi:
                     per_query=_to_int(payload.get("per_query"), 20, 5, 50),
                 ))
 
+        if bool(payload.get("fetch_global")):
+            config_payload = payload.get("global_discovery")
+            config = GlobalDiscoveryConfig.from_payload(config_payload if isinstance(config_payload, dict) else {})
+            try:
+                report = self.global_discoverer(
+                    intent,
+                    profile,
+                    include_movies=bool(payload.get("include_movies", True)),
+                    include_series=bool(payload.get("include_series", True)),
+                    include_anime=bool(payload.get("include_anime", True)),
+                    config=config,
+                )
+            except Exception as error:
+                discovery.update({
+                    "status": "failed",
+                    "source_counts": {},
+                    "source_status": {
+                        "global": {
+                            "state": "failed",
+                            "count": 0,
+                            "error": type(error).__name__,
+                        }
+                    },
+                    "config": config.public_summary(),
+                    "generated_at": time.time(),
+                })
+            else:
+                live_items = list(report.items or [])
+                candidates.extend(live_items)
+                public_report = report.to_dict()
+                discovery.update(public_report)
+                discovery["live_size"] = len(live_items)
+            discovery["local_index_size"] = int(discovery.get("local_index_size") or 0)
+
         if not has_custom_candidates:
             candidates = backfill_missing_media_types(
                 candidates,
@@ -807,12 +1058,8 @@ class RecommendationApi:
             )
         candidates = [_sanitize_unverified_expansion(item) for item in candidates]
         apply_curated_people_photos(apply_curated_posters(candidates))
-        deduped: dict[str, MediaItem] = {}
-        for item in candidates:
-            key = recommendation_item_key(item)
-            if key not in deduped:
-                deduped[key] = item
-        return list(deduped.values())
+        safe_discovery = scrub_sensitive(discovery)
+        return _dedupe_candidate_items(candidates), safe_discovery if isinstance(safe_discovery, dict) else {}
 
     def _ranked_channels(
         self,
@@ -821,7 +1068,14 @@ class RecommendationApi:
         rated_items: list[MediaItem],
         candidates: list[MediaItem],
         profile,
+        *,
+        discovery: dict[str, object] | None = None,
     ) -> dict[str, dict[str, object]]:
+        feedback_signals = self.feedback_service.feedback_signals("default", time.time())
+        profile_key = _base_text(payload.get("profile_key")) or "default"
+        if profile_key != "default":
+            feedback_signals = self.feedback_service.feedback_signals(profile_key, time.time())
+        hard_excluded_tokens = set(feedback_signals.permanent_excluded_item_keys)
         ranked_by_channel: dict[str, dict[str, object]] = {}
         for channel in CHANNEL_ORDER:
             enabled = bool(payload.get(CHANNEL_FLAGS[channel], True))
@@ -830,13 +1084,39 @@ class RecommendationApi:
             ranked_items: list[dict[str, object]] = []
             if enabled and (not intent.media_types or channel in intent.media_types):
                 channel_intent = replace(intent, media_types=(channel,))
-                ranked = rank_candidates(rated_items, channel_candidates, profile, channel_intent)
+                ranked = rank_candidates(
+                    rated_items,
+                    channel_candidates,
+                    profile,
+                    channel_intent,
+                    hard_excluded_tokens=hard_excluded_tokens,
+                )
                 ranked_items = [row.to_dict() for row in ranked]
             ranked_by_channel[channel] = {
                 "items": ranked_items,
                 "pool_size": pool_size,
                 "matched_size": len(ranked_items),
             }
+        recommendation_origin_counts = {
+            channel: {
+                "online": sum(
+                    1
+                    for item in state["items"]
+                    if candidate_origin(item)["kind"] == "online"
+                ),
+                "catalog": sum(
+                    1
+                    for item in state["items"]
+                    if candidate_origin(item)["kind"] != "online"
+                ),
+                "total": len(state["items"]),
+            }
+            for channel, state in ranked_by_channel.items()
+        }
+        public_discovery = dict(discovery or {})
+        public_discovery["recommendation_origin_counts"] = recommendation_origin_counts
+        for state in ranked_by_channel.values():
+            state["discovery"] = dict(public_discovery)
         candidate_counts = {
             "target_size": self._candidate_target(payload),
             "returned_size": sum(int(state.get("pool_size") or 0) for state in ranked_by_channel.values()),
@@ -896,6 +1176,14 @@ class RecommendationApi:
         )
         candidate_counts.setdefault("target_size", None)
         candidate_counts["returned_size"] = sum(channel["pool_size"] for channel in channels.values())
+        discovery = next(
+            (
+                dict(state.get("discovery"))
+                for state in restored.channels.values()
+                if isinstance(state, dict) and isinstance(state.get("discovery"), dict)
+            ),
+            {},
+        )
         return {
             "schema_version": SCHEMA_VERSION,
             "id": restored.id,
@@ -904,6 +1192,7 @@ class RecommendationApi:
             "intent": restored.intent.to_dict(),
             "chips": [asdict(chip) for chip in intent_to_chips(restored.intent)],
             "candidate_counts": candidate_counts,
+            "discovery": discovery,
             "personalization": self._personalization(),
             "channels": channels,
             "restore": self._restore_metadata(restored.channels),
@@ -971,13 +1260,47 @@ class RecommendationApi:
             "restore": self._restore_metadata(restored.channels),
         }
 
+    def _catalog_payloads_for_batch(self, items: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+        keys = [
+            _base_text(item.get("item_key")) or recommendation_item_key(item)
+            for item in items
+            if isinstance(item, dict)
+        ]
+        keys = list(dict.fromkeys(key for key in keys if key))
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"SELECT item_key, payload_json FROM library_items WHERE item_key IN ({placeholders})",
+                tuple(keys),
+            ).fetchall()
+        payloads: dict[str, dict[str, object]] = {}
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payloads[str(row["item_key"])] = payload
+        return payloads
+
     def _serialize_batch(self, batch: RecommendationBatch) -> dict[str, object]:
+        raw_items = [dict(item) for item in batch.items]
+        catalog_payloads = self._catalog_payloads_for_batch(raw_items)
+        hydrated_items = [
+            _hydrate_batch_item_from_catalog(
+                item,
+                catalog_payloads.get(_base_text(item.get("item_key")) or recommendation_item_key(item)),
+            )
+            for item in raw_items
+        ]
         return {
             "id": batch.id,
             "session_id": batch.session_id,
             "channel": batch.channel,
             "index": batch.index,
-            "items": [_normalize_batch_item(dict(item), self.media_store) for item in batch.items],
+            "items": [_normalize_batch_item(item, self.media_store) for item in hydrated_items],
             "item_keys": list(batch.item_keys),
             "pool_size": batch.pool_size,
             "matched_size": batch.matched_size,

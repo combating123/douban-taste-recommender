@@ -235,10 +235,17 @@ class DatabaseTests(unittest.TestCase):
             batch = service.current_batch("legacy-session", "电影")
             replayed = service.apply_feedback("legacy-session", "not-tonight", key)
             title = CatalogApi(database).get_title(key)
+            with database.connection() as connection:
+                stored_item_keys = json.loads(
+                    connection.execute(
+                        "SELECT item_keys_json FROM recommendation_batches WHERE session_id='legacy-session'"
+                    ).fetchone()[0]
+                )
 
             self.assertEqual(key, "external:movie-1")
-            self.assertEqual(batch.item_keys, (key,))
-            self.assertEqual(batch.items[0]["item_key"], key)
+            self.assertEqual(stored_item_keys, [key])
+            self.assertEqual(batch.item_keys, ())
+            self.assertEqual(batch.items, ())
             self.assertEqual(restored.channels["电影"]["excluded_keys"], [key])
             self.assertNotEqual(replayed["event_id"], "legacy-feedback")
             self.assertEqual((title["title"], title["year"]), (item["title"], item["year"]))

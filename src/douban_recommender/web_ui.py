@@ -357,7 +357,7 @@ const LAST_RECOMMENDATION_KEY = 'CINESCOPE_LAST_RECOMMENDATION_V4';
 const OLD_RECOMMENDATION_KEYS = ['CINESCOPE_LAST_RECOMMENDATION_V1','CINESCOPE_LAST_RECOMMENDATION_V2','CINESCOPE_LAST_RECOMMENDATION_V3'];
 const POSTER_SOURCE_PREF_KEY = 'CINESCOPE_POSTER_SOURCE_PREFS_V1';
 const POSTER_RESCUE_VERSION = 8;
-const defaultDoubanUser = 'https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m';
+const defaultDoubanUser = '';
 const canonicalPosterMap = __CANONICAL_POSTER_MAP__;
 const canonicalPosterByTitle = __CANONICAL_POSTER_BY_TITLE__;
 const canonicalPeoplePhotoMap = __CANONICAL_PEOPLE_PHOTO_MAP__;
@@ -691,7 +691,7 @@ function gridBaseLimit(name) { return name === '全部' ? 48 : 36; }
 
 function activeBatchOffset(name, total) { const raw = Number(state.batchOffsetBySection?.[name] || 0); return total ? ((raw % total) + total) % total : 0; }
 function visibleBatchItems(items, name, limit) { const total = items.length; if (!total || limit >= total) return items.slice(0, limit); const offset = activeBatchOffset(name, total); const doubled = items.concat(items); return doubled.slice(offset, offset + limit); }
-function shuffleSectionBatch(name) { const items = sectionItems(name); if (!items.length) return; const step = Math.max(12, Math.min(48, activeGridLimit(name, items.length))); const current = activeBatchOffset(name, items.length); state.batchOffsetBySection[name] = (current + step) % items.length; state.heroBySection[name] = state.batchOffsetBySection[name]; persistRecommendationSnapshot(); renderRecommendations(); setStatus(`${name} ??????? ${state.batchOffsetBySection[name] + 1} ????????`); requestAnimationFrame(() => scrollToResults('railWall')); }
+function shuffleSectionBatch(name) { const items = sectionItems(name); if (!items.length) return; const step = Math.max(12, Math.min(48, activeGridLimit(name, items.length))); const current = activeBatchOffset(name, items.length); state.batchOffsetBySection[name] = (current + step) % items.length; state.heroBySection[name] = state.batchOffsetBySection[name]; persistRecommendationSnapshot(); renderRecommendations(); setStatus(`${name} 已切换到第 ${state.batchOffsetBySection[name] + 1} 个候选起点`); requestAnimationFrame(() => scrollToResults('railWall')); }
 function activeGridLimit(name, total) { const remembered = state.gridLimitBySection?.[name]; return Math.min(total, Math.max(0, remembered || gridBaseLimit(name))); }
 function showMoreRecommendations(name, amount=48) { const total = sectionItems(name).length; state.gridLimitBySection[name] = Math.min(total, activeGridLimit(name, total) + amount); persistRecommendationSnapshot(); renderRecommendations(); setTimeout(() => scrollToResults('railWall'), 0); }
 function showAllRecommendations(name) { state.gridLimitBySection[name] = sectionItems(name).length; persistRecommendationSnapshot(); renderRecommendations(); setTimeout(() => scrollToResults('railWall'), 0); }

@@ -1,5 +1,6 @@
 import io
 import tempfile
+import threading
 import time
 import unittest
 from dataclasses import replace
@@ -21,9 +22,9 @@ from douban_recommender.media.store import MediaStore
 from douban_recommender.media.validator import validate_image_bytes
 
 
-def png_bytes(color="navy"):
+def png_bytes(color="navy", size=(180, 270)):
     output = io.BytesIO()
-    Image.new("RGB", (180, 270), color).save(output, format="PNG")
+    Image.new("RGB", size, color).save(output, format="PNG")
     return output.getvalue()
 
 
@@ -91,6 +92,7 @@ class MediaOrchestratorTests(unittest.TestCase):
             "https://right/poster.png": (png_bytes("green"), "image/png"),
             "https://broken/poster.png": (b"<html>captcha</html>", "text/html"),
             "https://minimal/poster.png": (png_bytes("purple"), "image/png"),
+            "https://landscape/poster.png": (png_bytes("gray", size=(270, 216)), "image/png"),
             "https://upload.wikimedia.org/actor.png": (png_bytes("orange"), "image/png"),
         }
         self.orchestrators = []
@@ -124,6 +126,15 @@ class MediaOrchestratorTests(unittest.TestCase):
         result = self.make_orchestrator([broken, right]).resolve(anime_request())
         self.assertEqual(result.source, "second")
         self.assertIn("not an image", result.attempts[0]["error"])
+
+    def test_landscape_still_is_rejected_as_poster_and_falls_through(self):
+        landscape = FakeProvider("landscape", [candidate("landscape", "https://landscape/poster.png")])
+        right = FakeProvider("second", [candidate("second", "https://right/poster.png")])
+
+        result = self.make_orchestrator([landscape, right]).resolve(anime_request())
+
+        self.assertEqual(result.source, "second")
+        self.assertIn("poster", result.attempts[0]["error"])
 
     def test_exact_title_and_year_are_sufficient_identity_evidence(self):
         minimal = AssetCandidate(
@@ -286,6 +297,71 @@ class MediaOrchestratorTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["state"], "ready")
         self.assertIn("right", row["attempts_json"])
+
+    def test_startup_reconciles_interrupted_persistent_jobs(self):
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO resolution_jobs(
+                    id, entity_kind, entity_id, kind, priority, state, current_source,
+                    attempts_json, error, next_retry_at, created_at, updated_at
+                ) VALUES('orphan-job', 'person', 'person:orphan', 'portrait', 10,
+                         'resolving', '', '[]', '', NULL, ?, ?)
+                """,
+                (now - 60, now - 30),
+            )
+
+        self.make_orchestrator([])
+
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "SELECT state, error, next_retry_at FROM resolution_jobs WHERE id='orphan-job'"
+            ).fetchone()
+        self.assertEqual(row["state"], "degraded")
+        self.assertEqual(row["error"], "interrupted_by_restart")
+        self.assertIsNotNone(row["next_retry_at"])
+
+    def test_duplicate_active_identity_reuses_one_job(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class BlockingProvider(FakeProvider):
+            def __init__(self):
+                super().__init__("blocking")
+                self.calls = 0
+
+            def search(self, query):
+                self.calls += 1
+                started.set()
+                release.wait(timeout=2)
+                return [candidate("blocking", "https://right/poster.png")]
+
+        provider = BlockingProvider()
+        orchestrator = MediaOrchestrator(
+            store=self.store,
+            providers=[provider],
+            fetch=lambda url: self.payloads[url],
+            max_workers=1,
+        )
+        self.orchestrators.append(orchestrator)
+
+        first_job_id = orchestrator.enqueue(anime_request())
+        self.assertTrue(started.wait(timeout=1))
+        second_job_id = orchestrator.enqueue(anime_request())
+        release.set()
+
+        deadline = time.time() + 3
+        while orchestrator.job(first_job_id)["state"] not in {"ready", "degraded"} and time.time() < deadline:
+            time.sleep(0.02)
+
+        self.assertEqual(first_job_id, second_job_id)
+        self.assertEqual(provider.calls, 1)
+        with self.database.connection() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM resolution_jobs WHERE entity_id='title:odd-taxi' AND kind='poster'"
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

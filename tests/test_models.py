@@ -5,6 +5,7 @@ from douban_recommender.models import (
     MediaItem,
     canonical_media_type,
     is_safe_route_segment,
+    recommendation_identity_tokens,
     recommendation_item_key,
 )
 
@@ -40,6 +41,43 @@ class MediaModelCanonicalizationTests(unittest.TestCase):
         self.assertEqual(second.identity, recommendation_item_key(second))
         self.assertNotEqual(first.identity, second.identity)
         self.assertNotEqual(first.identity, without_year.identity)
+
+    def test_identity_tokens_include_shared_provider_ids_across_catalog_sources(self):
+        first = MediaItem(
+            title="科幻真史",
+            year=2014,
+            media_type="电视剧",
+            douban_id="tvmaze-3415",
+            raw={"provider_ids": {"douban": "25851561", "imdb": "tt4136828"}},
+        )
+        second = MediaItem(
+            title="The Real History of Science Fiction",
+            year=2014,
+            media_type="电视剧",
+            douban_id="tvmaze-11054",
+            raw={"provider_ids": {"douban": "25851561", "imdb": "tt4136828"}},
+        )
+
+        first_tokens = set(recommendation_identity_tokens(first))
+        second_tokens = set(recommendation_identity_tokens(second))
+
+        self.assertIn("provider:douban:25851561", first_tokens)
+        self.assertIn("provider:imdb:tt4136828", first_tokens)
+        self.assertIn("provider:douban:25851561", second_tokens)
+        self.assertTrue(first_tokens & second_tokens)
+
+    def test_identity_tokens_include_single_original_title_alias(self):
+        item = MediaItem(
+            title="科幻真史",
+            year=2014,
+            media_type="电视剧",
+            raw={"original_title": "The Real History of Science Fiction"},
+        )
+
+        self.assertIn(
+            "title-year-type:therealhistoryofsciencefiction|2014|电视剧",
+            recommendation_identity_tokens(item),
+        )
 
     def test_non_numeric_external_identifier_uses_stable_url_safe_opaque_key(self):
         unsafe = "provider/..\\title?token=secret#fragment%2F"

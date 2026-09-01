@@ -1,5 +1,6 @@
 import io
 import json
+import tempfile
 import time
 import threading
 import unittest
@@ -7,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 from unittest import mock
 
 from douban_recommender.crawler import CrawlResult
@@ -18,6 +20,11 @@ import douban_recommender.web as web_module
 
 class WebApiTests(unittest.TestCase):
     def setUp(self):
+        self.proxy_cache_temp = tempfile.TemporaryDirectory()
+        self.original_proxy_cache_dir = web_module.IMAGE_PROXY_DISK_CACHE_DIR
+        self.original_proxy_memory_cache = dict(web_module.IMAGE_PROXY_CACHE)
+        web_module.IMAGE_PROXY_DISK_CACHE_DIR = Path(self.proxy_cache_temp.name)
+        web_module.IMAGE_PROXY_CACHE.clear()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -26,6 +33,10 @@ class WebApiTests(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        web_module.IMAGE_PROXY_DISK_CACHE_DIR = self.original_proxy_cache_dir
+        web_module.IMAGE_PROXY_CACHE.clear()
+        web_module.IMAGE_PROXY_CACHE.update(self.original_proxy_memory_cache)
+        self.proxy_cache_temp.cleanup()
 
     def post_json(self, path, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -183,7 +194,7 @@ class WebApiTests(unittest.TestCase):
         web_module.crawl_user_collections = fake_crawl
         try:
             response = self.post_json("/api/sync-douban", {
-                "user_id_or_url": "272042071",
+                "user_id_or_url": "123456789",
                 "cookie": "",
                 "max_pages": 160,
                 "include_wish": True,
@@ -212,7 +223,7 @@ class WebApiTests(unittest.TestCase):
 
             self.assertEqual(
                 user_id_or_url,
-                "https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m",
+                "https://www.douban.com/people/123456789/?_dtcc=1&_i=33953249Yxbr5m",
             )
             self.assertEqual(cookie, "")
             return CrawlResult(
@@ -224,7 +235,7 @@ class WebApiTests(unittest.TestCase):
                     PageDiagnostic(
                         status="collect",
                         start=0,
-                        url="https://movie.douban.com/people/272042071/collect",
+                        url="https://movie.douban.com/people/123456789/collect",
                         http_status=403,
                         classification="login_required",
                         message="HTTP 403：豆瓣要求登录态或 Cookie",
@@ -235,7 +246,7 @@ class WebApiTests(unittest.TestCase):
         web_module.crawl_user_collections = fake_crawl
         try:
             response = self.post_json("/api/sync-douban", {
-                "user_id_or_url": "https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m",
+                "user_id_or_url": "https://www.douban.com/people/123456789/?_dtcc=1&_i=33953249Yxbr5m",
                 "cookie": "",
                 "max_pages": 1,
                 "include_wish": True,
@@ -244,7 +255,7 @@ class WebApiTests(unittest.TestCase):
             web_module.crawl_user_collections = original
 
         self.assertNotIn("error", response)
-        self.assertEqual(response["input_analysis"]["user_id"], "272042071")
+        self.assertEqual(response["input_analysis"]["user_id"], "123456789")
         self.assertTrue(response["input_analysis"]["profile_url"])
         self.assertFalse(response["input_analysis"]["cookie_provided"])
         self.assertTrue(response["input_analysis"]["profile_url_is_not_cookie"])
@@ -347,6 +358,35 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(response["counts"]["candidates"], 2)
         self.assertEqual({item["title"] for item in response["results"]}, {"CSV候选A", "CSV候选B"})
+
+    def test_recommend_api_defers_missing_poster_rescue_to_the_background_job(self):
+        detail_calls = []
+
+        def fake_detail_enrich(items, limit=12, sleep_seconds=0.05):
+            detail_calls.append((len(items), limit))
+            items[0].summary = "Synchronous verified detail"
+            return items
+
+        with (
+            mock.patch.object(web_module, "enrich_missing_posters_from_web_sources", return_value=0) as poster_enrich,
+            mock.patch.object(web_module, "enrich_media_items", new=fake_detail_enrich),
+        ):
+            response = self.post_json("/api/recommend", {
+                "ratings_csv": "title,my_rating,media_type,genres,tags\nRated Film,5,movie,Drama,watched\n",
+                "candidates_csv": "title,media_type,douban_rating,genres,tags\nBackground Rescue Candidate,movie,8.6,Drama,realism\n",
+                "fetch_douban": False,
+                "use_sample_candidates": False,
+                "include_movies": True,
+                "include_series": True,
+                "enrich_details": True,
+                "limit": 5,
+            })
+
+        poster_enrich.assert_not_called()
+        self.assertEqual([(1, 1)], detail_calls)
+        self.assertEqual("Synchronous verified detail", response["results"][0]["summary"])
+        self.assertGreaterEqual(response["counts"]["poster_rescue_pending"], 1)
+        self.assertTrue(response["counts"]["deferred_enrichment"])
 
     def test_recommend_api_can_enrich_top_recommendations_with_subject_details(self):
         original = getattr(web_module, "enrich_media_items", None)
@@ -931,6 +971,91 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(body, b"fake-image")
         self.assertEqual(requested, ["https://img.example/poster.jpg"])
 
+    def test_fetch_proxy_image_negative_caches_unreachable_urls_with_bounded_timeouts(self):
+        original_build_url_opener = web_module.build_url_opener
+        original_build_retry_url_opener = web_module.build_retry_url_opener
+        original_candidates = web_module.image_url_candidates
+        original_read_disk_cache = web_module._read_image_proxy_disk_cache
+        original_cache = dict(web_module.IMAGE_PROXY_CACHE)
+        negative_cache = getattr(web_module, "IMAGE_PROXY_NEGATIVE_CACHE", None)
+        original_negative_cache = dict(negative_cache or {})
+        calls = []
+
+        class FailingOpener:
+            def __init__(self, kind):
+                self.kind = kind
+
+            def open(self, request, timeout=0):
+                calls.append((self.kind, request.full_url, timeout))
+                raise urllib.error.URLError(OSError("dns unavailable"))
+
+        try:
+            web_module.IMAGE_PROXY_CACHE.clear()
+            if negative_cache is not None:
+                negative_cache.clear()
+            web_module.image_url_candidates = lambda url: [url]
+            web_module._read_image_proxy_disk_cache = lambda _url: None
+            web_module.build_url_opener = lambda: FailingOpener("primary")
+            web_module.build_retry_url_opener = lambda: FailingOpener("direct")
+
+            for _ in range(2):
+                with self.assertRaises(urllib.error.URLError):
+                    web_module.fetch_proxy_image("https://img.example/unreachable.jpg")
+        finally:
+            web_module.build_url_opener = original_build_url_opener
+            web_module.build_retry_url_opener = original_build_retry_url_opener
+            web_module.image_url_candidates = original_candidates
+            web_module._read_image_proxy_disk_cache = original_read_disk_cache
+            web_module.IMAGE_PROXY_CACHE.clear()
+            web_module.IMAGE_PROXY_CACHE.update(original_cache)
+            if negative_cache is not None:
+                negative_cache.clear()
+                negative_cache.update(original_negative_cache)
+
+        self.assertEqual(["primary", "direct"], [kind for kind, _, _ in calls])
+        self.assertTrue(all(0 < timeout <= 4 for _, _, timeout in calls))
+
+    def test_image_proxy_returns_cacheable_not_found_for_unavailable_remote_image(self):
+        original_fetch = web_module.fetch_proxy_image
+
+        def unavailable(_url):
+            raise urllib.error.URLError(OSError("dns unavailable"))
+
+        web_module.fetch_proxy_image = unavailable
+        error = None
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/image-proxy?url=https%3A%2F%2Fimg.example%2Fmissing.jpg",
+                method="GET",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=10)
+            error = caught.exception
+            body = json.loads(error.read().decode("utf-8"))
+            cache_control = error.headers.get("Cache-Control")
+        finally:
+            web_module.fetch_proxy_image = original_fetch
+            if error is not None:
+                error.close()
+
+        self.assertEqual(404, error.code)
+        self.assertEqual("public, max-age=300", cache_control)
+        self.assertEqual({"error": "image unavailable"}, body)
+
+    def test_response_helpers_ignore_disconnect_after_headers_are_sent(self):
+        class DisconnectedWriter:
+            def write(self, _data):
+                raise ConnectionAbortedError("client disconnected")
+
+        handler = object.__new__(Handler)
+        handler.wfile = DisconnectedWriter()
+        handler.send_response = lambda _status: None
+        handler.send_header = lambda *_args: None
+        handler.end_headers = lambda: None
+
+        handler.send_json({"ok": True})
+        handler.send_bytes(b"image", content_type="image/jpeg")
+
     def test_fetch_proxy_image_reuses_memory_cache_to_avoid_remote_rate_limits(self):
         original_build_url_opener = web_module.build_url_opener
         original_cache = dict(getattr(web_module, "IMAGE_PROXY_CACHE", {}))
@@ -975,9 +1100,193 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(first_data, second_data)
         self.assertEqual(first_type, second_type)
 
+    def test_fetch_proxy_image_coalesces_concurrent_requests_for_the_same_url(self):
+        original_build_url_opener = web_module.build_url_opener
+        original_build_retry_url_opener = web_module.build_retry_url_opener
+        original_candidates = web_module.image_url_candidates
+        original_read_disk_cache = web_module._read_image_proxy_disk_cache
+        original_write_disk_cache = web_module._write_image_proxy_disk_cache
+        calls = []
+        opened = threading.Event()
+        release = threading.Event()
+        results = []
+        errors = []
+
+        class FakeResponse:
+            headers = {"Content-Type": "image/jpeg"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"\xff\xd8\xff\xe0shared-concurrent-image"
+
+        class BlockingOpener:
+            def open(self, request, timeout=0):
+                calls.append((request.full_url, timeout))
+                opened.set()
+                if not release.wait(timeout=2):
+                    raise TimeoutError("test image response was not released")
+                return FakeResponse()
+
+        def worker():
+            try:
+                results.append(web_module.fetch_proxy_image("https://img.example/shared.jpg"))
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        try:
+            web_module.IMAGE_PROXY_CACHE.clear()
+            web_module.IMAGE_PROXY_NEGATIVE_CACHE.clear()
+            web_module.image_url_candidates = lambda url: [url]
+            web_module._read_image_proxy_disk_cache = lambda _url: None
+            web_module._write_image_proxy_disk_cache = lambda *_args: None
+            web_module.build_url_opener = lambda: BlockingOpener()
+            web_module.build_retry_url_opener = lambda: BlockingOpener()
+            first = threading.Thread(target=worker)
+            second = threading.Thread(target=worker)
+            first.start()
+            self.assertTrue(opened.wait(timeout=1))
+            second.start()
+            time.sleep(0.08)
+            release.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+        finally:
+            release.set()
+            web_module.build_url_opener = original_build_url_opener
+            web_module.build_retry_url_opener = original_build_retry_url_opener
+            web_module.image_url_candidates = original_candidates
+            web_module._read_image_proxy_disk_cache = original_read_disk_cache
+            web_module._write_image_proxy_disk_cache = original_write_disk_cache
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual([], errors)
+        self.assertEqual(1, len(calls))
+        self.assertEqual(2, len(results))
+        self.assertEqual(results[0], results[1])
+
+    def test_fetch_proxy_image_reuses_persistent_cache_after_memory_reset(self):
+        original_build_url_opener = web_module.build_url_opener
+        original_cache = dict(getattr(web_module, "IMAGE_PROXY_CACHE", {}))
+        original_cache_dir = getattr(web_module, "IMAGE_PROXY_DISK_CACHE_DIR", None)
+        calls = []
+
+        class FakeResponse:
+            headers = {"Content-Type": "image/jpeg"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"\xff\xd8\xff\xe0persistent-image"
+
+        class FakeOpener:
+            def open(self, request, timeout=0):
+                calls.append(request.full_url)
+                return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as directory:
+            try:
+                web_module.IMAGE_PROXY_CACHE.clear()
+                web_module.IMAGE_PROXY_DISK_CACHE_DIR = Path(directory)
+                web_module.build_url_opener = lambda: FakeOpener()
+                first_data, first_type = web_module.fetch_proxy_image("https://img.example/persistent.jpg")
+                web_module.IMAGE_PROXY_CACHE.clear()
+                web_module.build_url_opener = lambda: (_ for _ in ()).throw(AssertionError("disk cache should avoid the network"))
+                second_data, second_type = web_module.fetch_proxy_image("https://img.example/persistent.jpg")
+            finally:
+                web_module.build_url_opener = original_build_url_opener
+                web_module.IMAGE_PROXY_CACHE.clear()
+                web_module.IMAGE_PROXY_CACHE.update(original_cache)
+                if original_cache_dir is not None:
+                    web_module.IMAGE_PROXY_DISK_CACHE_DIR = original_cache_dir
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(first_data, second_data)
+        self.assertEqual(first_type, second_type)
+
+    def test_fetch_proxy_image_rejects_tiny_transparent_png_and_uses_next_candidate(self):
+        original_build_url_opener = web_module.build_url_opener
+        original_candidates = web_module.image_url_candidates
+        original_cache = dict(getattr(web_module, "IMAGE_PROXY_CACHE", {}))
+        calls = []
+
+        class FakeResponse:
+            def __init__(self, data, content_type):
+                self.data = data
+                self.headers = {"Content-Type": content_type}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self.data
+
+        class FakeOpener:
+            def open(self, request, timeout=0):
+                calls.append(request.full_url)
+                if request.full_url.endswith("transparent.png"):
+                    return FakeResponse(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x00", "image/png")
+                return FakeResponse(b"\xff\xd8\xff\xe0real-still", "image/jpeg")
+
+        try:
+            web_module.IMAGE_PROXY_CACHE.clear()
+            web_module.image_url_candidates = lambda _url: [
+                "https://img.example/transparent.png",
+                "https://img.example/real.jpg",
+            ]
+            web_module.build_url_opener = lambda: FakeOpener()
+            data, content_type = web_module.fetch_proxy_image("https://img.example/original.jpg")
+        finally:
+            web_module.build_url_opener = original_build_url_opener
+            web_module.image_url_candidates = original_candidates
+            web_module.IMAGE_PROXY_CACHE.clear()
+            web_module.IMAGE_PROXY_CACHE.update(original_cache)
+
+        self.assertEqual(["https://img.example/transparent.png", "https://img.example/real.jpg"], calls)
+        self.assertEqual("image/jpeg", content_type)
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+
+    def test_douban_photo_proxy_candidates_prefer_stable_large_img1_variant(self):
+        candidates = web_module.image_url_candidates(
+            "https://qnmob3.doubanio.com/view/photo/large/public/p1561796193.jpg?imageView2/2/q/80"
+        )
+
+        self.assertEqual(
+            "https://img1.doubanio.com/view/photo/l/public/p1561796193.jpg",
+            candidates[0],
+        )
+        self.assertIn(
+            "https://img2.doubanio.com/view/photo/l/public/p1561796193.jpg",
+            candidates,
+        )
+
+    def test_douban_personage_proxy_candidates_retry_stable_alternate_hosts(self):
+        source = "https://img9.doubanio.com/view/personage/m/public/e81ed8896efa3a62b4cb243c7ba601e5.jpg"
+
+        candidates = web_module.image_url_candidates(source)
+
+        self.assertEqual(source, candidates[0])
+        self.assertIn(
+            "https://img1.doubanio.com/view/personage/m/public/e81ed8896efa3a62b4cb243c7ba601e5.jpg",
+            candidates,
+        )
+
     def test_fetch_proxy_image_retries_direct_after_http_error_from_proxy_path(self):
         original_build_url_opener = web_module.build_url_opener
         original_build_opener = web_module.urllib.request.build_opener
+        original_read_disk_cache = web_module._read_image_proxy_disk_cache
         original_cache = dict(getattr(web_module, "IMAGE_PROXY_CACHE", {}))
         calls = []
         errors = []
@@ -1019,10 +1328,12 @@ class WebApiTests(unittest.TestCase):
             web_module.IMAGE_PROXY_CACHE.clear()
             web_module.build_url_opener = lambda: ProxyOpener()
             web_module.urllib.request.build_opener = lambda *args, **kwargs: DirectOpener()
+            web_module._read_image_proxy_disk_cache = lambda _url: None
             data, content_type = web_module.fetch_proxy_image("https://upload.wikimedia.org/example.jpg")
         finally:
             web_module.build_url_opener = original_build_url_opener
             web_module.urllib.request.build_opener = original_build_opener
+            web_module._read_image_proxy_disk_cache = original_read_disk_cache
             web_module.IMAGE_PROXY_CACHE.clear()
             web_module.IMAGE_PROXY_CACHE.update(original_cache)
 
@@ -1096,6 +1407,7 @@ class WebApiTests(unittest.TestCase):
     def test_fetch_proxy_image_retries_direct_when_configured_proxy_refuses_connection(self):
         original_build_url_opener = web_module.build_url_opener
         original_build_opener = web_module.urllib.request.build_opener
+        original_read_disk_cache = web_module._read_image_proxy_disk_cache
         calls = []
 
         class FailingProxyOpener:
@@ -1124,11 +1436,13 @@ class WebApiTests(unittest.TestCase):
         try:
             web_module.build_url_opener = lambda: FailingProxyOpener()
             web_module.urllib.request.build_opener = lambda *handlers: DirectOpener()
+            web_module._read_image_proxy_disk_cache = lambda _url: None
 
             data, content_type = web_module.fetch_proxy_image("https://img.example/poster.webp")
         finally:
             web_module.build_url_opener = original_build_url_opener
             web_module.urllib.request.build_opener = original_build_opener
+            web_module._read_image_proxy_disk_cache = original_read_disk_cache
 
         self.assertEqual(data, b"direct-image")
         self.assertEqual(content_type, "image/webp")
@@ -1189,8 +1503,8 @@ class WebApiTests(unittest.TestCase):
             "include_movies": True,
             "include_series": True,
             "include_anime": True,
-            "like_terms": "??????????????????",
-            "dislike_terms": "??????????????",
+            "like_terms": "\u8bc4\u5206\u9ad8\uff0c\u5267\u60c5\u597d\uff0c\u53d9\u4e8b\u5f3a\uff0c\u4eba\u7269\u5851\u9020\u624e\u5b9e",
+            "dislike_terms": "\u7535\u89c6\u5267\u53e4\u88c5\uff0c\u6ce8\u6c34\u5267",
             "enrich_details": False,
             "limit": 160,
         })

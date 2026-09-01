@@ -1,4 +1,4 @@
-# CineScope Real Data and Trusted Media Recovery Implementation Plan
+﻿# CineScope Real Data and Trusted Media Recovery Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Every behavioral change follows RED -> GREEN -> REFACTOR.
 
@@ -19,7 +19,7 @@
 - Synced watched/wish states outrank recommendation candidate state and repeated syncs are idempotent.
 - Recommendation metadata must state whether it is based on Douban sync and expose watched/wish/rated counts.
 - Fake creators, template biographies, fabricated years/countries, and mismatched posters are not permitted as factual metadata.
-- Completion requires full tests plus a fresh browser session against the real profile `272042071`.
+- Completion requires full tests plus a fresh browser session against the real profile `<your-douban-id>`.
 
 ---
 
@@ -34,8 +34,8 @@
 - Produces: `parse_user_collection_html(html, status) -> list[MediaItem]` with canonical title, aliases, rating, year, countries, genres, cast, directors, duration-informed media type, and source URL.
 
 - [ ] Add a fixture using `<div class="item comment-item">`, a real slash-delimited intro, aliases, and `rating5-t`.
-- [ ] Add tests asserting the standard parser—not fallback—returns `仙剑奇侠传三`, rating `5`, year `2009`, China, cast `胡歌`, director `李国立`, genre `古装`, and media type `电视剧`.
-- [ ] Add a test proving an animated feature over 60 minutes remains `电影` while a short episodic animation becomes `动漫`.
+- [ ] Add tests asserting the standard parser鈥攏ot fallback鈥攔eturns `浠欏墤濂囦緺浼犱笁`, rating `5`, year `2009`, China, cast `鑳℃瓕`, director `鏉庡浗绔媊, genre `鍙よ`, and media type `鐢佃鍓.
+- [ ] Add a test proving an animated feature over 60 minutes remains `鐢靛奖` while a short episodic animation becomes `鍔ㄦ极`.
 - [ ] Run `python -m unittest tests.test_crawler -v` and confirm the new tests fail.
 - [ ] Generalize item-class matching, canonicalize the first title segment, parse the intro around country/runtime boundaries, retain aliases in `raw`, and make animation-series inference duration/series-aware.
 - [ ] Re-run the focused tests and commit.
@@ -73,7 +73,7 @@
 - Consumes watched and wish library rows when callers do not send explicit ratings.
 
 - [ ] Add tests proving synced watched titles are excluded, wish rows weakly shape taste without being treated as watched, and counts/source appear in the session response.
-- [ ] Add tests that production fallback candidates contain no placeholder creators or data-URI assets and that animated movies are excluded from `动漫`.
+- [ ] Add tests that production fallback candidates contain no placeholder creators or data-URI assets and that animated movies are excluded from `鍔ㄦ极`.
 - [ ] Run focused tests and confirm failure.
 - [ ] Load watched and wish rows, derive personalization on every serialized session, and apply a bounded wishlist preference weight.
 - [ ] Remove fabricated premium metadata from the default production path; prefer real cached/live candidates and verified curated seeds only.
@@ -164,10 +164,9 @@
 - [ ] Run all Python tests: `python -m unittest discover -s tests -v`.
 - [ ] Run syntax checks for every UI JavaScript module.
 - [ ] Restart port `7861` using the default runtime database.
-- [ ] Sync `272042071` anonymously first, adding a visible Cookie only if Douban explicitly requires it.
+- [ ] Sync `<your-douban-id>` anonymously first, adding a visible Cookie only if Douban explicitly requires it.
 - [ ] Verify library counts, identity counts, provider attempts, asset files, and personalization metadata in SQLite/API.
 - [ ] Generate all three channels and prefetch the first visible batches.
 - [ ] In a fresh browser session verify: no route flicker, no blank recovery page, correct titles, synopsis/genres/ratings, working batch changes, and useful navigation.
 - [ ] Audit image pixels/HTTP responses rather than DOM placeholders: hero 100%, visible posters >=95%, visible credited people >=80%, wrong-identity count 0.
 - [ ] Capture desktop/tablet/mobile screenshots and commit final evidence only after the acceptance thresholds pass.
-

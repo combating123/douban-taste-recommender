@@ -1,51 +1,135 @@
-﻿# CineScope Studio：豆瓣私人影视策展器
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="CineScope Studio：本地优先的豆瓣同步、可解释推荐与多焦点影视探索工作台">
+</p>
 
-CineScope Studio 是本地运行的影视同步、口味分析和推荐工作台。它可以同步豆瓣“看过 / 想看”，用电影、电视剧、动漫候选池生成高分剧情优先的推荐海报墙。
+<p align="center">
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-70e4dc?style=flat-square&labelColor=111725">
+  <img alt="Local first" src="https://img.shields.io/badge/architecture-local--first-a88cff?style=flat-square&labelColor=111725">
+  <img alt="Tests 1082 passed" src="https://img.shields.io/badge/tests-1082%20passed-f0c277?style=flat-square&labelColor=111725">
+  <img alt="Release v0.2.0" src="https://img.shields.io/badge/release-v0.2.0-f6f7fb?style=flat-square&labelColor=111725">
+</p>
 
-项目坚持本地优先：Cookie 只用于本机请求豆瓣页面，不保存 Cookie，不写入缓存，不写入报告，也不会上传到外部服务。
+<p align="center">
+  <strong>把豆瓣“看过 / 想看”、自然语言和多个兴趣焦点，转化为可解释、可恢复、可继续探索的私人影视策展。</strong><br>
+  数据默认留在本机；本地确定性排序是事实源，在线资料与语言模型都只是可选增强层。
+</p>
 
-## 快速启动
+## 产品预览
 
-PowerShell：
+### 今晚推荐：直接说出想看的感觉
+
+不用先选十几个筛选项。输入“类似《降临》，但更温暖”“节奏紧凑、烧脑但不要恐怖”，CineScope 会解析意图、拆分电影 / 电视剧 / 动画剧集三个独立频道，并给出可核对的推荐依据。
+
+<p align="center">
+  <a href="./assets/readme/showcase-tonight.webp"><img src="./assets/readme/showcase-tonight.webp" width="100%" alt="CineScope Studio 今晚推荐与自然语言选片界面"></a>
+</p>
+
+### 片库与观影雷达：从记录进入可视化探索
+
+<p align="center">
+  <a href="./assets/readme/showcase-library.webp"><img src="./assets/readme/showcase-library.webp" width="49%" alt="CineScope Studio 本地片库、海报与横向剧照界面"></a>
+  <a href="./assets/readme/showcase-observatory.webp"><img src="./assets/readme/showcase-observatory.webp" width="49%" alt="CineScope Studio 多焦点融合观影雷达界面"></a>
+</p>
+
+片库把海报、剧照、评分、简介和观看状态放在同一张可扫描卡片中；观影雷达允许手动搜索第一部作品，再加入最多三部兴趣焦点，通过类型、气质、主创、口碑与语义交集重组推荐。
+
+## 它解决什么问题
+
+- **不是只按标签找相似片**：结合个人评分、最近观看、类型、主创、地区、气质、口碑、语义和多样性惩罚。
+- **不是黑盒“匹配度 98%”**：推荐卡和详情页展示真正的类型、证据来源、共同线索与避雷因素。
+- **不是只有本机小片库**：本地档案负责个性化，豆瓣公开候选、精选目录及可选在线来源负责扩展发现范围。
+- **不是把外链图片直接塞给浏览器**：图片先校验身份、MIME、像素和尺寸，通过后进入本地内容哈希媒体仓库。
+- **不是一次性推荐结果**：频道批次、片库滚动位置、反馈事件、同步任务和观影雷达焦点都支持恢复或继续。
+- **不是强依赖大模型**：没有配置模型也能完整运行；语言模型只做可选的自然语言结构化与解释增强。
+
+## 快速开始
+
+### 环境
+
+- Python `3.10+`
+- Windows 10 / 11 推荐使用 PowerShell 一键启动
+- 其他系统可直接运行 Python Web 服务
+
+### 安装并启动
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+git clone https://github.com/combating123/douban-taste-recommender.git
+cd douban-taste-recommender
+python -m pip install -e .
 .\run_app.ps1
 ```
 
-打开浏览器：<http://127.0.0.1:7861>
-
-不用脚本也可以：
+脚本会安全停止旧 CineScope 进程、启动新服务、记录真实 PID，并在就绪后打开 <http://127.0.0.1:7861>。重复执行同一条命令即可重启。
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+# 仅启动，不自动打开浏览器
+.\run_app.ps1 -NoBrowser
+
+# 使用其他端口
+.\run_app.ps1 -Port 8787
+
+# 停止服务
+.\run_app.ps1 -Stop
+```
+
+不使用 PowerShell 启动器：
+
+```powershell
 $env:PYTHONPATH = "$PWD\src"
 python -m douban_recommender.web
 ```
 
-### V3 默认启动、首次同步与回滚
+**V3 是默认界面**，不要求设置环境变量。首次打开后进入“健康与同步”完成**首次同步**：填写豆瓣用户 ID 或主页链接；公开数据足够时，Cookie 是可选项。
 
-`run_app.ps1` 会直接启动 **V3 是默认界面**，不要求设置环境变量。打开 <http://127.0.0.1:7861> 后，先进入“健康与同步”完成**首次同步**：填写豆瓣主页 URL 或用户 ID；公开数据可用时 Cookie 留空，需要登录态时只在同步页的 Cookie 输入框手动粘贴你已有的 Cookie 字符串。
-
-Cookie 只由用户输入，且只由可见输入获得；Cookie 只保存在 sessionStorage（当前标签页）和本次本机请求内，关闭标签页即失效。应用不读取浏览器 Profile、磁盘、环境转储或任何隐藏存储，也不会将 Cookie 写入数据库、缓存、日志或报告。
-
-V3 与显式 legacy 回滚界面都只接受可见 Cookie 输入框中手动粘贴的 Cookie 字符串；不调用剪贴板读取，不解析整段请求头。多行文本、带字段名前缀的内容或其他说明文字会被拒绝。
-
-如需临时回到旧界面，在启动前显式设置 `CINESCOPE_UI_VERSION=legacy`：
+需要临时回滚旧界面时，设置 `CINESCOPE_UI_VERSION=legacy` 后启动：
 
 ```powershell
-$env:CINESCOPE_UI_VERSION = "legacy"
+$env:CINESCOPE_UI_VERSION="legacy"
 .\run_app.ps1
 ```
 
-移除该变量或重新打开 PowerShell 后会恢复 V3 默认界面。
+## 页面地图
 
-### 运行与维护
+| 页面 | 用途 | 关键能力 |
+| --- | --- | --- |
+| 今晚 | 生成当下想看的内容 | 自然语言、三频道、轮播精选、独立换批次 |
+| 片库 | 浏览本地观影档案 | 看过 / 想看 / 候选、剧照横滑、滚动位置恢复 |
+| 口味 | 理解长期偏好 | 类型、主创、地区、评分与近期变化 |
+| 观影雷达 | 主动发现与融合兴趣 | 手动首焦点、最多三焦点、相似推荐、交集推荐 |
+| 详情 | 核对一部作品 | 简介、评分证据、演职员、剧照、相似作品 |
+| 健康与同步 | 管理数据完整度 | 自动抓取到末页、任务恢复、媒体健康、缓存管理 |
 
-- 本机 HTTP 代理只配置端口，例如 `DOUBAN_RECOMMENDER_HTTP_PROXY=http://127.0.0.1:7890`；不要使用订阅地址。
-- 可选服务的 API Key 通过环境变量由对应服务配置；不要把密钥写进 URL、命令历史或报告。
-- 在“健康与同步”查看媒体健康；也可请求 `GET /api/v2/media/health` 查看媒体仓库状态。
-- 需要清空缓存时，可在旧界面点击“清空缓存”，或向本机服务发送 `DELETE /api/cache`；这不会写入或恢复 Cookie。
+## 工作方式
+
+<p align="center">
+  <img src="./assets/readme/workflow.svg" width="100%" alt="CineScope Studio 从豆瓣记录和自然语言到本地推荐结果的工作流">
+</p>
+
+1. **输入**：同步豆瓣“看过 / 想看”，或粘贴评分 CSV、候选 CSV；也可以直接输入自然语言。
+2. **构建**：统一作品身份、扩展候选、补齐中文标题、评分与可信媒体。
+3. **排序**：本地确定性算法按语义、口碑、主创、气质、反馈和多样性生成候选。
+4. **探索**：通过今晚推荐、片库、详情和观影雷达继续反馈、切换批次或组合焦点。
+
+## v0.2.0 更新重点
+
+- 全面重构 CineScope V3 的首页、片库、详情、口味、健康与同步页面。
+- 新增“观影雷达”与多焦点配方台，支持搜索首焦点、继续添加作品以及融合推荐。
+- 新增全网候选发现、中文本地化、评分归一化、语义信号和重复作品消歧。
+- 重建图片链路：懒加载、预热、失败兜底、可信媒体校验、本地哈希缓存与人物图修复。
+- 强化豆瓣同步：自动抓取到末页、失败位置续跑、登录态诊断与同标签页恢复。
+- 全量回归结果：**1082 passed，581 subtests passed**。
+
+完整变更见 [CHANGELOG.md](./CHANGELOG.md)。
+
+## 隐私边界速览
+
+- **Cookie 只由用户输入**，只用于本机请求豆瓣页面；项目**不保存 Cookie**。
+- Cookie 只保存在 sessionStorage / 请求内存；更严格地说，Cookie **仅 sessionStorage/请求内存** 使用。
+- Cookie 只由可见输入获得；程序不会读取浏览器 Profile、请求头、剪贴板或任何隐藏存储。
+- V3 与显式 legacy 回滚界面都只接受可见 Cookie 输入框中手动粘贴的 Cookie 字符串；不调用剪贴板读取，不解析整段请求头，多行文本、带字段名前缀的内容或其他说明文字会被拒绝。
+- 不落盘不读取浏览器 Profile；主页 URL 不是 Cookie。
+- 本地 HTTP 代理端口允许，不接收订阅地址；服务 API Key 通过环境变量配置且不回显。
+- “健康与同步”提供媒体健康、同步诊断与清空缓存入口。
 
 ## 推荐默认策略
 
@@ -54,7 +138,7 @@ $env:CINESCOPE_UI_VERSION = "legacy"
 - 范围：电影、电视剧、动漫默认全开。
 - 数量：默认生成 120 条推荐，首页优先展示精选海报墙。
 
-## Task 9：推荐会话与文档集成
+## 推荐会话与自然语言控制
 
 ### Command Lens 是什么
 
@@ -122,7 +206,7 @@ $env:CINESCOPE_UI_VERSION = "legacy"
 ### 方式 B：命令行生成 HTML 报告
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH = "$PWD\src"
 python -m douban_recommender.cli `
   --ratings sample_data\ratings_sample.csv `
@@ -268,10 +352,10 @@ Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，不会写入�
 你复制的这种主页链接是正确的：
 
 ```text
-https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m
+https://www.douban.com/people/<your-douban-id>/
 ```
 
-应用会把它识别成用户 ID `272042071`。如果右侧提示“链接识别成功但仍需要 Cookie”，说明链接没错；只是豆瓣当前把“看过 / 想看”分页拦在登录态后面。主页链接不是 Cookie，不能替代你手动粘贴到同步页 Cookie 输入框中的 Cookie 字符串。
+应用会把它识别成用户 ID `<your-douban-id>`。如果右侧提示“链接识别成功但仍需要 Cookie”，说明链接没错；只是豆瓣当前把“看过 / 想看”分页拦在登录态后面。主页链接不是 Cookie，不能替代你手动粘贴到同步页 Cookie 输入框中的 Cookie 字符串。
 
 遇到这种情况，将你已有的 Cookie 字符串手动粘贴到同步页的 Cookie 输入框后重试。同步请求发出后，Cookie 会继续保留在当前同步面板的输入框和当前标签页的 sessionStorage 中，以便恢复未完成任务；离开或销毁同步面板时，可见输入框会清空，返回同步页时会从同一标签页的 sessionStorage 恢复，关闭标签页后该会话值失效。Cookie 只由可见输入获得；项目不会将 Cookie 写入数据库、磁盘、缓存、日志或报告，也不读取浏览器 Profile、请求头或任何隐藏存储。
 
@@ -345,7 +429,7 @@ python -m douban_recommender.web
 PowerShell 示例：
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH = "$PWD\src"
 $env:DOUBAN_RECOMMENDER_HTTP_PROXY = "http://127.0.0.1:7890"
 python -m douban_recommender.web
@@ -369,7 +453,7 @@ python -m douban_recommender.web
 README 针对本次推荐会话文档集成，至少应保证以下命令可直接运行：
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH="$PWD\src"
 $env:PYTHONDONTWRITEBYTECODE="1"
 python -m unittest tests.test_readme tests.test_recommendation_api_v2 tests.test_catalog_api_v2 tests.test_language_adapter -v
@@ -381,7 +465,7 @@ rg -n "Cookie.*(print|log)|api_key.*response" src tests
 标准测试入口：
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH="$PWD\src"
 $env:PYTHONDONTWRITEBYTECODE="1"
 python -m unittest discover -s tests -v

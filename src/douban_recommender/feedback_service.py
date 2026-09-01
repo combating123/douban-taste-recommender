@@ -74,6 +74,7 @@ class FeedbackSignals:
     positive: tuple[str, ...] = ()
     weak_negative: tuple[str, ...] = ()
     permanent_negative: tuple[str, ...] = ()
+    permanent_excluded_item_keys: tuple[str, ...] = ()
     session_adjustments: dict[str, tuple[str, ...]] = field(default_factory=dict)
     recent_30: tuple[str, ...] = ()
     recent_90: tuple[str, ...] = ()
@@ -150,7 +151,12 @@ class FeedbackService:
             raise ValueError("unsupported feedback event")
         event_id = uuid.uuid4().hex
         created_at = _timestamp(event.created_at)
+        raw_identity_aliases = event.payload.get("identity_aliases", event.payload.get("identity_tokens", ()))
         payload = _scrub_payload(event.payload)
+        if isinstance(raw_identity_aliases, (list, tuple, set)):
+            identity_aliases = [str(alias).strip() for alias in raw_identity_aliases if str(alias).strip()]
+            if identity_aliases:
+                payload["identity_aliases"] = identity_aliases
         with self.database.connection() as connection:
             connection.execute(
                 """
@@ -240,6 +246,7 @@ class FeedbackService:
         positive: list[str] = []
         weak_negative: list[str] = []
         permanent_negative: list[str] = []
+        permanent_excluded_item_keys: list[str] = []
         session_adjustments: dict[str, list[str]] = {}
         recent_30: list[str] = []
         recent_90: list[str] = []
@@ -261,6 +268,13 @@ class FeedbackService:
                 weak_negative.extend(preference_features)
             elif event_type == "permanent-avoid":
                 permanent_negative.extend(preference_features)
+                if item_key:
+                    permanent_excluded_item_keys.append(item_key)
+                identity_tokens = payload.get("identity_aliases", payload.get("identity_tokens"))
+                if isinstance(identity_tokens, (list, tuple, set)):
+                    permanent_excluded_item_keys.extend(
+                        str(token).strip() for token in identity_tokens if str(token).strip()
+                    )
             elif event_type in {"not-tonight", "tonight-candidate"}:
                 session_id = str(row["session_id"] or "session")
                 adjustments = session_adjustments.setdefault(session_id, [])
@@ -283,6 +297,7 @@ class FeedbackService:
             positive=tuple(dict.fromkeys(positive)),
             weak_negative=tuple(dict.fromkeys(weak_negative)),
             permanent_negative=tuple(dict.fromkeys(permanent_negative)),
+            permanent_excluded_item_keys=tuple(dict.fromkeys(permanent_excluded_item_keys)),
             session_adjustments={
                 key: tuple(dict.fromkeys(values)) for key, values in session_adjustments.items()
             },

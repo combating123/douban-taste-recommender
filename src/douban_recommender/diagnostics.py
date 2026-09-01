@@ -28,7 +28,7 @@ HARD_IDENTITY_CONFLICTS = {
     "year-conflict",
     "name-conflict",
 }
-KNOWN_PROVIDERS = ("existing", "tmdb", "tvmaze", "anilist", "jikan", "douban", "wikidata")
+KNOWN_PROVIDERS = ("existing", "tmdb", "tvmaze", "anilist", "jikan", "apple_movies", "douban", "wikidata")
 ATTEMPT_STATUSES = ("ready", "miss", "identity-rejected", "asset-rejected", "provider-error")
 QUEUE_STATES = ("queued", "resolving", "downloading", "validating", "ready", "degraded", "failed", "cancelled")
 SYNC_STATES = ("queued", "running", "partial", "needs_cookie", "complete", "failed", "cancelled")

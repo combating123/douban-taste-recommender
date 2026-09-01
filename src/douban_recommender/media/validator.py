@@ -29,6 +29,7 @@ def validate_image_bytes(
     declared_type: str = "",
     min_width: int = 80,
     min_height: int = 80,
+    kind: str = "",
 ) -> ValidatedImage:
     payload = bytes(data or b"")
     if not payload or _looks_like_document(payload):
@@ -54,7 +55,7 @@ def validate_image_bytes(
         raise MediaValidationError(f"image too small: {width}x{height}")
 
     extension, mime_type = FORMAT_MAP[image_format]
-    return ValidatedImage(
+    validated = ValidatedImage(
         data=payload,
         mime_type=mime_type,
         extension=extension,
@@ -62,3 +63,17 @@ def validate_image_bytes(
         height=int(height),
         sha256=hashlib.sha256(payload).hexdigest(),
     )
+    validate_image_kind(validated, kind)
+    return validated
+
+
+def validate_image_kind(image: ValidatedImage, kind: str) -> None:
+    normalized = str(kind or "").strip().casefold()
+    width = int(image.width)
+    height = int(image.height)
+    if normalized == "poster":
+        if width < 180 or height < 250 or (height / max(width, 1)) < 1.15:
+            raise MediaValidationError(f"poster dimensions are invalid: {width}x{height}")
+    elif normalized == "portrait":
+        if width < 96 or height < 96:
+            raise MediaValidationError(f"portrait dimensions are invalid: {width}x{height}")

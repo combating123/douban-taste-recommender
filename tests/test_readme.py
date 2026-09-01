@@ -62,7 +62,8 @@ class ReadmeTests(unittest.TestCase):
     def test_readme_explains_profile_url_is_not_cookie(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("主页链接不是 Cookie", text)
-        self.assertIn("https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m", text)
+        self.assertIn("https://www.douban.com/people/<your-douban-id>/", text)
+        self.assertNotRegex(text, r"https://www\.douban\.com/people/\d{6,}/")
         self.assertIn("链接识别成功但仍需要 Cookie", text)
 
     def test_readme_matches_web_csv_paste_workflow(self):

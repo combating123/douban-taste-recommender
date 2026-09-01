@@ -1,4 +1,4 @@
-# CineScope Recommendation Intelligence Implementation Plan
+﻿# CineScope Recommendation Intelligence Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -36,18 +36,18 @@
 ```python
 def test_parses_anime_runtime_mood_and_avoidance():
     intent = parse_recommendation_intent(
-        "今晚想看聪明、悬疑、群像，但不要太压抑的动画剧集，最好一集30分钟以内"
+        "浠婃櫄鎯崇湅鑱槑銆佹偓鐤戙€佺兢鍍忥紝浣嗕笉瑕佸お鍘嬫姂鐨勫姩鐢诲墽闆嗭紝鏈€濂戒竴闆?0鍒嗛挓浠ュ唴"
     )
-    self.assertEqual(intent.media_types, ("动漫",))
+    self.assertEqual(intent.media_types, ("鍔ㄦ极",))
     self.assertEqual(intent.episode_runtime_max, 30)
-    self.assertIn("悬疑", intent.genres)
-    self.assertIn("群像", intent.moods)
-    self.assertIn("过度压抑", intent.avoid)
+    self.assertIn("鎮枒", intent.genres)
+    self.assertIn("缇ゅ儚", intent.moods)
+    self.assertIn("杩囧害鍘嬫姂", intent.avoid)
 
 def test_not_tonight_is_session_only():
-    intent = parse_recommendation_intent("今晚不想看慢热的")
-    self.assertIn("慢热", intent.session_only_adjustments)
-    self.assertNotIn("慢热", intent.permanent_avoid)
+    intent = parse_recommendation_intent("浠婃櫄涓嶆兂鐪嬫參鐑殑")
+    self.assertIn("鎱㈢儹", intent.session_only_adjustments)
+    self.assertNotIn("鎱㈢儹", intent.permanent_avoid)
 ```
 
 - [ ] **Step 2: Run and confirm missing module**
@@ -111,13 +111,13 @@ git commit -m "feat: parse grounded recommendation intents"
 
 ```python
 def test_anime_movie_is_ineligible_for_anime_series_channel():
-    item = MediaItem(title="千与千寻", media_type="动漫", raw={"format": "MOVIE"})
-    intent = RecommendationIntent(media_types=("动漫",))
+    item = MediaItem(title="鍗冧笌鍗冨", media_type="鍔ㄦ极", raw={"format": "MOVIE"})
+    intent = RecommendationIntent(media_types=("鍔ㄦ极",))
     self.assertFalse(evaluate_eligibility(item, set(), intent).eligible)
 
 def test_costume_series_is_penalized_not_removed_by_default():
-    item = MediaItem(title="古装测试", media_type="电视剧", genres=["古装"])
-    decision = evaluate_eligibility(item, set(), RecommendationIntent(media_types=("电视剧",)))
+    item = MediaItem(title="鍙よ娴嬭瘯", media_type="鐢佃鍓?, genres=["鍙よ"])
+    decision = evaluate_eligibility(item, set(), RecommendationIntent(media_types=("鐢佃鍓?,)))
     self.assertTrue(decision.eligible)
     self.assertTrue(any(signal.code == "costume-series" and signal.value < 0 for signal in decision.penalties))
 ```
@@ -161,17 +161,17 @@ git commit -m "feat: enforce recommendation channel eligibility"
 
 ```python
 def test_high_vote_quality_beats_tiny_vote_perfect_rating():
-    stable = media("稳定高分", rating=9.1, votes=200000)
-    tiny = media("小样本满分", rating=9.8, votes=12)
+    stable = media("绋冲畾楂樺垎", rating=9.1, votes=200000)
+    tiny = media("灏忔牱鏈弧鍒?, rating=9.8, votes=12)
     ranked = rank_candidates([], [tiny, stable], empty_profile(), RecommendationIntent())
-    self.assertEqual(ranked[0].title, "稳定高分")
+    self.assertEqual(ranked[0].title, "绋冲畾楂樺垎")
 
 def test_context_changes_current_order_without_mutating_profile():
-    short = media("短剧", episode_runtime=24, rating=9.0)
-    long = media("长剧", episode_runtime=60, rating=9.2)
+    short = media("鐭墽", episode_runtime=24, rating=9.0)
+    long = media("闀垮墽", episode_runtime=60, rating=9.2)
     intent = RecommendationIntent(episode_runtime_max=30)
     ranked = rank_candidates([], [long, short], empty_profile(), intent)
-    self.assertEqual(ranked[0].title, "短剧")
+    self.assertEqual(ranked[0].title, "鐭墽")
 ```
 
 - [ ] **Step 2: Run focused test and verify failure**
@@ -233,16 +233,16 @@ git commit -m "feat: add explainable seven-layer ranking"
 
 ```python
 def test_movie_and_anime_batches_have_independent_cursors():
-    session = service.create_session("p", neutral_intent(), pools(), {"电影": 3, "电视剧": 3, "动漫": 3})
-    first_movie = service.next_batch(session.id, "电影")
-    first_anime = service.next_batch(session.id, "动漫")
-    second_movie = service.next_batch(session.id, "电影")
+    session = service.create_session("p", neutral_intent(), pools(), {"鐢靛奖": 3, "鐢佃鍓?: 3, "鍔ㄦ极": 3})
+    first_movie = service.next_batch(session.id, "鐢靛奖")
+    first_anime = service.next_batch(session.id, "鍔ㄦ极")
+    second_movie = service.next_batch(session.id, "鐢靛奖")
     self.assertEqual(first_anime.index, 1)
     self.assertEqual(second_movie.index, 2)
     self.assertFalse(set(first_movie.item_keys) & set(second_movie.item_keys))
 
 def test_pool_match_and_visible_counts_are_distinct():
-    batch = service.next_batch(seed_session(pool_size=160, matched_size=47, batch_size=9), "动漫")
+    batch = service.next_batch(seed_session(pool_size=160, matched_size=47, batch_size=9), "鍔ㄦ极")
     self.assertEqual((batch.pool_size, batch.matched_size, len(batch.items)), (160, 47, 9))
 ```
 
@@ -341,7 +341,7 @@ git commit -m "feat: add reversible contextual feedback"
 ```python
 def test_create_session_returns_three_distinct_counts():
     response = self.post_json("/api/v2/recommend/sessions", session_payload(limit=160))
-    anime = response["channels"]["动漫"]
+    anime = response["channels"]["鍔ㄦ极"]
     self.assertIn("pool_size", anime)
     self.assertIn("matched_size", anime)
     self.assertIn("visible_size", anime)
@@ -459,13 +459,13 @@ git commit -m "feat: expose cinescope catalog exploration api"
 
 ```python
 def test_explanation_rejects_unknown_title_from_model():
-    adapter = fake_model_adapter('{"text":"推荐不存在的电影","citations":["missing"]}')
+    adapter = fake_model_adapter('{"text":"鎺ㄨ崘涓嶅瓨鍦ㄧ殑鐢靛奖","citations":["missing"]}')
     with self.assertRaisesRegex(UngroundedResponseError, "citation"):
-        adapter.explain("只留一部", {"known": known_item()})
+        adapter.explain("鍙暀涓€閮?, {"known": known_item()})
 
 def test_model_failure_falls_back_to_local_rules():
     service = LanguageService(primary=FailingAdapter(), fallback=LocalRuleLanguageAdapter())
-    self.assertEqual(service.parse("不要古装剧").avoid, ("古装",))
+    self.assertEqual(service.parse("涓嶈鍙よ鍓?).avoid, ("鍙よ",))
 ```
 
 - [ ] **Step 2: Run and verify failure**
@@ -505,9 +505,9 @@ git commit -m "feat: add optional grounded language adapter"
 ```python
 def test_readme_explains_candidate_and_batch_counts():
     text = Path("README.md").read_text(encoding="utf-8")
-    self.assertIn("候选池", text)
-    self.assertIn("条件命中", text)
-    self.assertIn("当前批次", text)
+    self.assertIn("鍊欓€夋睜", text)
+    self.assertIn("鏉′欢鍛戒腑", text)
+    self.assertIn("褰撳墠鎵规", text)
 ```
 
 - [ ] **Step 2: Update documentation and run focused tests**

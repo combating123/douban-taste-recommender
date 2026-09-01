@@ -68,7 +68,7 @@ class UiV3AssetTests(unittest.TestCase):
 
         for token in (
             "skip-link",
-            "72px",
+            "112px",
             "top-bar",
             'id="command-lens-root"',
             'id="app-view"',
@@ -77,6 +77,45 @@ class UiV3AssetTests(unittest.TestCase):
         ):
             with self.subTest(token=token):
                 self.assertIn(token, shell)
+
+    def test_v3_shell_cache_busts_every_static_asset_with_one_build_revision(self):
+        html = load_index_html()
+        references = []
+        for marker in ('href="', 'src="'):
+            for fragment in html.split(marker)[1:]:
+                reference = fragment.split('"', 1)[0]
+                if reference.startswith("/assets/v3/"):
+                    references.append(reference)
+
+        self.assertGreater(len(references), 5)
+        revisions = {
+            reference.split("/", 5)[3]
+            for reference in references
+        }
+        self.assertEqual(1, len(revisions))
+        revision = revisions.pop()
+        self.assertRegex(revision, r"^build-[0-9a-f]{12}$")
+        self.assertTrue(all("?" not in reference for reference in references))
+
+    def test_versioned_asset_route_preserves_revision_for_relative_module_imports(self):
+        html = load_index_html()
+        app_reference = next(
+            fragment.split('"', 1)[0]
+            for fragment in html.split('src="')[1:]
+            if "/js/app.js" in fragment
+        )
+        revision_root = app_reference.rsplit("/js/app.js", 1)[0]
+        self.assertRegex(revision_root, r"^/assets/v3/build-[0-9a-f]{12}$")
+
+        status, content_type, body = self.get_raw(app_reference)
+        nested_status, nested_content_type, nested_body = self.get_raw(f"{revision_root}/js/core/api.js")
+
+        self.assertEqual(200, status)
+        self.assertIn("javascript", content_type)
+        self.assertIn(b"bootstrapCineScopeShell", body)
+        self.assertEqual(200, nested_status)
+        self.assertIn("javascript", nested_content_type)
+        self.assertIn(b"getV2", nested_body)
 
     def test_asset_loader_rejects_parent_traversal(self):
         with self.assertRaises(FileNotFoundError):
@@ -92,6 +131,7 @@ class UiV3AssetTests(unittest.TestCase):
         for path in (
             "/tonight",
             "/tonight/anime-series",
+            "/observatory",
             "/title/douban:1295644",
             "/title/douban%3A1295644",
             "/person/person-1",
@@ -123,6 +163,15 @@ class UiV3AssetTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertIn("text/html", content_type)
         self.assertIn(b'id="app-view"', body)
+
+    def test_observatory_deep_link_refresh_returns_shell(self):
+        with mock.patch.dict(os.environ, {"CINESCOPE_UI_VERSION": "v3"}, clear=False):
+            status, content_type, body = self.get_raw("/observatory")
+
+        self.assertEqual(200, status)
+        self.assertIn("text/html", content_type)
+        self.assertIn(b'id="app-view"', body)
+        self.assertIn(b"observatory.css", body)
 
     def test_v3_encoded_deep_links_refresh_without_swallowing_unsafe_paths(self):
         with mock.patch.dict(os.environ, {"CINESCOPE_UI_VERSION": "v3"}, clear=False):

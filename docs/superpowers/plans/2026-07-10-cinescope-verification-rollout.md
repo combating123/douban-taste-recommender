@@ -1,4 +1,4 @@
-# CineScope Verification and Default Rollout Implementation Plan
+﻿# CineScope Verification and Default Rollout Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Evidence before completion claims.
-- Test at 1440×900, 1280×800, 1024×768, and 390×844.
+- Test at 1440脳900, 1280脳800, 1024脳768, and 390脳844.
 - Visible image failures must be exactly zero.
 - Visible `<img>` sources must be same-origin `/media/*`; designed HTML/CSS fallbacks are not image elements.
 - Canary identity mismatches must be exactly zero.
@@ -47,7 +47,7 @@ def test_migration_names_known_legacy_keys_and_excludes_cookie():
 
 def test_recovery_boundary_never_renders_blank_root():
     js = ui_text("js/core/recovery.js")
-    self.assertIn("恢复上次稳定状态", js)
+    self.assertIn("鎭㈠涓婃绋冲畾鐘舵€?, js)
     self.assertIn("app-view", js)
 ```
 
@@ -211,13 +211,13 @@ Expected: service prints `http://127.0.0.1:7862` and remains running.
 
 Open the local app, run `await window.__CINESCOPE_SEED_ACCEPTANCE__()` once, record the returned session/title/person IDs in the acceptance document, and use those exact IDs for every viewport. The seed must finish before any screenshot or `emptyMain` assertion.
 
-- [ ] **Step 2: Inspect all principal routes at 1440×900**
+- [ ] **Step 2: Inspect all principal routes at 1440脳900**
 
 Use Codex computer-use/browser tools to visit `/tonight`, each content channel, one title detail, one person detail, `/universe`, `/library`, `/taste`, and `/health`. For each route run `window.__CINESCOPE_AUDIT__()` and save a screenshot under `output/acceptance/1440x900/`.
 
 Expected for every route: `brokenImages=[]`, `externalImages=[]`, `overflowNodes=[]`, `emptyMain=false`.
 
-- [ ] **Step 3: Repeat at 1280×800, 1024×768, and 390×844**
+- [ ] **Step 3: Repeat at 1280脳800, 1024脳768, and 390脳844**
 
 Save screenshots under matching viewport directories. At 390px verify the bottom navigation replaces the desktop rail and no horizontal page scroll exists.
 
@@ -227,7 +227,7 @@ For each issue, add a focused assertion to `tests/test_ui_v3_contract.py` or a r
 
 - [ ] **Step 5: Record evidence**
 
-`docs/acceptance/2026-07-10-cinescope-v3.md` must list route, viewport, screenshot path, audit result, observed issue, and final status. Do not write “looks good” without an audit object.
+`docs/acceptance/2026-07-10-cinescope-v3.md` must list route, viewport, screenshot path, audit result, observed issue, and final status. Do not write 鈥渓ooks good鈥?without an audit object.
 
 - [ ] **Step 6: Commit acceptance fixes and evidence**
 
@@ -244,14 +244,14 @@ git commit -m "fix: pass cinescope visual acceptance"
 - Update: `docs/acceptance/2026-07-10-cinescope-v3.md`
 
 **Interfaces:**
-- Validates the known profile `272042071` without persisting a Cookie.
+- Validates the known profile `<your-douban-id>` without persisting a Cookie.
 
 - [ ] **Step 1: Add fixture-level acceptance assertions**
 
 ```python
 def test_profile_url_normalizes_known_user():
-    value = "https://www.douban.com/people/272042071/?_dtcc=1&_i=fixture"
-    self.assertEqual(normalize_user(value), "272042071")
+    value = "https://www.douban.com/people/<your-douban-id>/"
+    self.assertEqual(normalize_user(value), "<your-douban-id>")
 
 def test_auto_pagination_safety_cap_is_not_user_visible_limit():
     self.assertGreaterEqual(DEFAULT_SYNC_SAFETY_CAP, 250)
@@ -265,7 +265,7 @@ Expected: PASS after any needed normalization fix.
 
 - [ ] **Step 3: Run a public or session-authorized sync**
 
-Use the UI with `https://www.douban.com/people/272042071/`. If Douban requires login, paste the Cookie only into the visible session input; do not retrieve it from disk. Confirm the UI reports collect/wish pages, successes, failures, and stop reason. Expected known baseline is approximately 242 watched and 34 wanted, allowing accurate explanation if Douban data changed.
+Use the UI with `https://www.douban.com/people/<your-douban-id>/`. If Douban requires login, paste the Cookie only into the visible session input; do not retrieve it from disk. Confirm the UI reports collect/wish pages, successes, failures, and stop reason. Expected known baseline is approximately 242 watched and 34 wanted, allowing accurate explanation if Douban data changed.
 
 - [ ] **Step 4: Validate recommendation semantics**
 
@@ -313,7 +313,7 @@ def test_people_prefetch_is_limited_to_director_and_eight_cast():
 
 Use `PerformanceObserver` and `performance.getEntriesByType('navigation')`. Record LCP, DOM content loaded, total transferred local media bytes, and long tasks for `/tonight` and one detail route.
 
-Expected: warm-cache LCP ≤ 2500ms and no interaction-blocking long task above 200ms.
+Expected: warm-cache LCP 鈮?2500ms and no interaction-blocking long task above 200ms.
 
 - [ ] **Step 3: Audit media coverage and identity canaries**
 
@@ -409,7 +409,7 @@ Expected: no unintended placeholder or whitespace errors.
 
 - [ ] **Step 4: Repeat final browser smoke**
 
-At 1440×900 and 390×844, verify `/tonight`, anime batch change, one detail, one person, `/health`, refresh restoration, and `window.__CINESCOPE_AUDIT__()` all pass.
+At 1440脳900 and 390脳844, verify `/tonight`, anime batch change, one detail, one person, `/health`, refresh restoration, and `window.__CINESCOPE_AUDIT__()` all pass.
 
 - [ ] **Step 5: Verify rollback**
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
+from ..douban_sources import douban_image_url_candidates
+
 
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -15,6 +17,32 @@ DOUBAN_IMAGE_HOSTS = (
     "img3.doubanio.com",
 )
 WIKIMEDIA_THUMB_WIDTHS = (640, 330)
+PLACEHOLDER_IMAGE_MARKERS = (
+    "movie_default_small.",
+    "movie_default_medium.",
+    "movie_default_large.",
+    "tv_default_small.",
+    "tv_default_medium.",
+    "tv_default_large.",
+    "_default_small.",
+    "_default_medium.",
+    "_default_large.",
+    "/default_small.",
+    "/default_medium.",
+    "/default_large.",
+)
+
+
+def is_placeholder_image_url(url: object) -> bool:
+    text = str(url or "").strip().casefold()
+    if not text:
+        return False
+    try:
+        parsed = urlsplit(text)
+        haystack = parsed.path.casefold()
+    except ValueError:
+        haystack = text
+    return any(marker in haystack for marker in PLACEHOLDER_IMAGE_MARKERS)
 
 
 def image_request_headers(url: str) -> dict[str, str]:
@@ -29,7 +57,7 @@ def image_request_headers(url: str) -> dict[str, str]:
         headers["Referer"] = "https://movie.douban.com/"
     elif host == "upload.wikimedia.org":
         headers["Referer"] = "https://commons.wikimedia.org/"
-    elif host == "image.tmdb.org":
+    elif host in {"image.tmdb.org", "media.themoviedb.org"}:
         headers["Referer"] = "https://www.themoviedb.org/"
     elif host.endswith(".anilist.co") or host.endswith(".anilistcdn.com"):
         headers["Referer"] = "https://anilist.co/"
@@ -42,15 +70,19 @@ def image_request_headers(url: str) -> dict[str, str]:
 
 def image_url_candidates(url: str) -> tuple[str, ...]:
     clean_url = str(url or "").strip()
+    if is_placeholder_image_url(clean_url):
+        return ()
     parsed = _http_url(clean_url)
     if parsed is None:
         return ()
 
     candidates: list[str] = []
+    for candidate in douban_image_url_candidates(clean_url):
+        _append_unique(candidates, candidate)
     _append_unique(candidates, clean_url)
 
     host = (parsed.hostname or "").lower()
-    if host in DOUBAN_IMAGE_HOSTS:
+    if host in DOUBAN_IMAGE_HOSTS and not douban_image_url_candidates(clean_url):
         for candidate_host in DOUBAN_IMAGE_HOSTS:
             _append_unique(candidates, _replace_host(parsed, candidate_host))
 

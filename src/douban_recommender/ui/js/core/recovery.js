@@ -137,7 +137,10 @@ export function sanitizeStableState(state = {}) {
       channels: safeChannels(recommendation.channels),
     },
     candidateTray: { context: { ...(focusId ? { universeFocusId: focusId } : {}), ...(expandedIds.length ? { expandedIds } : {}) } },
-    library: { state: LIBRARY_STATES.has(source.library?.state) ? source.library.state : "all" },
+    library: {
+      state: LIBRARY_STATES.has(source.library?.state) ? source.library.state : "watched",
+      explicit: Boolean(source.library?.explicit),
+    },
     sync: safeSync(source.sync),
   };
 }
@@ -182,7 +185,7 @@ function recoveryPanel(stableState) {
   panel.setAttribute?.("data-recovery-code", "route-render-failed");
   const eyebrow = document.createElement("p");
   eyebrow.className = "eyebrow";
-  eyebrow.textContent = "CINESCOPE / RECOVERY";
+  eyebrow.textContent = "页面恢复";
   const heading = document.createElement("h1");
   heading.textContent = "此页面暂时无法显示";
   const copy = document.createElement("p");

@@ -116,7 +116,7 @@ function renderPersonIdentity(person, { compact = false } = {}) {
   const media = element("div", "person-identity__portrait");
   media.append(renderMediaFrame(adaptPersonMedia(person)));
   const copy = element("div", "person-identity__copy");
-  copy.append(element("p", "eyebrow", compact ? "PERSON SPOTLIGHT" : "PERSON / LOCAL EVIDENCE"));
+  copy.append(element("p", "eyebrow", compact ? "人物焦点" : "人物资料"));
   copy.append(element(compact ? "h2" : "h1", "person-identity__name", textValue(person?.name, "未命名人物")));
   const aliases = listValue(person?.aliases);
   if (aliases.length) copy.append(element("p", "person-identity__aliases", aliases.join(" · ")));
@@ -252,7 +252,7 @@ function evidenceSection(person) {
   const section = element("section", "person-credits");
   section.id = "credits";
   section.append(
-    element("p", "eyebrow", "KNOWN FOR / LOCAL EVIDENCE"),
+    element("p", "eyebrow", "代表作品"),
     element("h2", "person-section-title", "本地片库中的参与证据"),
   );
   const knownFor = Array.isArray(person?.known_for) ? person.known_for : [];
@@ -333,7 +333,7 @@ async function commitView(view, meta, options = {}) {
 function personRecovery(personId, retry) {
   const panel = element("section", "route-recovery person-recovery");
   panel.append(
-    element("p", "eyebrow", "PERSON / RECOVERY"),
+    element("p", "eyebrow", "人物页恢复"),
     element("h1", "route-recovery__title", "人物资料暂时无法打开"),
     element("p", "route-recovery__copy", "本地人物记录可能尚未建立，原页面在此恢复面板准备好之前不会被清空。"),
   );

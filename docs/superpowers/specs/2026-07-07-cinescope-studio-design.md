@@ -1,7 +1,7 @@
 ﻿# CineScope Studio 完整版设计
 
 日期：2026-07-07  
-项目：`C:\Users\11616\douban-taste-recommender`  
+项目：`C:\path\to\douban-taste-recommender`
 分支：`douban-crawler-ui-redesign`
 
 ## 1. 产品定位
@@ -197,7 +197,7 @@ class CrawlResult:
 缓存目录：
 
 ```text
-C:\Users\11616\douban-taste-recommender\output\cache\
+C:\path\to\douban-taste-recommender\output\cache\
 ```
 
 文件：
@@ -492,7 +492,7 @@ tests/test_readme.py
 标准测试：
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH="$PWD\src"
 $env:PYTHONDONTWRITEBYTECODE="1"
 python -m unittest discover -s tests -v
@@ -501,7 +501,7 @@ python -m unittest discover -s tests -v
 本地启动：
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 .\run_app.ps1
 ```
 
@@ -521,4 +521,3 @@ http://127.0.0.1:7861
 4. 推荐结果应有海报、简介、评分和理由。
 5. 电视剧古装应被降权或标记为避雷。
 6. 整体视觉应明显区别于现有表单页面，达到私人影视策展工作台的完成度。
-

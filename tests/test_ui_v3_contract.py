@@ -101,6 +101,486 @@ def fake_dom_module_prelude():
 
 
 class UiV3ContractTests(unittest.TestCase):
+    def test_global_discovery_is_enabled_for_every_command_lens_session(self):
+        source = (UI_ROOT / "js" / "features" / "command-lens.js").read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(source.count("fetch_global: true"), 2)
+        self.assertGreaterEqual(source.count("use_local_index: true"), 2)
+
+    def test_recommendations_use_seen_inspired_wide_decision_cards(self):
+        component = (UI_ROOT / "js" / "components" / "title-card.js").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "components.css").read_text(encoding="utf-8")
+
+        for class_name in (
+            "title-card__ratings",
+            "title-card__genres",
+            "title-card__summary",
+            "title-card__why",
+        ):
+            self.assertIn(class_name, component)
+        self.assertRegex(css, r"\.title-shelf__rail\s*\{[^}]*display:\s*grid", re.DOTALL)
+        self.assertRegex(
+            css,
+            r"\.title-card__link\s*\{[^}]*grid-template-columns:\s*minmax\([^;]+minmax\(0,\s*1fr\)",
+            re.DOTALL,
+        )
+        self.assertRegex(css, r"\.title-card__summary\s*\{[^}]*-webkit-line-clamp:\s*3", re.DOTALL)
+
+    def test_recommendation_cards_and_shelf_make_online_candidates_explicit_and_filterable(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const state = {{ recommendation: {{
+              sessionId: "source-session", activeChannel: "anime-series",
+              discovery: {{
+                local_index_size: 687, live_size: 36, source_counts: {{ anilist: 36 }},
+                recommendation_origin_counts: {{ "\\u52a8\\u6f2b": {{ online: 17, catalog: 0, total: 17 }} }},
+              }},
+              channels: {{
+                "anime-series": {{
+                  sessionId: "source-session", pool_size: 17, matched_size: 17, visible_size: 2, active_batch: 1,
+                  batch: {{ index: 1, items: [
+                    {{ item_key: "external:anilist-1", title: "Online candidate", media_type: "\\u52a8\\u753b\\u5267\\u96c6", year: 2026, genres: ["\\u52a8\\u753b"], source: "global:anilist", discovery_sources: ["anilist"] }},
+                    {{ item_key: "douban:1", title: "Curated candidate", media_type: "\\u52a8\\u753b\\u5267\\u96c6", year: 2024, genres: ["\\u52a8\\u753b"], source: "title_seed" }},
+                  ] }},
+                }},
+              }},
+            }} }};
+            const root = document.createElement("main");
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            configureTonight({{ root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2: async () => ({{}}) }} }});
+            renderTonight(state);
+            const all = () => collectNodes(root);
+            const copy = root.textContent;
+            if (!copy.includes("\\u5728\\u7ebf\\u53d1\\u73b0 \\u00b7 AniList")) throw new Error(`online origin badge missing: ${{copy}}`);
+            if (!copy.includes("\\u7cbe\\u9009\\u5019\\u9009")) throw new Error(`catalog origin badge missing: ${{copy}}`);
+            if (!copy.includes("\\u5728\\u7ebf\\u65b0\\u589e 1") || !copy.includes("\\u7247\\u5e93 / \\u7cbe\\u9009 1")) throw new Error(`source counts missing: ${{copy}}`);
+            if (!copy.includes("\\u52a8\\u6f2b 17")) throw new Error(`online destination summary missing: ${{copy}}`);
+            const onlineFilter = all().find((node) => node.className.includes("title-shelf__filter") && node.textContent.includes("\\u5728\\u7ebf\\u65b0\\u589e"));
+            if (!onlineFilter) throw new Error("online source filter missing");
+            onlineFilter.dispatchEvent({{ type: "click", preventDefault() {{}} }});
+            const cards = all().filter((node) => node.className === "title-card");
+            if (cards.length !== 1 || !cards[0].textContent.includes("Online candidate") || cards[0].textContent.includes("Curated candidate")) {{
+              throw new Error(`online filter did not isolate the online candidate: ${{cards.map((card) => card.textContent)}}`);
+            }}
+            console.log(JSON.stringify({{ copy, filtered: cards.map((card) => card.textContent) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("\u5728\u7ebf\u53d1\u73b0 \u00b7 AniList", result["copy"])
+        self.assertEqual(1, len(result["filtered"]))
+
+    def test_online_filter_reaches_candidates_beyond_the_initial_card_budget(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const catalogItems = Array.from({{ length: 12 }}, (_, index) => ({{
+              item_key: `douban:${{index + 1}}`, title: `Catalog ${{index + 1}}`, media_type: "\u7535\u89c6\u5267",
+              year: 2024, genres: ["\u5267\u60c5"], source: "title_seed",
+            }}));
+            const onlineItems = Array.from({{ length: 6 }}, (_, index) => ({{
+              item_key: `external:tvmaze-${{index + 1}}`, title: `Online ${{index + 1}}`, media_type: "\u7535\u89c6\u5267",
+              year: 2026, genres: ["\u79d1\u5e7b"], source: "global:tvmaze", discovery_sources: ["tvmaze"],
+            }}));
+            const state = {{ recommendation: {{
+              sessionId: "source-session", activeChannel: "series",
+              discovery: {{
+                local_index_size: 688, live_size: 25, source_counts: {{ tvmaze: 25 }},
+                recommendation_origin_channels: [{{ channel: "\u7535\u89c6\u5267", online: 6, catalog: 12, total: 18 }}],
+              }},
+              channels: {{ series: {{
+                sessionId: "source-session", pool_size: 104, matched_size: 104, visible_size: 18, active_batch: 2,
+                batch: {{ index: 2, items: [...catalogItems, ...onlineItems] }},
+              }} }},
+            }} }};
+            const root = document.createElement("main");
+            const mediaJobs = [];
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            configureTonight({{
+              root,
+              store: {{ getState: () => state, dispatch() {{}} }},
+              api: {{ postV2: async (path, payload) => {{ if (path === "/api/v2/media/jobs") mediaJobs.push(payload.identity_key); return {{}}; }} }},
+            }});
+            renderTonight(state);
+            const all = () => collectNodes(root);
+            const defaultCards = all().filter((node) => node.className === "title-card");
+            if (defaultCards.length !== 12) throw new Error(`initial card budget changed: ${{defaultCards.length}}`);
+            const onlineFilter = all().find((node) => node.className.includes("title-shelf__filter") && node.textContent.includes("\u5728\u7ebf\u65b0\u589e"));
+            if (!onlineFilter?.textContent.includes("6")) throw new Error(`online candidates beyond the initial budget remained hidden: ${{root.textContent}}`);
+            onlineFilter.dispatchEvent({{ type: "click", preventDefault() {{}} }});
+            await flush();
+            const filteredCards = all().filter((node) => node.className === "title-card");
+            if (filteredCards.length !== 6 || filteredCards.some((card) => !card.textContent.includes("Online"))) {{
+              throw new Error(`online filter did not reveal the complete bounded online set: ${{filteredCards.map((card) => card.textContent)}}`);
+            }}
+            const onlineMediaJobs = mediaJobs.filter((identity) => identity.startsWith("external:tvmaze-"));
+            if (onlineMediaJobs.length !== 6) throw new Error(`visible online media was not prewarmed: ${{JSON.stringify(mediaJobs)}}`);
+            console.log(JSON.stringify({{ defaultCount: defaultCards.length, onlineCount: filteredCards.length, onlineMediaJobs, filter: onlineFilter.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(12, result["defaultCount"])
+        self.assertEqual(6, result["onlineCount"])
+        self.assertEqual(6, len(result["onlineMediaJobs"]))
+
+    def test_online_destination_counts_survive_session_reducer_sanitization(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ createEmptyUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const session = {{
+              id: "source-session",
+              personalization: {{ source: "douban-sync", watched_count: 249, wish_count: 36 }},
+              discovery: {{
+                local_index_size: 688,
+                live_size: 61,
+                source_counts: {{ anilist: 36, tvmaze: 25 }},
+                recommendation_origin_counts: {{
+                  "\\u7535\\u5f71": {{ online: 0, catalog: 152, total: 152 }},
+                  "\\u7535\\u89c6\\u5267": {{ online: 19, catalog: 85, total: 104 }},
+                  "\\u52a8\\u6f2b": {{ online: 0, catalog: 0, total: 0 }},
+                }},
+              }},
+              channels: {{
+                "\\u7535\\u5f71": {{
+                  key: "\\u7535\\u5f71", label: "\\u7535\\u5f71", pool_size: 1, matched_size: 1, visible_size: 1,
+                  batch: {{ index: 1, items: [{{ item_key: "douban:1", title: "Local title", media_type: "\\u7535\\u5f71", year: 2024, genres: ["\\u5267\\u60c5"], source: "title_seed" }}] }},
+                }},
+                "\\u7535\\u89c6\\u5267": {{ key: "\\u7535\\u89c6\\u5267", label: "\\u7535\\u89c6\\u5267", pool_size: 19, matched_size: 19, visible_size: 0, batch: {{ index: 1, items: [] }} }},
+                "\\u52a8\\u6f2b": {{ key: "\\u52a8\\u6f2b", label: "\\u52a8\\u6f2b", pool_size: 0, matched_size: 0, visible_size: 0, batch: {{ index: 1, items: [] }} }},
+              }},
+            }};
+            const state = reduceUiState(createEmptyUiState(), {{ type: "recommendation/sessionReceived", session }});
+            const root = document.createElement("main");
+            configureTonight({{ root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2: async () => ({{}}) }} }});
+            renderTonight(state);
+            if (!root.textContent.includes("\\u5728\\u7ebf\\u65b0\\u589e\\u8fdb\\u5165\\u63a8\\u8350\\uff1a\\u7535\\u89c6\\u5267 19")) {{
+              throw new Error(`online destination was lost after reducer sanitization: ${{root.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ copy: root.textContent, discovery: state.recommendation.discovery }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn('在线新增进入推荐：电视剧 19', result["copy"])
+
+    def test_library_uses_readable_decision_card_columns_and_matching_virtual_height(self):
+        source = (UI_ROOT / "js" / "features" / "library.js").read_text(encoding="utf-8")
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+
+        self.assertIn("const ROW_HEIGHT = 400;", source)
+        self.assertNotIn("return 5;", source[source.index("function columnsFor"):source.index("function itemCard")])
+        self.assertRegex(css, r"\.library-window\s*\{[^}]*--library-row-height:\s*400px", re.DOTALL)
+        self.assertRegex(css, r"\.library-row\s*\{[^}]*height:\s*var\(--library-row-height,\s*400px\)", re.DOTALL)
+        self.assertRegex(css, r"\.library-card\s*\{[^}]*height:\s*calc\(var\(--library-row-height,\s*400px\)\s*-\s*1rem\)", re.DOTALL)
+        self.assertRegex(css, r"\.library-card\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)\s+11\.75rem", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__copy\s*\{[^}]*grid-auto-rows:\s*max-content", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__title\s*\{[^}]*min-height:\s*1\.24em", re.DOTALL)
+        self.assertRegex(
+            css,
+            r"\.library-card__link\s*\{[^}]*grid-template-columns:\s*minmax\(8\.5rem,\s*10rem\)\s+minmax\(0,\s*1fr\)",
+            re.DOTALL,
+        )
+        self.assertRegex(css, r"\.library-card__link\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\)", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__visuals-rail\s*\{[^}]*grid-auto-flow:\s*column", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__visuals-rail\s*\{[^}]*grid-auto-columns:\s*max-content", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__visuals-rail\s*\{[^}]*overflow-x:\s*auto", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__still-frame\s*\{[^}]*width:\s*auto[^}]*aspect-ratio:\s*var\(--still-aspect,\s*16\s*/\s*9\)", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__still\s*\{[^}]*object-fit:\s*contain", re.DOTALL)
+        still_frame_css = re.search(r"\.library-card__still-frame\s*\{[^}]*\}", css, re.DOTALL).group(0)
+        self.assertNotIn("#000", still_frame_css)
+        self.assertRegex(still_frame_css, r"transition:\s*transform\b")
+        self.assertRegex(css, r"\.library-card__score,\s*\.library-card__state\s*\{[^}]*font-size:\s*0\.72rem", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__title\s*\{[^}]*font-size:\s*clamp\(1\.06rem,\s*1\.15vw,\s*1\.24rem\)", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__meta,\s*\.library-card__genres\s*\{[^}]*font-size:\s*0\.8rem", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__summary\s*\{[^}]*font-size:\s*0\.86rem[^}]*-webkit-line-clamp:\s*2", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__people\s*\{[^}]*font-size:\s*0\.76rem", re.DOTALL)
+        self.assertRegex(css, r"\.library-card__visuals-label\s*\{[^}]*font-size:\s*0\.72rem", re.DOTALL)
+
+    def test_mobile_media_lightbox_uses_intrinsic_image_height_without_side_column_squeeze(self):
+        css = (UI_ROOT / "styles" / "components.css").read_text(encoding="utf-8")
+        mobile = re.search(
+            r"@media\s*\(max-width:\s*720px\)\s*\{(?P<body>\s*\.media-lightbox__backdrop[\s\S]*?)\r?\n\}",
+            css,
+        )
+
+        self.assertIsNotNone(mobile)
+        rules = mobile.group("body")
+        self.assertRegex(rules, r"\.media-lightbox\s*\{[^}]*height:\s*auto[^}]*min-height:\s*0[^}]*max-height:\s*calc\(", re.DOTALL)
+        self.assertRegex(rules, r"\.media-lightbox__stage\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)", re.DOTALL)
+        self.assertRegex(rules, r"\.media-lightbox__nav\s*\{[^}]*position:\s*absolute", re.DOTALL)
+        self.assertRegex(rules, r"\.media-lightbox__figure\s*\{[^}]*height:\s*auto", re.DOTALL)
+        self.assertRegex(rules, r"\.media-lightbox__image-mount\s*\{[^}]*height:\s*auto", re.DOTALL)
+        self.assertRegex(rules, r"\.media-lightbox__image\s*\{[^}]*width:\s*100%[^}]*height:\s*auto[^}]*max-height:\s*calc\(", re.DOTALL)
+
+    def test_spaces_stylesheet_closes_taste_toggle_rule_before_later_sections(self):
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+
+        self.assertIn('.taste-group[open] .taste-group__summary::after { content: "\\2212"; }', css)
+        self.assertNotIn('content: "閳?', css)
+
+    def test_mobile_taste_overview_keeps_three_compact_metrics(self):
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+        mobile = css.split("@media (max-width: 720px)", 1)[1].split(
+            "@media (min-width: 721px)", 1
+        )[0]
+
+        self.assertRegex(
+            mobile,
+            r"\.taste-overview\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)[^}]*gap:\s*0\.65rem",
+            re.DOTALL,
+        )
+        self.assertRegex(
+            mobile,
+            r"\.taste-overview__metric\s*\{[^}]*min-height:\s*8\.5rem[^}]*padding:\s*0\.8rem",
+            re.DOTALL,
+        )
+        self.assertNotRegex(mobile, r"\.taste-overview,\s*\.taste-group__body")
+
+    def test_shelf_resolves_per_item_actions_and_title_card_invokes_them(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderShelf }} = await import("{module_url('js/components/shelf.js')}");
+            let clicked = "";
+            const shelf = renderShelf({{
+              title: "电影",
+              items: [{{ item_key: "douban:1", title: "测试作品" }}],
+              actionsForItem(item) {{ return [{{ label: "不感兴趣", onClick() {{ clicked = item.item_key; }} }}]; }},
+            }});
+            const button = collectNodes(shelf).find((node) => node.className === "title-card__action");
+            if (!button || button.textContent !== "不感兴趣") throw new Error("per-item action was not rendered");
+            button.dispatchEvent({{ type: "click" }});
+            if (clicked !== "douban:1") throw new Error(`action did not receive its item: ${{clicked}}`);
+            console.log(JSON.stringify({{ clicked }}));
+            '''
+        )
+        self.assertEqual(json.loads(output)["clicked"], "douban:1")
+
+    def test_not_interested_optimistically_removes_item_from_every_visible_channel(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createEmptyUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const initial = createEmptyUiState();
+            initial.recommendation.channels.movie = {{ batch: {{ items: [{{ item_key: "douban:1" }}, {{ item_key: "douban:2" }}], item_keys: ["douban:1", "douban:2"], visible_size: 2 }} }};
+            initial.recommendation.channels.series = {{ batch: {{ items: [{{ item_key: "douban:1" }}], item_keys: ["douban:1"], visible_size: 1 }} }};
+            const next = reduceUiState(initial, {{ type: "recommendation/itemSuppressed", itemKey: "douban:1" }});
+            if (next.recommendation.channels.movie.batch.items.length !== 1) throw new Error("movie item was not removed");
+            if (next.recommendation.channels.series.batch.items.length !== 0) throw new Error("series item was not removed");
+            if (next.recommendation.channels.movie.batch.visible_size !== 1 || next.recommendation.channels.series.batch.visible_size !== 0) throw new Error("visible counts were not updated");
+            console.log(JSON.stringify(next.recommendation.channels));
+            '''
+        )
+        channels = json.loads(output)
+        self.assertEqual(channels["movie"]["batch"]["item_keys"], ["douban:2"])
+
+    def test_metadata_hydration_updates_matching_cards_without_losing_ranking_evidence(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createEmptyUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const initial = createEmptyUiState();
+            initial.recommendation.sessionId = "session-1";
+            initial.recommendation.channels.movie = {{
+              sessionId: "session-1",
+              batch: {{ items: [{{ item_key: "douban:1", title: "旧标题", summary: "", score_breakdown: {{ total: 0.91 }} }}] }},
+            }};
+            const next = reduceUiState(initial, {{
+              type: "recommendation/itemHydrated",
+              expectedSessionId: "session-1",
+              itemKey: "douban:1",
+              item: {{ item_key: "douban:1", title: "正式标题", summary: "后台补齐后的真实简介。", directors: ["导演甲"] }},
+            }});
+            const item = next.recommendation.channels.movie.batch.items[0];
+            if (item.title !== "正式标题" || item.summary !== "后台补齐后的真实简介。") throw new Error("hydrated metadata was not merged");
+            if (item.score_breakdown?.total !== 0.91) throw new Error("ranking evidence was overwritten by metadata hydration");
+            const stale = reduceUiState(next, {{
+              type: "recommendation/itemHydrated",
+              expectedSessionId: "session-old",
+              itemKey: "douban:1",
+              item: {{ summary: "过期请求不应覆盖" }},
+            }});
+            if (stale.recommendation.channels.movie.batch.items[0].summary !== "后台补齐后的真实简介。") throw new Error("stale metadata request mutated the active session");
+            console.log(JSON.stringify(item));
+            '''
+        )
+        item = json.loads(output)
+        self.assertEqual("后台补齐后的真实简介。", item["summary"])
+        self.assertEqual(0.91, item["score_breakdown"]["total"])
+
+    def test_not_interested_immediately_redraws_current_tonight_view(self):
+        source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        subscription = re.search(
+            r"const unsubscribe = store\.subscribe\(\(state, action\) => \{(?P<body>.*?)\n  \}\);",
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(subscription)
+        redraw = re.search(
+            r'if \(state\.activePath\?\.startsWith\("/tonight"\) && \[(?P<actions>.*?)\]\.includes\(action\.type\)\) \{\s*renderTonight\(state\);',
+            subscription.group("body"),
+            re.DOTALL,
+        )
+        self.assertIsNotNone(redraw)
+        actions = re.findall(r'"([^"]+)"', redraw.group("actions"))
+        self.assertIn("recommendation/itemSuppressed", actions)
+
+    def test_detail_route_remembers_and_persists_the_exact_source_space(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            const {{ createEmptyUiState, persistUiState, restoreUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const values = new Map();
+            const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
+            const initial = createEmptyUiState();
+            initial.activePath = "/tonight/anime-series";
+            const detail = reduceUiState(initial, {{ type: "route/changed", route: {{ name: "title", path: "/title/douban:1", params: {{ id: "douban:1" }} }} }});
+            const related = reduceUiState(detail, {{ type: "route/changed", route: {{ name: "title", path: "/title/douban:2", params: {{ id: "douban:2" }} }} }});
+            persistUiState(related, storage);
+            const restored = restoreUiState(storage);
+            if (detail.detailReturnPath !== "/tonight/anime-series") throw new Error(`detail source was not captured: ${{detail.detailReturnPath}}`);
+            if (related.detailReturnPath !== "/tonight/anime-series") throw new Error("related-title navigation discarded the original source space");
+            if (restored.detailReturnPath !== "/tonight/anime-series") throw new Error("detail source was not persisted across reload");
+            console.log(JSON.stringify({{ detail: detail.detailReturnPath, related: related.detailReturnPath, restored: restored.detailReturnPath }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("/tonight/anime-series", result["restored"])
+
+    def test_not_interested_posts_permanent_feedback_without_waiting_for_server_rerender(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const actions = []; const calls = [];
+            const store = {{
+              getState() {{ return {{ recommendation: {{ sessionId: "session-1", channels: {{ movie: {{ sessionId: "session-1", batch: {{ items: [] }} }} }} }} }}; }},
+              dispatch(action) {{ actions.push(action); }},
+            }};
+            const {{ configureTonight, markItemNotInterested }} = await import("{module_url('js/features/tonight.js')}");
+            configureTonight({{ store, root: null, api: {{
+              async postV2(path, payload) {{ calls.push({{ path, payload }}); return {{ id: "feedback-1" }}; }},
+              async getV2() {{ throw new Error("unexpected refresh"); }},
+            }} }});
+            const result = await markItemNotInterested({{ item_key: "douban:1", title: "测试作品", media_type: "电影", genres: ["剧情"] }});
+            if (actions[0]?.type !== "recommendation/itemSuppressed") throw new Error("optimistic reducer action missing");
+            if (calls[0]?.path !== "/api/v2/feedback") throw new Error("feedback endpoint mismatch");
+            const payload = calls[0].payload;
+            if (payload.event_type !== "permanent-avoid" || payload.scope !== "permanent" || payload.session_id !== "session-1" || payload.item_key !== "douban:1") throw new Error(`feedback payload mismatch: ${{JSON.stringify(payload)}}`);
+            if (result?.id !== "feedback-1") throw new Error("feedback result missing");
+            console.log(JSON.stringify({{ actions, calls }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(result["calls"][0]["payload"]["payload"]["features"]["media_type"], ["电影"])
+
+    def test_watched_feedback_immediately_suppresses_the_item_and_refreshes_personalization(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const actions = []; const calls = [];
+            const store = {{
+              getState() {{ return {{ recommendation: {{ sessionId: "session-1", activeChannel: "movie", channels: {{ movie: {{ sessionId: "session-1", batch: {{ items: [] }} }} }} }} }}; }},
+              dispatch(action) {{ actions.push(action); }},
+            }};
+            const {{ configureTonight, markItemWatched, recommendationActionsForItem }} = await import("{module_url('js/features/tonight.js')}");
+            configureTonight({{ store, root: null, api: {{
+              async postV2(path, payload) {{ calls.push({{ method: "POST", path, payload }}); return {{ id: "feedback-watched-1" }}; }},
+              async getV2(path) {{
+                calls.push({{ method: "GET", path }});
+                return {{ id: "session-1", personalization: {{ watched_count: 246 }}, channels: {{}} }};
+              }},
+            }} }});
+            const item = {{ item_key: "douban:1", title: "测试作品", media_type: "电影", genres: ["剧情"] }};
+            const controls = recommendationActionsForItem(item);
+            if (controls.map((control) => control.label).join(",") !== "想看,已看过,不感兴趣") throw new Error(`feedback controls mismatch: ${{controls.map((control) => control.label)}}`);
+            const result = await markItemWatched(item);
+            if (actions[0]?.type !== "recommendation/itemSuppressed" || actions[0]?.itemKey !== "douban:1") throw new Error("watched feedback was not optimistic");
+            if (calls[0]?.path !== "/api/v2/feedback") throw new Error("feedback endpoint mismatch");
+            const payload = calls[0].payload;
+            if (payload.event_type !== "watched" || payload.scope !== "permanent" || payload.session_id !== "session-1" || payload.item_key !== "douban:1") throw new Error(`feedback payload mismatch: ${{JSON.stringify(payload)}}`);
+            if (calls[1]?.method !== "GET" || calls[1]?.path !== "/api/v2/recommend/sessions/session-1") throw new Error("personalization was not refreshed after marking watched");
+            if (actions[1]?.type !== "recommendation/sessionReceived" || actions[1]?.session?.personalization?.watched_count !== 246) throw new Error("refreshed personalization was not applied");
+            if (result?.id !== "feedback-watched-1") throw new Error("feedback result missing");
+            console.log(JSON.stringify({{ actions, calls }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("watched", result["calls"][0]["payload"]["event_type"])
+        self.assertEqual(["剧情"], result["calls"][0]["payload"]["payload"]["features"]["genre"])
+
+    def test_returning_to_the_app_runs_one_throttled_connected_douban_sync(self):
+        output = run_node_module(
+            f'''
+            class EventTarget {{
+              constructor() {{ this.listeners = new Map(); }}
+              addEventListener(type, listener) {{
+                const listeners = this.listeners.get(type) || new Set();
+                listeners.add(listener); this.listeners.set(type, listeners);
+              }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              dispatch(type) {{ return Promise.all([...(this.listeners.get(type) || [])].map((listener) => listener({{ type }}))); }}
+            }}
+            const windowTarget = new EventTarget();
+            const documentTarget = new EventTarget();
+            documentTarget.visibilityState = "visible";
+            let now = 100000;
+            let resolveJob;
+            const jobResult = new Promise((resolve) => {{ resolveJob = resolve; }});
+            const calls = []; const settled = [];
+            const api = {{
+              async getV2(path) {{
+                calls.push({{ method: "GET", path }});
+                if (path === "/api/v2/sync/settings") return {{ enabled: true, user_id: "123456789" }};
+                if (path === "/api/v2/sync/jobs/job-1") return jobResult;
+                throw new Error(`unexpected GET ${{path}}`);
+              }},
+              async postV2(path, payload) {{ calls.push({{ method: "POST", path, payload }}); return {{ job_id: "job-1", state: "running", reused: true }}; }},
+            }};
+            const {{ installDoubanReturnSync }} = await import("{module_url('js/core/douban-return-sync.js')}");
+            const coordinator = installDoubanReturnSync({{
+              windowTarget, documentTarget, api, now: () => now,
+              onSettled(job) {{ settled.push(job); }},
+            }});
+            const first = windowTarget.dispatch("focus");
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            const duplicate = documentTarget.dispatch("visibilitychange");
+            for (let index = 0; index < 4; index += 1) await Promise.resolve();
+            if (calls.filter((call) => call.method === "POST").length !== 1) throw new Error(`concurrent focus duplicated sync: ${{JSON.stringify(calls)}}`);
+            resolveJob({{ id: "job-1", state: "complete", counts: {{ collect_count: 246 }} }});
+            await Promise.all([first, duplicate]);
+            if (settled.length !== 1 || settled[0].state !== "complete") throw new Error("terminal sync was not published");
+            await windowTarget.dispatch("focus");
+            if (calls.filter((call) => call.method === "POST").length !== 1) throw new Error("focus throttle did not suppress a duplicate sync");
+            now += 61000;
+            coordinator.dispose();
+            await windowTarget.dispatch("focus");
+            if (calls.filter((call) => call.method === "POST").length !== 1) throw new Error("disposed coordinator still handled focus");
+            console.log(JSON.stringify({{ calls, settled, snapshot: coordinator.snapshot() }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(
+            ["/api/v2/sync/settings", "/api/v2/sync/run-now", "/api/v2/sync/jobs/job-1"],
+            [call["path"] for call in result["calls"]],
+        )
+
+    def test_app_refreshes_all_live_recommendation_sessions_after_return_sync(self):
+        source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("installDoubanReturnSync", source)
+        self.assertIn('source: "douban-return-sync"', source)
+        self.assertRegex(source, r"configureTonight\(\{\s*store,\s*api:\s*\{\s*getV2,\s*postV2\s*\}")
+
+    def test_watched_and_not_interested_controls_use_a_compact_two_action_visual_group(self):
+        source = (UI_ROOT / "styles" / "components.css").read_text(encoding="utf-8")
+        self.assertIn(".title-card__action--watched", source)
+        self.assertRegex(source, r"\.title-card__actions\s*\{[^}]*grid-template-columns", re.DOTALL)
+        self.assertIn("focus-visible", source)
+
     def test_router_declares_deep_link_patterns(self):
         source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
         source += (UI_ROOT / "js" / "core" / "router.js").read_text(encoding="utf-8")
@@ -115,6 +595,23 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn("schemaVersion: 3", source)
         self.assertNotIn("doubanCookie", source)
         self.assertNotIn("COOKIE_SESSION_KEY", source)
+
+    def test_library_defaults_to_watched_but_respects_an_explicit_all_filter(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ createEmptyUiState }} = await import("{module_url('js/core/store.js')}");
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const initial = createEmptyUiState();
+            if (initial.library.state !== "watched" || initial.library.explicit) throw new Error(`library default was not watched: ${{JSON.stringify(initial.library)}}`);
+            const selected = reduceUiState(initial, {{ type: "library/filterChanged", state: "all" }});
+            if (selected.library.state !== "all" || selected.library.explicit !== true) throw new Error(`explicit all filter was not retained: ${{JSON.stringify(selected.library)}}`);
+            console.log(JSON.stringify({{ initial: initial.library, selected: selected.library }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("watched", result["initial"]["state"])
+        self.assertTrue(result["selected"]["explicit"])
 
     def test_store_allowlists_ui_state_and_filters_sensitive_values(self):
         output = run_node_module(
@@ -430,6 +927,50 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn("aspect-ratio: 2 / 3", css)
         self.assertIn("-webkit-line-clamp: 2", css)
 
+    def test_recommendation_copy_always_exposes_type_and_uses_a_stable_three_row_body(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ displayItem }} = await import("{module_url('js/features/tonight.js')}");
+            const complete = displayItem({{
+              title: "完整资料",
+              media_type: "电影",
+              genres: ["剧情", "悬疑"],
+              douban_rating: 8.7,
+              short_reason: "资料完整",
+            }});
+            const missingGenres = displayItem({{
+              title: "只有媒体类型",
+              media_type: "电视剧",
+              short_reason: "资料完整",
+            }});
+            const globalRated = displayItem({{
+              title: "全球评分条目",
+              media_type: "电影",
+              genres: ["科幻"],
+              source_ratings: {{ imdb: 8.8, tmdb: 8.5 }},
+            }});
+            if (!complete.metadata.includes("电影")) throw new Error(`metadata hid media type: ${{JSON.stringify(complete)}}`);
+            if (!complete.metadata.includes("豆瓣 8.7") || !complete.metadata.includes("类型：剧情 / 悬疑")) throw new Error(`metadata hid first-glance score or genres: ${{JSON.stringify(complete)}}`);
+            if (!complete.reason.includes("剧情") || complete.reason === "资料完整") throw new Error(`genre copy was not informative: ${{complete.reason}}`);
+            if (!missingGenres.metadata.includes("豆瓣评分待补全") || !missingGenres.metadata.includes("类型：电视剧")) throw new Error(`missing score/type fallback was not visible: ${{JSON.stringify(missingGenres)}}`);
+            if (!missingGenres.reason.includes("电视剧") || missingGenres.reason === "资料完整") throw new Error(`missing genre fallback lost type: ${{missingGenres.reason}}`);
+            if (!globalRated.metadata.includes("IMDb 8.8") || globalRated.metadata.includes("豆瓣评分待补全")) throw new Error(`global source ratings were hidden by a Douban-only fallback: ${{JSON.stringify(globalRated)}}`);
+            console.log(JSON.stringify({{ complete, missingGenres, globalRated }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("电影", result["complete"]["metadata"])
+        self.assertIn("电视剧", result["missingGenres"]["reason"])
+
+        css = (UI_ROOT / "styles" / "components.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.title-shelf__item\s*\{[^}]*display:\s*flex", re.DOTALL)
+        self.assertIn("grid-template-rows: minmax(0, 1fr) auto", css)
+        self.assertRegex(css, r"\.title-card__link\s*\{[^}]*grid-template-columns", re.DOTALL)
+        self.assertRegex(css, r"\.title-card__summary\s*\{[^}]*min-height:\s*4\.05em", re.DOTALL)
+        self.assertRegex(css, r"\.title-card__why\s*\{[^}]*min-height:\s*2\.7em", re.DOTALL)
+        self.assertRegex(css, r"\.title-card__actions\s*\{[^}]*margin-top:\s*auto", re.DOTALL)
+
     def test_media_preload_refuses_unsafe_urls_and_only_inserts_a_decoded_image(self):
         output = run_node_module(
             f'''
@@ -467,12 +1008,14 @@ class UiV3ContractTests(unittest.TestCase):
               constructor() {{
                 this.tagName = "IMG";
                 this.naturalWidth = 640;
+                this.hidden = false;
                 createdImages.push(this);
               }}
               set src(value) {{
                 this._src = value;
+                this.hiddenWhenAssigned = this.hidden;
                 queueMicrotask(() => {{
-                  if (imageMode === "load-failure") this.onerror?.(new Error("load failed"));
+                  if (!this.parentNode || imageMode === "load-failure") this.onerror?.(new Error("load failed"));
                   else this.onload?.();
                 }});
               }}
@@ -522,6 +1065,10 @@ class UiV3ContractTests(unittest.TestCase):
               status: "ready",
             }});
             await settle();
+            const failedImage = createdImages[0];
+            if (failedImage?.hiddenWhenAssigned !== true) {{
+              throw new Error("preload exposed a native image before failure was known");
+            }}
             if (!failedFrame.firstElementChild?.className.includes("media-fallback")) {{
               throw new Error("decode failure removed the fallback");
             }}
@@ -539,6 +1086,12 @@ class UiV3ContractTests(unittest.TestCase):
             if (readyFrame.firstElementChild !== decodedImage) {{
               throw new Error("rendered image was not the decoded preload element");
             }}
+            if (decodedImage.hiddenWhenAssigned !== true) {{
+              throw new Error("preload exposed a native image before decoding completed");
+            }}
+            if (decodedImage.hidden) {{
+              throw new Error("decoded image remained hidden after promotion");
+            }}
             if (decodedImage.alt !== "Ready Poster 海报") {{
               throw new Error("decoded image alt text was not assigned");
             }}
@@ -548,6 +1101,298 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(2, result["images"])
         self.assertEqual(0, result["domImageCreates"])
+
+    def test_media_preload_uses_loaded_intrinsic_pixels_when_decode_never_settles(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = tagName.toUpperCase();
+                this.children = [];
+                this.dataset = {{}};
+                this.attributes = new Map();
+                this.className = "";
+                this.textContent = "";
+              }}
+              append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              get firstElementChild() {{ return this.children[0] ?? null; }}
+            }}
+
+            globalThis.document = {{ createElement: (tagName) => new FakeElement(tagName) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            globalThis.Image = class FakeImage {{
+              constructor() {{ this.tagName = "IMG"; this.naturalWidth = 640; this.naturalHeight = 960; }}
+              set src(value) {{ this._src = value; queueMicrotask(() => this.onload?.()); }}
+              get src() {{ return this._src; }}
+              decode() {{ return new Promise(() => {{}}); }}
+            }};
+
+            const {{ renderMediaFrame }} = await import("{module_url('js/components/media-frame.js')}");
+            const frame = renderMediaFrame({{
+              localUrl: "/media/cached-poster.webp",
+              kind: "poster",
+              title: "Cached Poster",
+              status: "ready",
+            }});
+            for (let index = 0; index < 8; index += 1) await Promise.resolve();
+            if (frame.dataset.mediaState !== "ready") {{
+              throw new Error(`loaded cached image remained ${{frame.dataset.mediaState}}`);
+            }}
+            if (frame.firstElementChild?.tagName !== "IMG" || frame.firstElementChild?.naturalWidth !== 640) {{
+              throw new Error("loaded cached image was not promoted into the visible frame");
+            }}
+            console.log(JSON.stringify({{ state: frame.dataset.mediaState, width: frame.firstElementChild.naturalWidth }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("ready", result["state"])
+        self.assertEqual(640, result["width"])
+
+    def test_resilient_app_image_retries_trusted_proxy_urls_before_fallback(self):
+        output = run_node_module(
+            f'''
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            class FakeImage {{
+              constructor() {{ this.listeners = new Map(); this.dataset = {{}}; this.src = ""; }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              dispatch(type) {{ for (const listener of this.listeners.get(type) || []) listener({{ type, target: this }}); }}
+            }}
+            const {{ attachResilientImage }} = await import("{module_url('js/core/media.js')}");
+            const image = new FakeImage();
+            let failures = 0;
+            attachResilientImage(image, "/api/image-proxy?url=https%3A%2F%2Fimg.example%2Fstill.jpg", {{
+              maxRetries: 2,
+              onFailure: () => {{ failures += 1; }},
+            }});
+            await Promise.resolve(); await Promise.resolve();
+            image.dispatch("error"); await Promise.resolve();
+            const firstRetry = image.src;
+            image.dispatch("error"); await Promise.resolve();
+            const secondRetry = image.src;
+            image.dispatch("error"); await Promise.resolve();
+            if (!firstRetry.includes("_cs_retry=1")) throw new Error(`first retry missing: ${{firstRetry}}`);
+            if (!secondRetry.includes("_cs_retry=2")) throw new Error(`second retry missing: ${{secondRetry}}`);
+            if (failures !== 1) throw new Error(`terminal fallback count: ${{failures}}`);
+            console.log(JSON.stringify({{ firstRetry, secondRetry, failures }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["failures"])
+
+    def test_proxy_media_load_coordinator_reserves_foreground_capacity_and_cancels_work(self):
+        output = run_node_module(
+            f'''
+            const {{ createMediaLoadCoordinator }} = await import("{module_url('js/core/media.js')}");
+            const started = [];
+            const stopped = [];
+            const releases = new Map();
+            const coordinator = createMediaLoadCoordinator({{
+              maxConcurrent: 3,
+              maxBackgroundConcurrent: 2,
+              foregroundPriority: 50,
+            }});
+            const schedule = (name, priority) => coordinator.schedule((done) => {{
+              started.push(name);
+              releases.set(name, done);
+              return () => stopped.push(name);
+            }}, {{ priority }});
+
+            const backgroundA = schedule("background-a", 0);
+            const backgroundB = schedule("background-b", 0);
+            const backgroundC = schedule("background-c", 0);
+            await Promise.resolve(); await Promise.resolve();
+            if (JSON.stringify(started) !== JSON.stringify(["background-a", "background-b"])) {{
+              throw new Error("background work consumed the reserved foreground slot: " + JSON.stringify(started));
+            }}
+
+            const promoted = schedule("promoted", 0);
+            promoted.promote(40);
+            const cancelled = schedule("cancelled", 200);
+            cancelled.cancel();
+            const foreground = schedule("foreground", 100);
+            await Promise.resolve(); await Promise.resolve();
+            if (JSON.stringify(started) !== JSON.stringify(["background-a", "background-b", "foreground"])) {{
+              throw new Error("foreground work did not use the reserved slot: " + JSON.stringify(started));
+            }}
+
+            releases.get("background-a")();
+            await Promise.resolve(); await Promise.resolve();
+            if (started[3] !== "promoted") throw new Error("priority promotion was ignored: " + JSON.stringify(started));
+            if (started.includes("cancelled")) throw new Error("cancelled queued work started");
+
+            foreground.cancel();
+            promoted.cancel();
+            backgroundB.cancel();
+            backgroundC.cancel();
+            await Promise.resolve(); await Promise.resolve();
+            if (!stopped.includes("foreground") || !stopped.includes("promoted") || !stopped.includes("background-b")) {{
+              throw new Error("active cancellation did not run abort hooks: " + JSON.stringify(stopped));
+            }}
+            if (stopped.includes("cancelled") || stopped.includes("background-c")) {{
+              throw new Error("queued cancellation incorrectly ran an active abort hook: " + JSON.stringify(stopped));
+            }}
+            console.log(JSON.stringify({{ started, stopped }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["background-a", "background-b", "foreground", "promoted"], result["started"])
+        self.assertIn("foreground", result["stopped"])
+
+    def test_resilient_proxy_image_cancel_aborts_active_request_and_releases_queue_slot(self):
+        output = run_node_module(
+            f'''
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            class FakeImage {{
+              constructor() {{ this.listeners = new Map(); this.dataset = {{}}; this._src = ""; }}
+              addEventListener(type, listener) {{ if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(listener); }}
+              removeEventListener(type, listener) {{ this.listeners.get(type)?.delete(listener); }}
+              dispatch(type) {{ for (const listener of this.listeners.get(type) || []) listener({{ type, target: this }}); }}
+              set src(value) {{ this._src = String(value || ""); }}
+              get src() {{ return this._src; }}
+            }}
+            const {{ attachResilientImage, createMediaLoadCoordinator }} = await import("{module_url('js/core/media.js')}");
+            const coordinator = createMediaLoadCoordinator({{
+              maxConcurrent: 1,
+              maxBackgroundConcurrent: 1,
+              foregroundPriority: 50,
+            }});
+            const firstImage = new FakeImage();
+            const secondImage = new FakeImage();
+            let failures = 0;
+            const first = attachResilientImage(firstImage, "/api/image-proxy?url=first", {{
+              coordinator, maxRetries: 0, onFailure: () => failures += 1,
+            }});
+            const second = attachResilientImage(secondImage, "/api/image-proxy?url=second", {{
+              coordinator, maxRetries: 0, onFailure: () => failures += 1,
+            }});
+            await Promise.resolve(); await Promise.resolve();
+            if (!firstImage.src.includes("url=first") || secondImage.src) {{
+              throw new Error("queue did not serialize proxy requests: " + firstImage.src + " / " + secondImage.src);
+            }}
+            first.cancel();
+            await Promise.resolve(); await Promise.resolve();
+            if (firstImage.src) throw new Error("cancel did not abort the active image: " + firstImage.src);
+            if (!secondImage.src.includes("url=second")) throw new Error("cancel did not release the next queue slot");
+            if (failures !== 0) throw new Error("cancellation was reported as a media failure: " + failures);
+            secondImage.dispatch("load");
+            second.cancel();
+            console.log(JSON.stringify({{ first: firstImage.src, second: secondImage.src, failures }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("", result["first"])
+        self.assertEqual(0, result["failures"])
+
+    def test_media_frame_dispose_cancels_its_proxy_preload(self):
+        output = run_node_module(
+            f'''
+            class FakeElement {{
+              constructor(tagName) {{
+                this.tagName = String(tagName).toUpperCase(); this.children = []; this.parentNode = null;
+                this.dataset = {{}}; this.attributes = new Map(); this.className = ""; this.textContent = "";
+              }}
+              append(...nodes) {{ nodes.forEach((node) => this.appendChild(node)); }}
+              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this.children.forEach((node) => node.parentNode = null); this.children = []; this.append(...nodes); }}
+              setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
+              querySelector() {{ return null; }}
+              get firstElementChild() {{ return this.children[0] || null; }}
+            }}
+            const createdImages = [];
+            globalThis.document = {{ createElement: (tagName) => new FakeElement(tagName) }};
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            globalThis.Image = class FakeImage {{
+              constructor() {{
+                this.tagName = "IMG"; this.naturalWidth = 640; this.naturalHeight = 960;
+                this.className = ""; this.parentNode = null; this._src = ""; createdImages.push(this);
+              }}
+              setAttribute() {{}}
+              removeAttribute(name) {{ if (name === "src") this._src = ""; }}
+              set src(value) {{ this._src = String(value || ""); }}
+              get src() {{ return this._src; }}
+              decode() {{ return Promise.resolve(); }}
+            }};
+            const {{ disposeMediaFrame, renderMediaFrame }} = await import("{module_url('js/components/media-frame.js')}");
+            const frame = renderMediaFrame({{
+              localUrl: "/api/image-proxy?url=poster",
+              kind: "poster",
+              title: "Cancelable Poster",
+              status: "ready",
+            }});
+            await Promise.resolve(); await Promise.resolve();
+            const image = createdImages[0];
+            if (!image?.src.includes("url=poster")) throw new Error("proxy preload never started: " + image?.src);
+            disposeMediaFrame(frame);
+            if (image.src) throw new Error("disposing the frame left its request active: " + image.src);
+            image.onload?.();
+            await Promise.resolve(); await Promise.resolve();
+            if (frame.dataset.mediaState === "ready") throw new Error("disposed frame accepted a stale completion");
+            console.log(JSON.stringify({{ state: frame.dataset.mediaState, src: image.src }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("", result["src"])
+        self.assertNotEqual("ready", result["state"])
+
+    def test_lightbox_uses_reserved_foreground_capacity_and_cancels_neighbour_preloads(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            Object.defineProperty(FakeElement.prototype, "src", {{
+              configurable: true,
+              get() {{ return this._src || ""; }},
+              set(value) {{ this._src = String(value || ""); }},
+            }});
+            document.body = new FakeElement("body");
+            document.body.style = {{ overflow: "" }};
+            document.removeEventListener = () => {{}};
+            const preloadSources = [];
+            globalThis.Image = class BlockingPreloadImage {{
+              constructor() {{ this.naturalWidth = 640; this.parentNode = null; this._src = ""; }}
+              setAttribute() {{}}
+              removeAttribute(name) {{ if (name === "src") this._src = ""; }}
+              set src(value) {{
+                this._src = String(value || "");
+                if (this._src) preloadSources.push(this._src);
+              }}
+              get src() {{ return this._src; }}
+              decode() {{ return new Promise(() => {{}}); }}
+            }};
+            const {{ attachResilientImage }} = await import("{module_url('js/core/media.js')}");
+            const {{ closeMediaLightbox, openMediaLightbox }} = await import("{module_url('js/components/media-lightbox.js')}");
+            const blockerA = new FakeElement("img");
+            const blockerB = new FakeElement("img");
+            const handleA = attachResilientImage(blockerA, "/api/image-proxy?url=blocker-a", {{ priority: 0 }});
+            const handleB = attachResilientImage(blockerB, "/api/image-proxy?url=blocker-b", {{ priority: 0 }});
+            await Promise.resolve(); await Promise.resolve();
+            const lightbox = openMediaLightbox({{
+              items: [
+                {{ url: "/api/image-proxy?url=current", label: "\u5f53\u524d\u5267\u7167" }},
+                {{ url: "/api/image-proxy?url=neighbour-a", label: "\u76f8\u90bb\u5267\u7167 A" }},
+                {{ url: "/api/image-proxy?url=neighbour-b", label: "\u76f8\u90bb\u5267\u7167 B" }},
+              ],
+              title: "\u5267\u7167\u6d4f\u89c8",
+              documentTarget: document,
+              windowTarget: window,
+            }});
+            await Promise.resolve(); await Promise.resolve();
+            const current = lightbox?.element?.querySelector?.(".media-lightbox__image");
+            if (!current?.src.includes("url=current")) throw new Error("foreground lightbox image could not use the reserved slot");
+            if (preloadSources.length) throw new Error("background neighbours bypassed the saturated queue: " + JSON.stringify(preloadSources));
+            closeMediaLightbox();
+            handleA.cancel();
+            await Promise.resolve(); await Promise.resolve();
+            if (preloadSources.length) throw new Error("closed lightbox leaked neighbour preloads: " + JSON.stringify(preloadSources));
+            handleB.cancel();
+            console.log(JSON.stringify({{ current: current.src, preloadSources }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual([], result["preloadSources"])
 
     def test_media_adapters_normalize_v2_backend_payloads_and_legacy_poster_objects(self):
         output = run_node_module(
@@ -734,6 +1579,8 @@ class UiV3ContractTests(unittest.TestCase):
             const retry = frame.children.find((node) => node.tagName === "BUTTON");
             if (frame.dataset.mediaState !== "error") throw new Error(`decode failure stayed non-terminal: ${{frame.dataset.mediaState}}`);
             if (!retry || retry.disabled) throw new Error("terminal media error did not expose an enabled retry action");
+            if (retry.textContent !== "重试") throw new Error(`retry copy was corrupted: ${{retry.textContent}}`);
+            if (frame.firstElementChild?.children?.[2]?.textContent !== "媒体加载失败") throw new Error("error fallback copy was not localized");
             retry.onclick();
             for (let index = 0; index < 8; index += 1) await Promise.resolve();
             if (frame.dataset.mediaState !== "ready" || frame.firstElementChild?.tagName !== "IMG") throw new Error("retry did not recover to ready image");
@@ -812,6 +1659,199 @@ class UiV3ContractTests(unittest.TestCase):
         rendered = json.loads(output)
         self.assertTrue(rendered["cardHasUnsafeText"])
         self.assertTrue(rendered["shelfHasUnsafeText"])
+
+    def test_tonight_discovery_prefers_verified_display_title_in_candidates_and_results(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            FakeElement.prototype.removeAttribute = function(name) {{ this.attributes.delete(name); }};
+            FakeElement.prototype.getBoundingClientRect = function() {{ return {{ top: 0, left: 0, width: 1000, height: 520 }}; }};
+            globalThis.document.createDocumentFragment = () => new FakeElement("fragment");
+            const root = new FakeElement("main");
+            const candidate = {{
+              id: "external:localized-tonight", item_key: "external:localized-tonight",
+              title: "Mystery Map", display_title: "\u795e\u79d8\u5730\u56fe",
+              original_title: "Mystery Map", title_localization_source: "douban",
+              year: 2017, media_type: "\u7535\u89c6\u5267", countries: ["\u4e2d\u56fd\u5927\u9646"],
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", tone: "cyan" }},
+              poster: {{ url: "", media_status: "missing" }},
+              summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+            }};
+            const timers = new Map(); let timerId = 0;
+            const state = {{ recommendation: {{ activeChannel: "movie", channels: {{ movie: {{ batch: {{ items: [] }} }} }} }} }};
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            configureTonight({{
+              root,
+              store: {{ getState: () => state, dispatch() {{}} }},
+              api: {{
+                getV2: async () => ({{ items: [candidate] }}),
+                postV2: async (path) => path === "/api/v2/discovery/query"
+                  ? ({{ matched_reference: candidate, items: [candidate], chips: [] }})
+                  : ({{ state: "failed" }}),
+              }},
+              preloadMedia: async () => true,
+              setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }},
+              clearTimer(id) {{ timers.delete(id); }},
+            }});
+            renderTonight(state);
+            const input = root.querySelector(".tonight-discovery__input");
+            input.value = "Mystery Map";
+            input.dispatchEvent({{ type: "input" }});
+            for (const callback of [...timers.values()]) callback();
+            timers.clear();
+            await flush();
+            const candidateTitle = root.querySelector(".tonight-discovery-candidate__title");
+            if (candidateTitle?.textContent !== "\u795e\u79d8\u5730\u56fe") throw new Error("Tonight candidate ignored display_title: " + candidateTitle?.textContent);
+            input.dispatchEvent({{ type: "keydown", key: "Enter", shiftKey: false, isComposing: false, preventDefault() {{}} }});
+            await flush();
+            const resultTitle = root.querySelector(".tonight-discovery-result__title");
+            if (resultTitle?.textContent !== "\u795e\u79d8\u5730\u56fe") throw new Error("Tonight result ignored display_title: " + resultTitle?.textContent);
+            const candidateStatus = root.querySelector(".tonight-discovery-candidates__status")?.textContent || "";
+            if (!candidateStatus.includes("\u795e\u79d8\u5730\u56fe") || candidateStatus.includes("Mystery Map")) throw new Error("Tonight default-match notice ignored display_title: " + candidateStatus);
+            const resultsHeading = root.querySelector(".tonight-discovery-results__title")?.textContent || "";
+            if (!resultsHeading.includes("\u795e\u79d8\u5730\u56fe") || resultsHeading.includes("Mystery Map")) throw new Error("Tonight result heading ignored display_title: " + resultsHeading);
+            console.log(JSON.stringify({{ candidate: candidateTitle.textContent, result: resultTitle.textContent, candidateStatus, resultsHeading }}));
+            '''
+        )
+        rendered = json.loads(output)
+        self.assertEqual("\u795e\u79d8\u5730\u56fe", rendered["candidate"])
+        self.assertEqual("\u795e\u79d8\u5730\u56fe", rendered["result"])
+
+    def test_tonight_hero_actions_and_feedback_prefer_verified_display_title(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            FakeElement.prototype.removeAttribute = function(name) {{ this.attributes.delete(name); }};
+            FakeElement.prototype.getBoundingClientRect = function() {{ return {{ top: 0, left: 0, width: 1000, height: 520 }}; }};
+            globalThis.document.createDocumentFragment = () => new FakeElement("fragment");
+            const root = new FakeElement("main");
+            const item = {{
+              id: "external:localized-hero", item_key: "external:localized-hero",
+              title: "Mystery Map", display_title: "\u795e\u79d8\u5730\u56fe",
+              original_title: "Mystery Map", title_localization_source: "douban",
+              year: 2017, media_type: "\u7535\u89c6\u5267", genres: ["\u7eaa\u5f55\u7247"],
+              summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+              stills: [{{ localUrl: "/media/localized-hero.jpg", kind: "backdrop", media_status: "ready" }}],
+              poster: {{ localUrl: "/media/localized-poster.jpg", kind: "poster", media_status: "ready" }},
+            }};
+            const state = {{ recommendation: {{
+              sessionId: "session-localized", activeChannel: "movie",
+              channels: {{ movie: {{ sessionId: "session-localized", batch: {{ items: [item] }} }} }},
+            }} }};
+            const calls = [];
+            const {{ configureTonight, renderTonight, recommendationActionsForItem, markItemNotInterested }} = await import("{module_url('js/features/tonight.js')}");
+            configureTonight({{
+              root,
+              store: {{ getState: () => state, dispatch() {{}} }},
+              api: {{
+                async postV2(path, payload) {{ calls.push({{ path, payload }}); return path === "/api/v2/feedback" ? {{ id: "feedback-localized" }} : {{ state: "failed" }}; }},
+                async getV2() {{ return state.recommendation; }},
+              }},
+              preloadMedia: async () => true,
+              setTimer() {{ return 1; }}, clearTimer() {{}},
+            }});
+            renderTonight(state);
+            const heroTitle = root.querySelector(".tonight-hero__title")?.textContent || "";
+            if (heroTitle !== "\u795e\u79d8\u5730\u56fe") throw new Error("Tonight hero ignored display_title: " + heroTitle);
+            const controls = recommendationActionsForItem(item);
+            if (controls.some((control) => !control.ariaLabel.includes("\u795e\u79d8\u5730\u56fe") || control.ariaLabel.includes("Mystery Map"))) {{
+              throw new Error("Tonight action labels ignored display_title: " + JSON.stringify(controls.map((control) => control.ariaLabel)));
+            }}
+            await markItemNotInterested(item);
+            const toast = root.querySelector(".tonight-feedback-toast__copy")?.textContent || "";
+            if (!toast.includes("\u795e\u79d8\u5730\u56fe") || toast.includes("Mystery Map")) throw new Error("Tonight feedback toast ignored display_title: " + toast);
+            console.log(JSON.stringify({{ heroTitle, labels: controls.map((control) => control.ariaLabel), toast, calls }}));
+            '''
+        )
+        rendered = json.loads(output)
+        self.assertEqual("\u795e\u79d8\u5730\u56fe", rendered["heroTitle"])
+        self.assertIn("\u795e\u79d8\u5730\u56fe", rendered["toast"])
+
+    def test_title_card_prefers_verified_display_title_over_original_title(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderTitleCard }} = await import("{module_url('js/components/title-card.js')}");
+            const card = renderTitleCard({{
+              item_key: "external:localized-card",
+              title: "Mystery Map",
+              display_title: "\u795e\u79d8\u5730\u56fe",
+              original_title: "Mystery Map",
+              title_localization_source: "douban",
+              media_type: "\u7535\u89c6\u5267",
+              summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+            }});
+            const heading = card.querySelector(".title-card__title");
+            const link = card.querySelector(".title-card__link");
+            if (heading?.textContent !== "\u795e\u79d8\u5730\u56fe") throw new Error("title card ignored display_title: " + heading?.textContent);
+            if (!link?.getAttribute("aria-label")?.includes("\u795e\u79d8\u5730\u56fe")) throw new Error("title card aria label ignored display_title");
+            console.log(JSON.stringify({{ heading: heading.textContent, aria: link.getAttribute("aria-label") }}));
+            '''
+        )
+        rendered = json.loads(output)
+        self.assertEqual("\u795e\u79d8\u5730\u56fe", rendered["heading"])
+        self.assertIn("\u795e\u79d8\u5730\u56fe", rendered["aria"])
+
+    def test_expandable_copy_control_uses_actual_rendered_overflow(self):
+        output = run_node_module(
+            f'''
+            const {{ isCopyOverflowing, syncExpandableCopyControl }} = await import("{module_url('js/components/expandable-copy.js')}");
+            const control = {{ hidden: true, dataset: {{}} }};
+            const fits = {{ clientHeight: 48, scrollHeight: 48, clientWidth: 220, scrollWidth: 220 }};
+            const wraps = {{ clientHeight: 48, scrollHeight: 82, clientWidth: 220, scrollWidth: 220 }};
+            const zeroLayout = {{ clientHeight: 0, scrollHeight: 0, clientWidth: 0, scrollWidth: 0 }};
+            const fitVisible = syncExpandableCopyControl(control, [fits], true);
+            const fitHidden = control.hidden;
+            const overflowVisible = syncExpandableCopyControl(control, [wraps], false);
+            const overflowHidden = control.hidden;
+            const unknownVisible = syncExpandableCopyControl(control, [{{ clientHeight: undefined, scrollHeight: undefined }}], true);
+            const unknownState = control.dataset.copyOverflow;
+            const zeroVisible = syncExpandableCopyControl(control, [zeroLayout], true);
+            console.log(JSON.stringify({{
+              fit: isCopyOverflowing(fits),
+              wraps: isCopyOverflowing(wraps),
+              fitVisible, fitHidden, overflowVisible, overflowHidden,
+              unknownVisible, unknownState, zeroVisible, zeroHidden: control.hidden,
+            }}));
+            '''
+        )
+        rendered = json.loads(output)
+        self.assertFalse(rendered["fit"])
+        self.assertTrue(rendered["wraps"])
+        self.assertFalse(rendered["fitVisible"])
+        self.assertTrue(rendered["fitHidden"])
+        self.assertTrue(rendered["overflowVisible"])
+        self.assertFalse(rendered["overflowHidden"])
+        self.assertTrue(rendered["unknownVisible"])
+        self.assertEqual("unknown", rendered["unknownState"])
+        self.assertFalse(rendered["zeroVisible"])
+        self.assertTrue(rendered["zeroHidden"])
+
+    def test_title_card_replaces_engineering_placeholder_with_human_decision_copy(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderTitleCard }} = await import("{module_url('js/components/title-card.js')}");
+            const card = renderTitleCard({{
+              item_key: "douban:42",
+              title: "兹山鱼谱",
+              media_type: "电影",
+              genres: ["剧情", "历史"],
+              summary: "由 CineScope 精选扩展池补入的电影候选：兹山鱼谱。优先通过 TMDb / IMDb / TVMaze / AniList / Jikan 等免费来源补图，并保留人工兜底封面。",
+            }});
+            const text = card.textContent;
+            if (text.includes("TMDb / IMDb") || text.includes("精选扩展池补入")) throw new Error(`engineering placeholder leaked into the decision card: ${{text}}`);
+            if (!text.includes("剧情 / 历史") || !text.includes("后台核对")) throw new Error(`human fallback copy is not informative: ${{text}}`);
+            const generic = renderTitleCard({{
+              item_key: "douban:43", title: "待补类型作品", media_type: "电影", genres: ["电影"], summary: "",
+            }}).textContent;
+            if (generic.includes("以电影为核心的电影") || !generic.includes("故事与人物")) throw new Error(`generic media type produced tautological fallback copy: ${{generic}}`);
+            console.log(JSON.stringify({{ text, generic }}));
+            '''
+        )
+        text = json.loads(output)["text"]
+        self.assertIn("后台核对", text)
+        self.assertNotIn("TMDb / IMDb", text)
 
     def test_shell_removes_collapsed_rail_bottom_nav_is_four_columns_and_shelves_have_empty_state(self):
         store = (UI_ROOT / "js" / "core" / "store.js").read_text(encoding="utf-8")
@@ -910,6 +1950,7 @@ class UiV3ContractTests(unittest.TestCase):
             if (restoreUiState().scrollByRoute["/title/douban%3A1295644"] !== 480) throw new Error("outgoing scroll was not saved");
             if (router.currentRoute.name !== "person" || router.currentRoute.params.id !== "person-7") throw new Error("person route was not active");
             if (browser.history.scrollRestoration !== "manual") throw new Error("browser scroll restoration remained automatic");
+            if (browser.history.state?.from !== "/title/douban%3A1295644") throw new Error(`navigation did not retain a safe app return route: ${{JSON.stringify(browser.history.state)}}`);
             console.log(JSON.stringify({{ events, active: router.currentRoute }}));
             '''
         )
@@ -1209,19 +2250,21 @@ class UiV3ContractTests(unittest.TestCase):
               throw new Error(`three count semantics were not rendered: ${{text}}`);
             }}
             if (shelfRails.length !== 1) throw new Error(`expected one active-channel shelf, got ${{shelfRails.length}}`);
-            if (shelfRails.some((rail) => rail.children.length > 9)) throw new Error("initial shelf exceeded the nine-card cap");
+            if (shelfRails.some((rail) => rail.children.length !== 12)) throw new Error("the visible batch and rendered shelf diverged");
 
-            await requestNextBatch("series", "太相似");
+            await requestNextBatch("series", "\u592a\u76f8\u4f3c");
             await restorePreviousBatch("anime-series");
-            if (calls[0].path !== "/api/v2/recommend/sessions/session-42/batch") throw new Error("next batch path mismatch");
-            if (calls[0].payload.channel !== "电视剧" || calls[0].payload.reason !== "太相似") throw new Error("reasoned series shuffle was not grounded");
-            if (calls[1].path !== "/api/v2/recommend/sessions/session-42/previous" || calls[1].payload.channel !== "动漫") throw new Error("anime previous batch path mismatch");
-            if (actions.map((action) => action.channel).join(",") !== "series,anime-series") throw new Error("channel-specific batch actions were not dispatched");
-            console.log(JSON.stringify({{ text, shelfSizes: shelfRails.map((rail) => rail.children.length), calls, actions }}));
+            const batchCalls = calls.filter((call) => call.path.startsWith("/api/v2/recommend/sessions/"));
+            if (batchCalls[0]?.path !== "/api/v2/recommend/sessions/session-42/batch") throw new Error(`next batch path mismatch: ${{JSON.stringify(calls)}}`);
+            if (batchCalls[0].payload.channel !== "\u7535\u89c6\u5267" || batchCalls[0].payload.reason !== "\u592a\u76f8\u4f3c") throw new Error("reasoned series shuffle was not grounded");
+            if (batchCalls[1]?.path !== "/api/v2/recommend/sessions/session-42/previous" || batchCalls[1].payload.channel !== "\u52a8\u6f2b") throw new Error("anime previous batch path mismatch");
+            const batchActions = actions.filter((action) => action.type === "recommendation/batchReceived");
+            if (batchActions.map((action) => action.channel).join(",") !== "series,anime-series") throw new Error(`channel-specific batch actions were not dispatched: ${{JSON.stringify(actions)}}`);
+            console.log(JSON.stringify({{ text, shelfSizes: shelfRails.map((rail) => rail.children.length), calls: batchCalls, backgroundCalls: calls.filter((call) => !batchCalls.includes(call)), actions: batchActions, backgroundActions: actions.filter((action) => !batchActions.includes(action)) }}));
             '''
         )
         rendered = json.loads(output)
-        self.assertEqual([9], rendered["shelfSizes"])
+        self.assertEqual([12], rendered["shelfSizes"])
         self.assertEqual("太相似", rendered["calls"][0]["payload"]["reason"])
 
     def test_tonight_channel_switch_delegates_history_to_router_and_keeps_nodes_stable(self):
@@ -1249,6 +2292,7 @@ class UiV3ContractTests(unittest.TestCase):
             root.replaceChildren = function(...nodes) {{ rootReplacements += 1; this.children = []; this.append(...nodes); }};
             const makeChannel = (title) => ({{ pool_size: 20, matched_size: 18, visible_size: 1, active_batch: 1, batch: {{ index: 1, items: [{{ title }}] }} }});
             const state = {{ activePath: "/tonight/movie", recommendation: {{
+              sessionId: "session-42",
               activeChannel: "movie",
               personalization: {{ source: "douban-sync", watched_count: 244, wish_count: 36, rated_count: 120 }},
               channels: {{ movie: makeChannel("MovieCandidate"), series: makeChannel("SeriesCandidate"), "anime-series": makeChannel("AnimeCandidate") }},
@@ -1267,12 +2311,23 @@ class UiV3ContractTests(unittest.TestCase):
               }},
             }};
             const routed = [];
+            const calls = [];
             const navigate = async (path) => {{
               routed.push(path);
               store.dispatch({{ type: "route/changed", route: {{ name: "tonight-channel", path, params: {{ channel: path.split("/").pop() }} }} }});
               return {{ path }};
             }};
-            configureTonight({{ root, store, api: {{ postV2() {{}} }}, navigate }});
+            configureTonight({{
+              root,
+              store,
+              api: {{
+                async postV2(path, payload) {{
+                  calls.push({{ path, payload }});
+                  return {{ session_id: "session-42", channel: payload.channel, batch: {{ id: "series-batch", index: 2, items: [] }} }};
+                }},
+              }},
+              navigate,
+            }});
             const firstPage = renderTonight(state);
             const firstStage = firstPage.children.find((node) => node.className === "tonight-stage");
             const firstHero = firstStage.firstElementChild;
@@ -1294,7 +2349,12 @@ class UiV3ContractTests(unittest.TestCase):
             if (historyPaths.length !== 0 || routed.join() !== "/tonight/series" || state.activePath !== "/tonight/series") throw new Error("channel URL/state did not flow through router");
             if (secondStage.firstElementChild.className.includes("motion-enter")) throw new Error("Tonight hero reintroduced opacity entry animation after mount");
             if (!visible.includes("SeriesCandidate") || visible.includes("MovieCandidate")) throw new Error(`active content was not atomically switched: ${{visible}}`);
-            console.log(JSON.stringify({{ rootReplacements, routed, activePath: state.activePath, samePage: secondPage === firstPage, stableNodes: secondStage === firstStage && secondToolbar === firstToolbar && secondInput === firstInput }}));
+            secondInput.value = "更冷门的剧集";
+            const nextButton = collect(secondToolbar).find((node) => node.className === "tonight-button tonight-button--signal");
+            nextButton.onclick(); await Promise.resolve(); await Promise.resolve();
+            const batchCalls = calls.filter((call) => call.path.startsWith("/api/v2/recommend/sessions/"));
+            if (batchCalls.length !== 1 || batchCalls[0].payload.channel !== "\u7535\u89c6\u5267" || batchCalls[0].payload.reason !== "\u66f4\u51b7\u95e8\u7684\u5267\u96c6") throw new Error(`stable toolbar kept the old channel closure: ${{JSON.stringify(calls)}}`);
+            console.log(JSON.stringify({{ rootReplacements, routed, calls: batchCalls, backgroundCalls: calls.filter((call) => !batchCalls.includes(call)), activePath: state.activePath, samePage: secondPage === firstPage, stableNodes: secondStage === firstStage && secondToolbar === firstToolbar && secondInput === firstInput }}));
             '''
         )
         result = json.loads(output)
@@ -1302,6 +2362,299 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertTrue(result["samePage"])
         self.assertTrue(result["stableNodes"])
         self.assertEqual("/tonight/series", result["activePath"])
+
+    def test_tonight_restoring_state_uses_private_playlist_skeleton_not_empty_recommendations(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const root = new FakeElement("main");
+            const state = {{ recommendation: {{
+              activeChannel: "movie", restoring: true,
+              channels: {{ movie: {{}}, series: {{}}, "anime-series": {{}} }},
+            }} }};
+            configureTonight({{ root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2() {{}} }} }});
+            const page = renderTonight(state);
+            const nodes = collectNodes(page);
+            const restore = nodes.find((node) => node.classList?.contains("tonight-restore"));
+            if (!restore || !page.textContent.includes("正在恢复你的私人片单")) throw new Error("private restore skeleton was not visible");
+            if (nodes.some((node) => node.classList?.contains("tonight-counts"))) throw new Error("empty zero-count toolbar leaked during restore");
+            if (page.textContent.includes("候选池 0") || page.textContent.includes("本批可见 0")) throw new Error("restore state pretended the recommendation was empty");
+            console.log(JSON.stringify({{ text: page.textContent, restoreClass: restore.className }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("正在恢复你的私人片单", result["text"])
+
+    def test_tonight_restore_skeleton_is_removed_before_ready_toolbar_is_patched(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const root = new FakeElement("main");
+            const state = {{ recommendation: {{ activeChannel: "movie", restoring: true, channels: {{ movie: {{}}, series: {{}}, "anime-series": {{}} }} }} }};
+            configureTonight({{ root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2() {{}} }} }});
+            renderTonight(state);
+            state.recommendation.restoring = false;
+            state.recommendation.channels.movie = {{ pool_size: 20, matched_size: 18, visible_size: 1, active_batch: 1, batch: {{ index: 1, items: [{{ title: "Ready" }}] }} }};
+            const page = renderTonight(state);
+            const nodes = collectNodes(page);
+            if (nodes.some((node) => node.classList?.contains("tonight-restore") || node.classList?.contains("tonight-restore__label"))) throw new Error("restore skeleton leaked into ready toolbar");
+            if (nodes.filter((node) => node.classList?.contains("tonight-counts")).length !== 1) throw new Error("ready toolbar counts were not singular");
+            console.log(JSON.stringify({{ text: page.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertNotIn("私人推荐正在回到现场", result["text"])
+
+    def test_tonight_prewarms_each_hydrated_channel_hero_once(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const warmed = [];
+            const item = (slug) => ({{
+              item_key: `douban:${{slug}}`, title: slug, media_type: slug,
+              poster: {{ url: `/media/${{slug}}.webp`, media_status: "ready" }},
+            }});
+            const channel = (slug) => ({{ sessionId: "session-prewarm", batch: {{ index: 1, items: [item(slug)] }} }});
+            const state = {{ recommendation: {{
+              sessionId: "session-prewarm", activeChannel: "movie",
+              channels: {{ movie: channel("movie"), series: channel("series"), "anime-series": channel("anime") }},
+            }} }};
+            const root = new FakeElement("main");
+            configureTonight({{
+              root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2() {{}} }},
+              preloadMedia(url) {{ warmed.push(url); return Promise.resolve(null); }},
+            }});
+            renderTonight(state); renderTonight(state);
+            if (warmed.join(",") !== "/media/movie.webp,/media/series.webp,/media/anime.webp") throw new Error(`unexpected hero prewarm: ${{warmed}}`);
+            console.log(JSON.stringify(warmed));
+            '''
+        )
+        warmed = json.loads(output)
+        self.assertEqual(3, len(warmed))
+
+    def test_tonight_hero_filmstrip_switches_only_between_ready_local_posters_in_place(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            let autoRotations = 0;
+            globalThis.setInterval = () => {{ autoRotations += 1; return autoRotations; }};
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const ready = (key, title) => ({{
+              item_key: key, title, media_type: "电影", douban_rating: 8.8,
+              poster: {{ url: `/media/${{title}}.webp`, media_status: "ready" }},
+            }});
+            const state = {{ recommendation: {{
+              sessionId: "session-filmstrip", activeChannel: "movie",
+              channels: {{
+                movie: {{ sessionId: "session-filmstrip", pool_size: 4, matched_size: 4, visible_size: 4, active_batch: 1, batch: {{ index: 1, items: [
+                  ready("douban:alpha", "Alpha"),
+                  {{ item_key: "douban:missing", title: "Missing", media_type: "电影", poster: {{ media_status: "missing" }} }},
+                  ready("douban:beta", "Beta"),
+                  ready("douban:gamma", "Gamma"),
+                ] }} }},
+                series: {{}}, "anime-series": {{}},
+              }},
+            }} }};
+            const root = new FakeElement("main");
+            let rootReplacements = 0;
+            root.replaceChildren = function(...nodes) {{ rootReplacements += 1; this.children = []; this.append(...nodes); }};
+            configureTonight({{ root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2() {{}} }} }});
+            const page = renderTonight(state);
+            await flush();
+            const stage = page.children.find((node) => node.classList?.contains("tonight-stage"));
+            const hero = stage.firstElementChild;
+            const carouselStage = collectNodes(hero).find((node) => node.classList?.contains("cinema-carousel__stage"));
+            const stageContent = collectNodes(hero).find((node) => node.classList?.contains("cinema-carousel__stage-content"));
+            const filmstrip = collectNodes(hero).find((node) => node.classList?.contains("cinema-carousel__track"));
+            const buttons = collectNodes(filmstrip).filter((node) => node.classList?.contains("cinema-carousel__slide"));
+            if (!hero.classList.contains("cinema-carousel") || !carouselStage || !stageContent || !filmstrip || buttons.length !== 3) throw new Error(`cinema carousel ready-only structure missing: ${{buttons.length}}`);
+            if (filmstrip.classList.contains("tonight-hero-filmstrip")) throw new Error("new carousel inherited the legacy narrow filmstrip");
+            if (buttons.some((button) => button.classList.contains("tonight-hero-filmstrip__button"))) throw new Error("new carousel slides inherited the legacy button layout");
+            if (buttons.some((button) => collectNodes(button).some((node) => node.classList?.contains("tonight-hero-filmstrip__title")))) throw new Error("new carousel slide titles inherited legacy truncation rules");
+            if (!stageContent.textContent.includes("Alpha")) throw new Error("first ready title was not featured");
+            buttons[1].dispatchEvent({{ type: "click", preventDefault() {{}} }});
+            await flush();
+            if (stage.firstElementChild !== hero || rootReplacements !== 1) throw new Error("hero selection remounted the page or hero node");
+            if (!stageContent.textContent.includes("Beta") || stageContent.textContent.includes("Missing")) throw new Error(`filmstrip selected the wrong title: ${{stageContent.textContent}}`);
+            const selected = buttons.filter((node) => node.getAttribute("aria-selected") === "true" && node.getAttribute("aria-current") === "true");
+            if (selected.length !== 1 || !selected[0].textContent.includes("Beta")) throw new Error("filmstrip selection state did not follow the featured title");
+            await flush();
+            if (!stageContent.textContent.includes("Beta") || autoRotations !== 0) throw new Error("carousel rotated without an explicit user action");
+            console.log(JSON.stringify({{ buttons: buttons.length, rootReplacements, selected: selected[0].textContent, autoRotations }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, result["buttons"])
+        self.assertEqual(1, result["rootReplacements"])
+        self.assertEqual(0, result["autoRotations"])
+        carousel_source = (UI_ROOT / "js" / "components" / "cinema-carousel.js").read_text(encoding="utf-8")
+        self.assertNotIn("setInterval", carousel_source)
+
+    def test_tonight_hero_selection_survives_rerender_without_provider_item_key(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const ready = (title, year) => ({{
+              title, year, media_type: "电影", douban_rating: 8.8,
+              poster: {{ url: `/media/${{title}}-${{year}}.webp`, media_status: "ready" }},
+            }});
+            const state = {{ recommendation: {{
+              sessionId: "session-fallback-identity", activeChannel: "movie",
+              channels: {{
+                movie: {{ sessionId: "session-fallback-identity", pool_size: 3, matched_size: 3, visible_size: 3, active_batch: 1, batch: {{ index: 1, items: [
+                  ready("Alpha", 2020), ready("Beta", 2021), ready("Gamma", 2022),
+                ] }} }},
+                series: {{}}, "anime-series": {{}},
+              }},
+            }} }};
+            const root = new FakeElement("main");
+            configureTonight({{ root, store: {{ getState: () => state, dispatch() {{}} }}, api: {{ postV2() {{}} }} }});
+            let page = renderTonight(state);
+            let buttons = collectNodes(page).filter((node) => node.classList?.contains("cinema-carousel__slide"));
+            buttons[1].dispatchEvent({{ type: "click", preventDefault() {{}} }});
+            await flush();
+            state.recommendation.channels.movie.batch.items = [
+              {{ ...ready("Alpha", 2020), summary: "metadata refreshed" }},
+              {{ ...ready("Beta", 2021), summary: "metadata refreshed" }},
+              {{ ...ready("Gamma", 2022), summary: "metadata refreshed" }},
+            ];
+            page = renderTonight(state);
+            await flush();
+            const stageContent = collectNodes(page).find((node) => node.classList?.contains("cinema-carousel__stage-content"));
+            buttons = collectNodes(page).filter((node) => node.classList?.contains("cinema-carousel__slide"));
+            const selected = buttons.find((node) => node.getAttribute("aria-selected") === "true");
+            if (!stageContent?.textContent.includes("Beta") || !selected?.textContent.includes("Beta")) {{
+              throw new Error(`fallback identity selection was lost after rerender: ${{stageContent?.textContent}} / ${{selected?.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ stage: stageContent.textContent, selected: selected.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("Beta", result["stage"])
+
+    def test_cinema_carousel_preserves_vertical_wheel_and_uses_explicit_horizontal_intent(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderCinemaCarousel }} = await import("{module_url('js/components/cinema-carousel.js')}");
+            const carousel = renderCinemaCarousel({{ slides: [
+              {{ id: "one", title: "One", media: {{ url: "/media/one.webp", status: "ready" }} }},
+              {{ id: "two", title: "Two", media: {{ url: "/media/two.webp", status: "ready" }} }},
+              {{ id: "three", title: "Three", media: {{ url: "/media/three.webp", status: "ready" }} }},
+            ] }});
+            const track = collectNodes(carousel).find((node) => node.classList?.contains("cinema-carousel__track"));
+            let verticalPrevented = false;
+            track.dispatchEvent({{ type: "wheel", deltaX: 0, deltaY: 160, shiftKey: false, preventDefault() {{ verticalPrevented = true; }} }});
+            if (verticalPrevented || carousel.dataset.index !== "0") throw new Error(`vertical page wheel was hijacked: ${{JSON.stringify({{ verticalPrevented, index: carousel.dataset.index }})}}`);
+            let horizontalPrevented = false;
+            track.dispatchEvent({{ type: "wheel", deltaX: 160, deltaY: 4, shiftKey: false, preventDefault() {{ horizontalPrevented = true; }} }});
+            if (!horizontalPrevented || carousel.dataset.index !== "1") throw new Error("horizontal wheel did not advance the filmstrip");
+            let shiftPrevented = false;
+            track.dispatchEvent({{ type: "wheel", deltaX: 0, deltaY: 160, shiftKey: true, preventDefault() {{ shiftPrevented = true; }} }});
+            if (!shiftPrevented || carousel.dataset.index !== "2") throw new Error("Shift + wheel did not express horizontal filmstrip intent");
+            console.log(JSON.stringify({{ verticalPrevented, horizontalPrevented, shiftPrevented, index: carousel.dataset.index }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertFalse(result["verticalPrevented"])
+        self.assertTrue(result["horizontalPrevented"])
+        self.assertTrue(result["shiftPrevented"])
+        self.assertEqual("2", result["index"])
+
+    def test_tonight_enriches_visible_placeholder_summaries_once_and_patches_in_place(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            let state = {{ activePath: "/tonight/movie", recommendation: {{
+              sessionId: "session-meta", activeChannel: "movie",
+              channels: {{
+                movie: {{ sessionId: "session-meta", pool_size: 2, matched_size: 2, visible_size: 2, batch: {{ index: 1, items: [
+                  {{ item_key: "douban:42", title: "待补简介", media_type: "电影", genres: ["剧情"], summary: "由 CineScope 精选扩展池补入的电影候选：待补简介。优先通过公共来源补图。", poster: {{ url: "/media/a.webp", media_status: "ready" }} }},
+                  {{ item_key: "douban:43", title: "已有简介", media_type: "电影", genres: ["剧情"], summary: "这是一段已经核对的真实简介。", poster: {{ url: "/media/b.webp", media_status: "ready" }} }},
+                ] }} }},
+                series: {{}}, "anime-series": {{}},
+              }},
+            }} }};
+            const posts = []; const actions = [];
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{ actions.push(action); state = reduceUiState(state, action); }},
+            }};
+            const root = new FakeElement("main");
+            configureTonight({{
+              root, store,
+              api: {{
+                async postV2(path, payload) {{
+                  posts.push({{ path, payload }});
+                  return {{ item_key: "douban:42", title: "待补简介", media_type: "电影", year: 2024, item: {{ title: "待补简介", media_type: "电影", genres: ["剧情"], summary: "后台核对后的真实剧情简介。" }}, poster: {{ url: "/media/a.webp", media_status: "ready" }} }};
+                }},
+              }},
+              preloadMedia: async () => null,
+            }});
+            const page = renderTonight(state);
+            await flush();
+            renderTonight(state);
+            await flush();
+            const enrichCalls = posts.filter((call) => call.path.includes("/enrich"));
+            if (enrichCalls.length !== 1 || enrichCalls[0].path !== "/api/v2/titles/douban%3A42/enrich") throw new Error(`visible metadata enrichment was not bounded and deduplicated: ${{JSON.stringify(posts)}}`);
+            if (!actions.some((action) => action.type === "recommendation/itemHydrated" && action.itemKey === "douban:42")) throw new Error("enriched title was not patched into the active recommendation");
+            if (!page.textContent.includes("后台核对后的真实剧情简介。")) throw new Error(`patched summary was not rendered in place: ${{page.textContent}}`);
+            console.log(JSON.stringify({{ posts, actions: actions.map((action) => action.type), text: page.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, len([call for call in result["posts"] if "/enrich" in call["path"]]))
+        self.assertIn("recommendation/itemHydrated", result["actions"])
+
+    def test_tonight_queues_visible_largely_english_synopsis_for_localization(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ reduceUiState }} = await import("{module_url('js/app.js')}");
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            let state = {{ activePath: "/tonight/series", recommendation: {{
+              sessionId: "session-localize", activeChannel: "series",
+              channels: {{
+                movie: {{}},
+                series: {{ sessionId: "session-localize", pool_size: 1, matched_size: 1, visible_size: 1, batch: {{ index: 1, items: [{{
+                  item_key: "external:tvmaze-3415", title: "Tomorrow's Worlds", media_type: "电视剧", genres: ["科幻", "历史"],
+                  summary: "Historian Dominic Sandbrook and leading creators tell the story of science fiction across television and cinema.",
+                  poster: {{ url: "/media/worlds.webp", media_status: "ready" }},
+                }}] }} }},
+                "anime-series": {{}},
+              }},
+            }} }};
+            const posts = [];
+            const store = {{ getState: () => state, dispatch(action) {{ state = reduceUiState(state, action); }} }};
+            const root = new FakeElement("main");
+            configureTonight({{
+              root, store,
+              api: {{ async postV2(path, payload) {{
+                posts.push({{ path, payload }});
+                return {{ item_key: "external:tvmaze-3415", item: {{ summary: "经过核验的中文简介。", genres: ["科幻", "历史"] }} }};
+              }} }},
+              preloadMedia: async () => null,
+            }});
+            const page = renderTonight(state); await flush();
+            const enrichCalls = posts.filter((call) => call.path.includes("/enrich"));
+            if (enrichCalls.length !== 1) throw new Error(`English synopsis was not queued for localization: ${{JSON.stringify(posts)}}`);
+            if (page.textContent.includes("Historian Dominic")) throw new Error("English synopsis was shown before localization completed");
+            console.log(JSON.stringify({{ posts, text: page.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, len([call for call in result["posts"] if "/enrich" in call["path"]]))
+        self.assertNotIn("Historian Dominic", result["text"])
 
     def test_tonight_missing_visible_media_jobs_poll_and_refresh_session_in_place(self):
         output = run_node_module(
@@ -1339,8 +2692,9 @@ class UiV3ContractTests(unittest.TestCase):
             const page = renderTonight(state);
             const stage = page.children.find((node) => node.className === "tonight-stage");
             const hero = stage.firstElementChild;
-            if (posts.length !== 2) throw new Error(`expected hero+visible missing posters to enqueue once by item identity, got ${{posts.length}}`);
-            if (posts.some((call) => call.path !== "/api/v2/media/jobs" || call.payload.kind !== "poster" || !call.payload.identity_key)) throw new Error("Tonight media job payload was not schema-bound");
+            const posterPosts = posts.filter((call) => call.path === "/api/v2/media/jobs");
+            if (posterPosts.length !== 2) throw new Error(`expected hero+visible missing posters to enqueue once by item identity, got ${{posterPosts.length}}`);
+            if (posterPosts.some((call) => call.payload.kind !== "poster" || !call.payload.identity_key)) throw new Error("Tonight media job payload was not schema-bound");
             for (let index = 0; index < 4; index += 1) await Promise.resolve();
             await timers.shift()();
             await timers.shift()();
@@ -1353,8 +2707,65 @@ class UiV3ContractTests(unittest.TestCase):
             '''
         )
         result = json.loads(output)
-        self.assertEqual(2, len(result["posts"]))
+        self.assertEqual(2, len([call for call in result["posts"] if call["path"] == "/api/v2/media/jobs"]))
         self.assertIn("/api/v2/recommend/sessions/session-42", result["gets"])
+
+    def test_tonight_prewarms_bounded_hero_portraits_before_detail_open(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ configureTonight, renderTonight }} = await import("{module_url('js/features/tonight.js')}");
+            const posts = [];
+            const gets = [];
+            const hero = {{
+              item_key: "douban:hero",
+              title: "Hero Work",
+              year: 2026,
+              media_type: "movie",
+              poster: {{ url: "/media/hero.webp", media_status: "ready" }},
+            }};
+            const state = {{ activePath: "/tonight/movie", recommendation: {{
+              sessionId: "session-hero",
+              activeChannel: "movie",
+              channels: {{ movie: {{ sessionId: "session-hero", batch: {{ index: 1, items: [hero] }} }}, series: {{}}, "anime-series": {{}} }},
+            }} }};
+            const title = {{
+              item_key: "douban:hero",
+              title: "Hero Work",
+              media_type: "movie",
+              people: [
+                {{ id: "person-director", name: "Director", role: "director", portrait: {{ url: "", media_status: "missing" }} }},
+                {{ id: "person-ready", name: "Ready Cast", role: "cast", portrait: {{ url: "/media/ready.webp", media_status: "ready" }} }},
+                {{ id: "person-cast-1", name: "Cast One", role: "cast", portrait: {{ url: "", media_status: "missing" }} }},
+                {{ id: "person-cast-2", name: "Cast Two", role: "cast", portrait: {{ url: "", media_status: "missing" }} }},
+                {{ id: "person-outside-bound", name: "Cast Three", role: "cast", portrait: {{ url: "", media_status: "missing" }} }},
+              ],
+            }};
+            const api = {{
+              async getV2(path) {{ gets.push(path); return title; }},
+              async postV2(path, payload) {{ posts.push({{ path, payload }}); return {{ job_id: `portrait-${{posts.length}}`, state: "queued" }}; }},
+            }};
+            configureTonight({{
+              root: new FakeElement("main"),
+              store: {{ getState: () => state, dispatch() {{}} }},
+              api,
+              preloadMedia: async () => null,
+            }});
+            renderTonight(state);
+            await flush();
+            renderTonight(state);
+            await flush();
+            const portraits = posts.filter((call) => call.payload.kind === "portrait");
+            if (gets.filter((path) => path === "/api/v2/titles/douban%3Ahero").length !== 1) throw new Error(`hero title warmup was not deduplicated: ${{gets}}`);
+            if (portraits.length !== 3) throw new Error(`expected three missing portraits inside the first four credits, got ${{JSON.stringify(portraits)}}`);
+            if (portraits.some((call) => call.path !== "/api/v2/media/jobs" || !call.payload.identity_key || !call.payload.person_name)) throw new Error("portrait warmup payload was not schema-bound");
+            if (portraits.some((call) => call.payload.media_type !== "movie" || call.payload.work_context?.[0] !== "Hero Work")) throw new Error("portrait warmup lost title context");
+            if (portraits.some((call) => call.payload.identity_key === "person-ready" || call.payload.identity_key === "person-outside-bound")) throw new Error("portrait warmup included ready or out-of-bound credits");
+            console.log(JSON.stringify({{ gets, portraits }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(3, len(result["portraits"]))
 
     def test_session_candidate_counts_flow_into_channels_and_persist(self):
         prelude = fake_dom_module_prelude()
@@ -1731,6 +3142,36 @@ class UiV3ContractTests(unittest.TestCase):
                 self.assertNotIn(field, call["payload"]["intent"])
                 self.assertEqual("fast", call["payload"]["intent"]["pace"])
 
+    def test_command_lens_can_close_after_success_and_handoff_the_new_session(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ configureCommandLens, openCommandLens, submitIntent }} = await import("{module_url('js/features/command-lens.js')}");
+            const root = new FakeElement("div");
+            const received = [];
+            configureCommandLens({{
+              root,
+              closeOnSuccess: true,
+              onSession(session) {{ received.push(session.id); }},
+              store: {{
+                getState: () => ({{ commandLens: {{ draft: "", chips: [] }}, recommendation: {{ channels: {{}} }} }}),
+                dispatch() {{}},
+              }},
+              api: {{
+                async postV2() {{ return {{ id: "session-fresh", intent: {{ media_types: ["电影"] }}, chips: [], channels: {{}} }}; }},
+              }},
+            }});
+            openCommandLens("高分剧情片");
+            await submitIntent("高分剧情片");
+            if (received.join(",") !== "session-fresh") throw new Error(`new session was not handed off: ${{received}}`);
+            if (root.children.length !== 0) throw new Error("successful command lens stayed open instead of returning to recommendations");
+            console.log(JSON.stringify({{ received, openChildren: root.children.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["session-fresh"], result["received"])
+        self.assertEqual(0, result["openChildren"])
+
     def test_app_replacement_session_resets_history_while_same_session_restore_merges(self):
         output = run_node_module(
             f'''
@@ -2008,6 +3449,43 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual(1, result["latestCalls"])
         self.assertEqual("latest-session", result["sessionId"])
 
+    def test_hydrated_tonight_channel_skips_redundant_session_restore(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}} }};
+            const {{ createTonightRestoreGate, reduceUiState }} = await import("{module_url('js/app.js')}");
+            let state = {{
+              activePath: "/tonight/series", activeParams: {{ channel: "series" }},
+              recommendation: {{
+                sessionId: "session-ready", activeChannel: "series",
+                channels: {{
+                  movie: {{ sessionId: "session-ready", batch: {{ items: [{{ title: "Movie" }}] }} }},
+                  series: {{ sessionId: "session-ready", batch: {{ items: [{{ title: "Series" }}] }} }},
+                  "anime-series": {{ sessionId: "session-ready", batch: {{ items: [{{ title: "Anime" }}] }} }},
+                }},
+              }},
+              commandLens: {{ draft: "", chips: [] }}, rail: {{ mode: "expanded" }},
+              scrollByRoute: {{}}, candidateTray: {{ itemIds: [], context: {{}} }},
+            }};
+            const actions = []; let restoreCalls = 0; const statuses = [];
+            const store = {{
+              getState: () => state,
+              dispatch(action) {{ actions.push(action); state = reduceUiState(state, action); return action; }},
+            }};
+            const gate = createTonightRestoreGate({{
+              store,
+              async restoreSession() {{ restoreCalls += 1; throw new Error("hydrated channel must not refetch"); }},
+              setStatus(message) {{ statuses.push(message); }},
+            }});
+            await gate.restore({{ path: "/tonight/series", name: "tonight-channel", params: {{ channel: "series" }} }}, "今晚");
+            if (restoreCalls !== 0) throw new Error(`redundant restores=${{restoreCalls}}`);
+            if (actions.some((action) => action.type === "recommendation/restoreStarted")) throw new Error("hydrated channel entered restore skeleton");
+            console.log(JSON.stringify({{ restoreCalls, statuses, actionTypes: actions.map((action) => action.type) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(0, result["restoreCalls"])
+
     def test_command_lens_intent_mutations_are_latest_wins_and_errors_are_visible(self):
         output = run_node_module(
             f'''
@@ -2235,6 +3713,23 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("/title/item:stable-1", result["stable"])
         self.assertEqual("/title/douban:1295644", result["douban"])
 
+    def test_detail_translates_internal_library_states_for_people(self):
+        output = run_node_module(
+            f'''
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const {{ localStateLabel }} = await import("{module_url('js/features/detail.js')}");
+            const labels = {{
+              candidate: localStateLabel("candidate"),
+              watched: localStateLabel("watched"),
+              wanted: localStateLabel("wanted"),
+            }};
+            if (labels.candidate !== "推荐候选" || labels.watched !== "已看过" || labels.wanted !== "想看") throw new Error(JSON.stringify(labels));
+            console.log(JSON.stringify(labels));
+            '''
+        )
+        labels = json.loads(output)
+        self.assertEqual("推荐候选", labels["candidate"])
+
     def test_title_detail_renders_cinematic_sections_people_and_local_relationships(self):
         output = run_node_module(
             f'''
@@ -2244,42 +3739,88 @@ class UiV3ContractTests(unittest.TestCase):
               remove(name) {{ this.owner.className = this.owner.className.split(/\\s+/).filter((value) => value && value !== name).join(" "); }}
               toggle(name, force) {{ if (force) this.add(name); else this.remove(name); }}
             }}
+            class FakeHtmlCollection {{
+              constructor(owner) {{
+                this.owner = owner;
+                return new Proxy(this, {{
+                  get(target, property, receiver) {{
+                    const index = typeof property === "string" ? Number(property) : NaN;
+                    if (Number.isInteger(index) && index >= 0 && String(index) === property) return owner._children[index];
+                    return Reflect.get(target, property, receiver);
+                  }},
+                  has(target, property) {{
+                    const index = typeof property === "string" ? Number(property) : NaN;
+                    if (Number.isInteger(index) && index >= 0 && String(index) === property) return index < owner._children.length;
+                    return Reflect.has(target, property);
+                  }},
+                  set(target, property, value, receiver) {{
+                    const index = typeof property === "string" ? Number(property) : NaN;
+                    if (Number.isInteger(index) && index >= 0 && String(index) === property) throw new TypeError("HTMLCollection indexed property setter is not supported");
+                    return Reflect.set(target, property, value, receiver);
+                  }},
+                }});
+              }}
+              get length() {{ return this.owner._children.length; }}
+              item(index) {{ return this.owner._children[index] ?? null; }}
+              [Symbol.iterator]() {{ return this.owner._children[Symbol.iterator](); }}
+            }}
             class FakeElement {{
               constructor(tagName) {{
-                this.tagName = tagName.toUpperCase(); this.children = []; this.attributes = new Map(); this.dataset = {{}};
+                this.tagName = tagName.toUpperCase(); this._children = []; this.children = new FakeHtmlCollection(this); this.attributes = new Map(); this.dataset = {{}};
                 this.className = ""; this.textContent = ""; this.id = ""; this.hidden = false; this.disabled = false;
                 this.classList = new FakeClassList(this); this.style = {{ setProperty() {{}} }};
               }}
               append(...nodes) {{ for (const node of nodes) this.appendChild(node); }}
-              appendChild(node) {{ this.children.push(node); node.parentNode = this; return node; }}
-              replaceChildren(...nodes) {{ this.children = []; this.append(...nodes); }}
+              appendChild(node) {{ this._children.push(node); node.parentNode = this; return node; }}
+              replaceChildren(...nodes) {{ this._children = []; this.append(...nodes); }}
+              replaceWith(node) {{
+                const parent = this.parentNode;
+                const index = parent?._children.indexOf(this) ?? -1;
+                if (index < 0) return;
+                parent._children.splice(index, 1, node); node.parentNode = parent; this.parentNode = null;
+              }}
               setAttribute(name, value) {{ this.attributes.set(name, String(value)); }}
               addEventListener(type, listener) {{ this[`on${{type}}`] = listener; }}
               getBoundingClientRect() {{ return {{ left: 20, top: 30, width: 120, height: 180 }}; }}
+              scrollIntoView(options) {{ this.scrollOptions = options; }}
               focus() {{}}
-              get firstElementChild() {{ return this.children[0] ?? null; }}
+              get firstElementChild() {{ return this._children[0] ?? null; }}
             }}
             const root = new FakeElement("main");
+            let indexedSetterBlocked = false;
+            try {{ root.children[0] = new FakeElement("probe"); }} catch {{ indexedSetterBlocked = true; }}
+            if (!indexedSetterBlocked) throw new Error("test double must reject HTMLCollection indexed assignment");
+            const collectionProbe = new FakeElement("probe"); root.append(collectionProbe);
+            if (root.children[0] !== collectionProbe || Array.prototype.indexOf.call(root.children, collectionProbe) !== 0) throw new Error("test double must expose indexed HTMLCollection reads");
+            root.replaceChildren();
             let transitions = 0;
             globalThis.document = {{
               createElement: (tag) => new FakeElement(tag),
               createDocumentFragment: () => new FakeElement("fragment"),
+              getElementById(id) {{ return collect(root).find((node) => node.id === id) || null; }},
               startViewTransition(update) {{ transitions += 1; update(); return {{ finished: Promise.resolve() }}; }},
             }};
             globalThis.location = {{ origin: "https://cinescope.test" }};
             const opened = [];
+            const exits = [];
             const mediaJobs = [];
+            const metadataRequests = [];
             const fetchPaths = [];
             const title = {{
               id: "media-42", item_key: "douban:42", title: "银幕测试", media_type: "电影", year: 2024, state: "watched",
-              poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }},
+              poster: {{ url: "/media/detail-poster.jpg", media_status: "ready" }}, backdrop: {{ url: "", media_status: "missing" }},
               item: {{
                 title: "银幕测试", year: 2024, media_type: "电影", directors: ["导演甲"], casts: ["演员乙"],
-                countries: ["中国"], genres: ["剧情"], douban_rating: 8.6, my_rating: 9, duration: 123,
-                summary: "一段只来自本地片库的简介。",
+                countries: ["中国"], genres: ["剧情"], douban_rating: 8.6, vote_count: 123456, my_rating: 9, duration: 123, release_date: "2024-08-01",
+                raw: {{
+                  comment: "这是我同步自豆瓣的真实短评。",
+                  ratings: {{ imdb: 8.4, tmdb: 8.2 }},
+                  rating_votes: {{ imdb: 88000, tmdb: 12000 }},
+                }},
+                summary: "",
               }},
               people: [
-                {{ id: "person-director", role: "director", name: "导演甲", portrait: {{ url: "", media_status: "missing" }}, media_status: "missing" }},
+                {{ id: "person-director", role: "director", name: "导演甲", portrait: {{ url: "/media/director.jpg", media_status: "ready" }}, media_status: "ready" }},
                 {{ id: "person-cast", role: "cast", name: "演员乙", portrait: {{ url: "", media_status: "pending" }}, media_status: "pending" }},
               ],
             }};
@@ -2287,40 +3828,481 @@ class UiV3ContractTests(unittest.TestCase):
               focus_id: "douban:42",
               nodes: [
                 {{ id: "douban:42", title: "银幕测试", year: 2024, media_type: "电影", poster: {{ url: "", media_status: "missing" }} }},
-                {{ id: "item:related", title: "本地关联作品", year: 2020, media_type: "电影", poster: {{ url: "", media_status: "missing" }} }},
+                {{ id: "item:related", title: "本地关联作品", year: 2020, media_type: "电影", poster: {{ url: "/media/related.jpg", media_status: "ready" }} }},
+                {{ id: "item:pending", title: "待补关联作品", year: 2021, media_type: "电影", poster: {{ url: "", media_status: "missing" }} }},
               ],
-              edges: [{{ source: "douban:42", target: "item:related", score: 2.4, reason: "shared director: 导演甲", reasons: ["shared director: 导演甲"] }}],
+              edges: [
+                {{ source: "douban:42", target: "item:related", score: 2.4, reason: "shared director: 导演甲", reasons: ["shared director: 导演甲"] }},
+                {{ source: "douban:42", target: "item:pending", score: 1.8, reason: "shared genre: 剧情", reasons: ["shared genre: 剧情"] }},
+              ],
             }};
+            let currentTitle = title;
+            let currentUniverse = universe;
             const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
             configureDetail({{
               root,
-              async fetchJson(path) {{ fetchPaths.push(path); return path.startsWith("/api/v2/titles/") ? title : universe; }},
-              async postV2(path, payload) {{ mediaJobs.push({{ path, payload }}); return {{ job_id: `job-${{mediaJobs.length}}`, state: "queued" }}; }},
+              async fetchJson(path) {{ fetchPaths.push(path); return path.startsWith("/api/v2/titles/") ? currentTitle : currentUniverse; }},
+              async postV2(path, payload) {{
+                if (path === "/api/v2/titles/douban:42/enrich") {{
+                  metadataRequests.push(path);
+                  return {{ ...title, item: {{ ...title.item, summary: "后台补齐后的可靠剧情简介。" }} }};
+                }}
+                mediaJobs.push({{ path, payload }}); return {{ job_id: `job-${{mediaJobs.length}}`, state: "queued" }};
+              }},
               openPersonSheet(id, rect) {{ opened.push({{ id, rect }}); }},
+              getDetailReturnPath() {{ return "/library"; }},
+              onExitDetail(path) {{ exits.push(path); }},
             }});
             await renderTitleDetail("douban:42");
-            const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
+            await Promise.resolve(); await Promise.resolve();
+            const collect = (node) => [node, ...[...node.children].flatMap((child) => collect(child))];
             const nodes = collect(root);
             const classes = nodes.map((node) => node.className);
-            for (const required of ["detail-page", "detail-backdrop", "detail-poster", "detail-tabs", "detail-score-grid", "detail-facts", "detail-people-rail", "detail-relations"]) {{
+            for (const required of ["detail-page", "detail-backdrop", "detail-poster", "detail-tabs", "detail-score-grid", "detail-facts", "detail-visuals", "detail-people-rail", "detail-relations"]) {{
               if (!classes.some((value) => value.split(/\\s+/).includes(required))) throw new Error(`missing detail section: ${{required}}`);
+            }}
+            const peopleTab = nodes.find((node) => node.tagName === "A" && node.attributes.get("href") === "#people");
+            const peopleSection = nodes.find((node) => node.id === "people");
+            let sectionNavigationPrevented = false;
+            peopleTab.onclick({{ preventDefault() {{ sectionNavigationPrevented = true; }} }});
+            if (!sectionNavigationPrevented || peopleSection.scrollOptions?.block !== "start") throw new Error("detail section navigation did not scroll the target into view");
+            const exitButton = nodes.find((node) => node.className.split(/\\s+/).includes("detail-return"));
+            if (!exitButton || !exitButton.textContent.includes("返回片库")) throw new Error("detail return action was missing or not contextual");
+            exitButton.onclick();
+            if (exits[0] !== "/library") throw new Error(`detail return escaped the configured app route: ${{JSON.stringify(exits)}}`);
+            const backdrop = nodes.find((node) => node.className.split(/\\s+/).includes("detail-backdrop"));
+            const backdropNodes = collect(backdrop);
+            const backdropFrame = backdropNodes.find((node) => node.className.split(/\\s+/).includes("media-frame"));
+            if (backdrop.className.includes("detail-backdrop--poster-fallback")) {{
+              throw new Error("portrait poster leaked into the cinematic backdrop");
+            }}
+            if (classes.some((value) => value.split(/\\s+/).includes("media-gallery"))) {{
+              throw new Error("poster-only title rendered a fake visual gallery");
+            }}
+            if (!nodes.map((node) => node.textContent).join("|").includes("暂未找到可核对的真实剧照")) {{
+              throw new Error("detail real-visual empty state was missing");
             }}
             const personButton = nodes.find((node) => node.className.includes("person-card"));
             personButton.onclick();
             if (opened[0]?.id !== "person-director" || opened[0].rect.width !== 120) throw new Error("person sheet did not receive stable identity and origin rect");
+            if (nodes.filter((node) => node.className.split(/\\s+/).includes("person-card")).length !== 2) throw new Error("all identified people were not rendered with resilient portrait fallbacks");
             const relationLink = nodes.find((node) => node.tagName === "A" && node.attributes.get("href") === "/title/item:related");
             if (!relationLink) throw new Error("local relationship did not keep stable item key navigation");
+            if (nodes.some((node) => node.tagName === "A" && node.attributes.get("href") === "/title/item:pending")) throw new Error("unresolved related poster rendered as a broken visual card");
             const text = nodes.map((node) => node.textContent).join("|");
             if (!text.includes("本地关联") || !text.includes("共同导演：导演甲") || text.includes("相似作品")) throw new Error("universe semantics were overstated or left raw backend labels");
+            if (!text.includes("123,456 人参与豆瓣评分") || !text.includes("IMDb 8.4") || !text.includes("TMDb 8.2") || !text.includes("这是我同步自豆瓣的真实短评。") || !classes.some((value) => value.split(/\\s+/).includes("detail-evidence"))) throw new Error("real multi-source/public/personal review evidence was not rendered");
+            if (!text.includes("片长") || !text.includes("123 分钟") || !text.includes("上映日期") || !text.includes("2024-08-01")) throw new Error("verified runtime or release date was omitted from detail facts");
+            if (!text.includes("正在补齐 1 张关联海报")) throw new Error("related poster hydration state was not explained");
+            if (!mediaJobs.some((job) => job.payload.kind === "poster" && job.payload.identity_key === "item:pending")) throw new Error("missing related poster was not queued");
+            if (!text.includes("正在匹配 1 位演职人员肖像") || !mediaJobs.some((job) => job.payload.kind === "portrait" && job.payload.identity_key === "person-cast")) throw new Error("missing portrait hydration was not visible or queued");
+            if (metadataRequests.length !== 1 || !text.includes("后台补齐后的可靠剧情简介。")) throw new Error("thin title metadata was not enriched and patched in place");
+            currentTitle = {{
+              item_key: "douban:43", title: "主海报待补作品", media_type: "电影", year: 2022, state: "watched",
+              poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }},
+              item: {{ title: "主海报待补作品", summary: "已有简介。", genres: ["剧情"], directors: ["导演乙"], casts: [] }}, people: [],
+            }};
+            currentUniverse = {{ focus_id: "douban:43", nodes: [{{ id: "douban:43", title: "主海报待补作品" }}], edges: [] }};
+            await renderTitleDetail("douban:43");
+            await Promise.resolve(); await Promise.resolve();
+            if (!mediaJobs.some((job) => job.payload.kind === "poster" && job.payload.identity_key === "douban:43")) throw new Error("missing primary poster was not queued");
             if (!fetchPaths.includes("/api/v2/titles/douban:42")) throw new Error(`catalog path encoded the safe title identity: ${{fetchPaths}}`);
-            if (transitions !== 1) throw new Error("prepared detail did not use view transition");
+            if (transitions !== 2) throw new Error("prepared detail did not use view transition");
             console.log(JSON.stringify({{ transitions, opened: opened[0].id, mediaJobs: mediaJobs.length, relation: relationLink.attributes.get("href") }}));
             '''
         )
         result = json.loads(output)
-        self.assertEqual(1, result["transitions"])
+        self.assertEqual(2, result["transitions"])
         self.assertEqual("person-director", result["opened"])
         self.assertEqual("/title/item:related", result["relation"])
+
+    def test_title_card_prefers_media_badge_label_over_raw_media_type(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderTitleCard }} = await import("{module_url('js/components/title-card.js')}");
+            const card = renderTitleCard({{
+              item_key: "external:documentary-card",
+              title: "Mystery Map",
+              media_type: "\u7535\u89c6\u5267",
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+              year: 2017,
+              genres: ["\u7eaa\u5f55\u7247", "\u5192\u9669"],
+              summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+              poster: {{ url: "", media_status: "missing" }},
+            }});
+            const metadata = card.querySelector(".title-card__genres");
+            const typePill = metadata?.children?.[0];
+            if (typePill?.textContent !== "\u7eaa\u5f55\u7247\u5267\u96c6") {{
+              throw new Error(`title card ignored media badge: ${{metadata?.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ typeLabel: typePill.textContent }}));
+            '''
+        )
+        self.assertEqual("\u7eaa\u5f55\u7247\u5267\u96c6", json.loads(output)["typeLabel"])
+
+    def test_detail_prefers_media_badge_label_in_hero_and_verified_facts(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const root = new FakeElement("main");
+            const title = {{
+              item_key: "external:documentary-detail",
+              title: "Mystery Map",
+              display_title: "\u795e\u79d8\u5730\u56fe",
+              media_type: "\u7535\u89c6\u5267",
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+              year: 2017,
+              state: "candidate",
+              poster: {{ url: "", media_status: "missing" }},
+              backdrop: {{ url: "", media_status: "missing" }},
+              stills: [],
+              item: {{
+                genres: ["\u7eaa\u5f55\u7247", "\u5192\u9669"],
+                directors: [],
+                casts: [],
+                summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+                raw: {{}},
+              }},
+              people: [],
+            }};
+            const universe = {{ focus_id: title.item_key, nodes: [], edges: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => path.startsWith("/api/v2/titles/") ? title : universe,
+              api: {{ postV2: async (path) => path.endsWith("/enrich") ? title : {{ state: "failed" }} }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail(title.item_key); await flush();
+            const metadata = root.querySelector(".detail-hero__metadata");
+            const facts = root.querySelector(".detail-facts__grid");
+            if (!metadata?.textContent.includes("\u7eaa\u5f55\u7247\u5267\u96c6") || metadata.textContent.includes("\u7535\u89c6\u5267")) {{
+              throw new Error(`detail hero ignored media badge: ${{metadata?.textContent}}`);
+            }}
+            if (!facts?.textContent.includes("\u7eaa\u5f55\u7247\u5267\u96c6")) {{
+              throw new Error(`detail facts ignored media badge: ${{facts?.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ metadata: metadata.textContent, facts: facts.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("\u7eaa\u5f55\u7247\u5267\u96c6", result["metadata"])
+        self.assertIn("\u7eaa\u5f55\u7247\u5267\u96c6", result["facts"])
+
+    def test_detail_relation_card_prefers_universe_media_badge_without_raw_media_type(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const root = new FakeElement("main");
+            const title = {{
+              item_key: "external:documentary-focus",
+              title: "\u795e\u79d8\u5730\u56fe",
+              media_type: "\u7535\u89c6\u5267",
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+              year: 2017,
+              state: "candidate",
+              poster: {{ url: "/media/focus.webp", media_status: "ready" }},
+              backdrop: {{ url: "", media_status: "missing" }},
+              stills: [],
+              item: {{
+                title: "\u795e\u79d8\u5730\u56fe",
+                media_type: "\u7535\u89c6\u5267",
+                genres: ["\u7eaa\u5f55\u7247", "\u5192\u9669"],
+                directors: ["\u5bfc\u6f14\u7532"],
+                casts: [],
+                summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+                raw: {{}},
+              }},
+              people: [],
+            }};
+            const related = {{
+              id: "external:documentary-related",
+              item_key: "external:documentary-related",
+              title: "\u79d1\u5e7b\u771f\u53f2",
+              media_type: "\u7535\u89c6\u5267",
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+              year: 2014,
+              poster: {{ url: "/media/related.webp", media_status: "ready" }},
+            }};
+            const universe = {{
+              focus_id: title.item_key,
+              nodes: [{{ id: title.item_key, title: title.title }}, related],
+              edges: [{{ source: title.item_key, target: related.id, score: 0.9, reasons: ["\u5171\u540c\u7c7b\u578b\uff1a\u7eaa\u5f55\u7247"] }}],
+            }};
+            const fetchJson = async (path) => {{
+              if (path.startsWith("/api/v2/titles/")) return title;
+              if (path.startsWith("/api/v2/universe")) return universe;
+              return {{ items: [] }};
+            }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson,
+              api: {{ postV2: async () => ({{ state: "failed" }}) }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail(title.item_key); await flush();
+            const works = root.querySelector(".detail-related-works");
+            const metadata = works?.querySelector(".title-card__genres");
+            if (!metadata?.textContent.includes("\u7eaa\u5f55\u7247\u5267\u96c6")) {{
+              throw new Error(`related card ignored universe media badge: ${{metadata?.textContent}}`);
+            }}
+            if (metadata.textContent.includes("\u7535\u89c6\u5267")) {{
+              throw new Error(`related card leaked raw media type beside specific badge: ${{metadata.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ metadata: metadata.textContent }}));
+            '''
+        )
+        metadata = json.loads(output)["metadata"]
+        self.assertIn("\u7eaa\u5f55\u7247\u5267\u96c6", metadata)
+        self.assertNotIn("\u7535\u89c6\u5267", metadata)
+
+    def test_detail_similar_card_prefers_candidate_media_badge_without_raw_media_type(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const root = new FakeElement("main");
+            const title = {{
+              item_key: "external:similar-focus",
+              title: "\u795e\u79d8\u5730\u56fe",
+              media_type: "\u7535\u89c6\u5267",
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+              year: 2017,
+              state: "candidate",
+              poster: {{ url: "/media/similar-focus.webp", media_status: "ready" }},
+              backdrop: {{ url: "", media_status: "missing" }},
+              stills: [],
+              item: {{
+                title: "\u795e\u79d8\u5730\u56fe",
+                media_type: "\u7535\u89c6\u5267",
+                genres: ["\u7eaa\u5f55\u7247", "\u5192\u9669"],
+                directors: ["\u5bfc\u6f14\u7532"],
+                casts: [],
+                summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+                raw: {{}},
+              }},
+              people: [],
+            }};
+            const candidate = {{
+              id: "external:similar-documentary",
+              item_key: "external:similar-documentary",
+              title: "\u79d1\u5e7b\u771f\u53f2",
+              media_type: "\u7535\u89c6\u5267",
+              media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+              year: 2014,
+              summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+              poster: {{ url: "/media/similar-documentary.webp", media_status: "ready" }},
+            }};
+            const fetchJson = async (path) => {{
+              if (path.startsWith("/api/v2/titles/")) return title;
+              if (path.startsWith("/api/v2/universe")) return {{ focus_id: title.item_key, nodes: [], edges: [] }};
+              return {{ items: [candidate] }};
+            }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson,
+              api: {{ postV2: async () => ({{ state: "failed" }}) }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail(title.item_key); await flush();
+            const grid = root.querySelector(".detail-similar__grid");
+            const metadata = grid?.querySelector(".title-card__genres");
+            if (!metadata?.textContent.includes("\u7eaa\u5f55\u7247\u5267\u96c6")) {{
+              throw new Error(`similar card ignored candidate media badge: ${{metadata?.textContent}}`);
+            }}
+            if (metadata.textContent.includes("\u7535\u89c6\u5267")) {{
+              throw new Error(`similar card leaked raw media type beside specific badge: ${{metadata.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ metadata: metadata.textContent }}));
+            '''
+        )
+        metadata = json.loads(output)["metadata"]
+        self.assertIn("\u7eaa\u5f55\u7247\u5267\u96c6", metadata)
+        self.assertNotIn("\u7535\u89c6\u5267", metadata)
+
+    def test_detail_hero_prefers_verified_display_title_over_original_title(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const root = new FakeElement("main");
+            const title = {{
+              item_key: "external:localized-detail",
+              title: "The Real History of Science Fiction",
+              display_title: "\u79d1\u5e7b\u771f\u53f2",
+              original_title: "The Real History of Science Fiction",
+              title_localization_source: "douban",
+              media_type: "\u7535\u89c6\u5267", year: 2014, state: "candidate",
+              poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }}, stills: [],
+              item: {{ genres: ["\u7eaa\u5f55\u7247"], directors: [], casts: [], summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002", raw: {{}} }},
+              people: [],
+            }};
+            const universe = {{ focus_id: title.item_key, nodes: [], edges: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => path.startsWith("/api/v2/titles/") ? title : universe,
+              api: {{ postV2: async (path) => path.endsWith("/enrich") ? title : {{ state: "failed" }} }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail(title.item_key); await flush();
+            const heading = root.querySelector(".detail-hero__title");
+            if (heading?.textContent !== "\u79d1\u5e7b\u771f\u53f2") throw new Error(`detail heading ignored display_title: ${{heading?.textContent}}`);
+            console.log(JSON.stringify({{ heading: heading.textContent }}));
+            '''
+        )
+        self.assertEqual("\u79d1\u5e7b\u771f\u53f2", json.loads(output)["heading"])
+
+    def test_detail_does_not_label_generic_popularity_as_douban_votes(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f"""
+            {prelude}
+            const root = new FakeElement("main");
+            const title = {{
+              item_key: "external:tvmaze-61855", title: "Mystery Incorporated", media_type: "\u7535\u89c6\u5267", year: 2022, state: "candidate",
+              poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }}, stills: [],
+              item: {{
+                douban_rating: null,
+                vote_count: 44,
+                genres: ["\u72af\u7f6a", "\u60ac\u7591"],
+                directors: ["Verified Director"],
+                casts: ["Dade Elza"],
+                summary: "\u8fd9\u662f\u4e00\u6bb5\u5df2\u7ecf\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002",
+                raw: {{ ratings: {{ imdb: 7.4 }}, rating_votes: {{ imdb: 684 }} }},
+              }},
+              people: [],
+            }};
+            const universe = {{ focus_id: title.item_key, nodes: [{{ id: title.item_key, title: title.title }}], edges: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => path.startsWith("/api/v2/titles/") ? title : universe,
+              api: {{
+                postV2: async () => ({{ state: "failed" }}),
+                getV2: async () => ({{ state: "failed" }}),
+              }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail(title.item_key); await flush();
+            const copy = root.textContent;
+            if (copy.includes("44 \u4eba\u53c2\u4e0e\u8c46\u74e3\u8bc4\u5206") || copy.includes("\u8c46\u74e3\u8bc4\u5206\u4eba\u6570\u5c1a\u672a\u540c\u6b65")) {{
+              throw new Error(`generic popularity was mislabeled as Douban evidence: ${{copy}}`);
+            }}
+            if (!copy.includes("IMDb 7.4") || !copy.includes("684 \u6761\u516c\u5f00\u8bc4\u5206\u6216\u70ed\u5ea6\u8bc1\u636e")) {{
+              throw new Error(`source-specific IMDb evidence was omitted: ${{copy}}`);
+            }}
+            if (!copy.includes("\u672a\u53d1\u73b0\u53ef\u6838\u5bf9\u7684\u8c46\u74e3\u8bc4\u5206\u8bb0\u5f55")) {{
+              throw new Error(`missing Douban evidence was not explained honestly: ${{copy}}`);
+            }}
+            console.log(JSON.stringify({{ copy }}));
+            """
+        )
+        result = json.loads(output)
+        self.assertIn("IMDb 7.4", result["copy"])
+        self.assertNotIn("44 \u4eba\u53c2\u4e0e\u8c46\u74e3\u8bc4\u5206", result["copy"])
+
+    def test_detail_keeps_verified_poster_out_of_still_gallery(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const root = new FakeElement("main");
+            const sharedPoster = "/media/verified-poster.webp";
+            const title = {{
+              item_key: "external:tvmaze-poster-only", title: "\u53ea\u6709\u6d77\u62a5\u7684\u4f5c\u54c1", media_type: "\u7535\u89c6\u5267", year: 2013, state: "candidate",
+              poster: {{ url: sharedPoster, media_status: "ready" }},
+              backdrop: {{ url: sharedPoster, media_status: "ready" }},
+              stills: [],
+              item: {{
+                genres: ["\u60ac\u7591"], directors: ["\u5bfc\u6f14\u7532"], casts: [],
+                summary: "\u8fd9\u662f\u4e00\u6bb5\u5df2\u7ecf\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002", raw: {{ ratings: {{ imdb: 7.8 }} }},
+              }},
+              people: [],
+            }};
+            const universe = {{ focus_id: title.item_key, nodes: [{{ id: title.item_key, title: title.title }}], edges: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              detailGet: async () => title,
+              fetchJson: async () => universe,
+              api: {{
+                postV2: async () => ({{ state: "failed" }}),
+                getV2: async () => ({{ state: "failed" }}),
+              }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail(title.item_key); await flush();
+            const nodes = collectNodes(root);
+            const gallery = nodes.find((node) => node.className.split(/\\s+/).includes("media-gallery"));
+            const caption = nodes.find((node) => node.className.split(/\\s+/).includes("media-gallery__caption"));
+            const visuals = nodes.find((node) => node.className.split(/\\s+/).includes("detail-visuals"));
+            const heroFallback = nodes.find((node) => node.className.split(/\\s+/).includes("detail-backdrop--poster-fallback"));
+            const emptyCopy = "\u6682\u672a\u627e\u5230\u53ef\u6838\u5bf9\u7684\u771f\u5b9e\u5267\u7167";
+            if (gallery || caption) {{
+              throw new Error("poster-only title still rendered a gallery");
+            }}
+            if (heroFallback) throw new Error("poster was still reused as the hero backdrop");
+            if (!visuals?.textContent.includes(emptyCopy)) {{
+              throw new Error(`verified-still empty state was not explained: ${{visuals?.textContent}}`);
+            }}
+            console.log(JSON.stringify({{ hasGallery: Boolean(gallery), hasHeroFallback: Boolean(heroFallback), visuals: visuals.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertFalse(result["hasGallery"])
+        self.assertFalse(result["hasHeroFallback"])
+
+    def test_detail_hero_prefers_a_verified_still_and_surfaces_score_and_genres_immediately(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const root = new FakeElement("main");
+            const mediaJobs = [];
+            const title = {{
+              item_key: "douban:900", title: "完整档案", media_type: "电影", year: 2025, state: "candidate",
+              poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+              backdrop: {{ url: "/media/backdrop.webp", media_status: "ready" }},
+              stills: [{{ id: "still-0", url: "/api/image-proxy?url=https%3A%2F%2Fexample.test%2Fscene.jpg", media_status: "ready" }}],
+              item: {{
+                douban_rating: 8.8,
+                genres: ["剧情", "悬疑"],
+                directors: ["导演甲"],
+                casts: ["演员乙"],
+                summary: "一段完整、可信并且第一时间可见的剧情简介。",
+                raw: {{ ratings: {{ imdb: 8.3 }} }},
+              }},
+              people: [],
+            }};
+            const universe = {{ focus_id: "douban:900", nodes: [{{ id: "douban:900", title: "完整档案" }}], edges: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => path.startsWith("/api/v2/titles/") ? title : universe,
+              api: {{
+                postV2: async (path, payload) => {{ mediaJobs.push({{ path, payload }}); return {{ state: "failed" }}; }},
+                getV2: async () => ({{ state: "failed" }}),
+              }},
+              getDetailReturnPath: () => "/library",
+            }});
+            await renderTitleDetail("douban:900"); await flush();
+            const nodes = collectNodes(root);
+            const hero = nodes.find((node) => node.className.split(/\\s+/).includes("detail-hero"));
+            const heroNodes = collectNodes(hero);
+            const backdrop = heroNodes.find((node) => node.className.split(/\\s+/).includes("detail-backdrop"));
+            const still = heroNodes.find((node) => node.className === "detail-backdrop__still");
+            const quickFacts = heroNodes.find((node) => node.className === "detail-hero__quickfacts");
+            const heroText = hero.textContent;
+            if (!backdrop.className.includes("detail-backdrop--still") || !still?.src.includes("/api/image-proxy?url=")) throw new Error("verified still was not promoted into the hero backdrop");
+            if (!quickFacts || !heroText.includes("豆瓣 8.8") || !heroText.includes("IMDb 8.3") || !heroText.includes("剧情") || !heroText.includes("悬疑")) throw new Error(`decision metadata was not visible in the hero: ${{heroText}}`);
+            if (mediaJobs.some((job) => job.payload?.kind === "backdrop")) throw new Error("a redundant backdrop job was queued even though a verified still exists");
+            console.log(JSON.stringify({{ heroText, still: still.src, mediaJobs }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("豆瓣 8.8", result["heroText"])
+        self.assertIn("/api/image-proxy?url=", result["still"])
 
     def test_people_prefetch_is_bounded_exact_deduplicated_and_uses_post_v2(self):
         output = run_node_module(
@@ -2337,10 +4319,16 @@ class UiV3ContractTests(unittest.TestCase):
             const missing = {{ url: "", media_status: "missing" }};
             const title = {{
               title: "预取边界测试",
-              item: {{ directors: ["导演甲", "共享身份"], casts: ["演员1", "演员2", "演员3", "演员4", "演员5", "演员6", "演员7", "演员8", "演员9"] }},
+              item: {{
+                title: "预取边界测试",
+                directors: ["导演甲", "共享身份", "导演丙"],
+                casts: ["演员1", "演员2", "演员3", "演员4", "演员5", "演员6", "演员7", "演员8", "演员9"],
+                raw: {{ original_title: "Prefetch Boundary", aliases: ["别名甲", "别名乙", "预取边界测试"] }},
+              }},
               people: [
-                {{ id: "p-director", name: "导演甲", role: "director", portrait: missing }},
+                {{ id: "p-director", name: "导演甲", role: "director", portrait: missing, metadata: {{ known_works: ["人物代表作", "别名甲"] }} }},
                 {{ id: "p-shared", name: "共享身份", role: "director", portrait: missing }},
+                {{ id: "p-director-3", name: "导演丙", role: "director", portrait: missing }},
                 {{ id: "p-actor-1", name: "演员1", role: "cast", portrait: missing }},
                 {{ id: "p-shared", name: "演员2", role: "cast", portrait: missing }},
                 {{ id: "p-ready", name: "演员3", role: "cast", portrait: {{ url: "/media/ready.png", media_status: "ready" }} }},
@@ -2358,19 +4346,130 @@ class UiV3ContractTests(unittest.TestCase):
             const ids = calls.map((call) => call.payload.identity_key);
             if (new Set(ids).size !== ids.length) throw new Error("duplicate person id was enqueued");
             if (calls.some((call) => call.path !== "/api/v2/media/jobs")) throw new Error("portrait job bypassed the V2 media endpoint");
-            if (calls.some((call) => call.payload.person_name === "演员9" || call.payload.identity_key === "p-ready")) throw new Error("prefetch exceeded first eight cast or included ready portrait");
-            if (calls.some((call) => call.payload.work_context[0] !== "预取边界测试" || call.payload.priority !== 0)) throw new Error("portrait context payload was incomplete");
+            if (calls.some((call) => call.payload.person_name === "演员9" || call.payload.identity_key === "p-ready" || call.payload.identity_key === "p-director-3")) throw new Error("prefetch exceeded visible cast/crew bounds or included ready portrait");
+            const directorContext = calls.find((call) => call.payload.identity_key === "p-director")?.payload.work_context;
+            const expectedContext = ["预取边界测试", "Prefetch Boundary", "别名甲", "别名乙", "人物代表作"];
+            if (JSON.stringify(directorContext) !== JSON.stringify(expectedContext)) throw new Error(`portrait context payload was incomplete: ${{JSON.stringify(directorContext)}}`);
+            const priorities = Object.fromEntries(calls.map((call) => [call.payload.identity_key, call.payload.priority]));
+            if (priorities["p-director"] !== 120 || priorities["p-shared"] !== 120) throw new Error(`directors were not promoted ahead of cast: ${{JSON.stringify(priorities)}}`);
+            if (priorities["p-actor-1"] !== 80 || priorities["p-actor-4"] !== 80 || priorities["p-actor-6"] !== 80) throw new Error(`first six cast were not promoted: ${{JSON.stringify(priorities)}}`);
+            if (priorities["p-actor-7"] !== 40 || priorities["p-actor-8"] !== 40) throw new Error(`secondary cast priority was not bounded: ${{JSON.stringify(priorities)}}`);
             calls.forEach((call, index) => call.pending.resolve({{ job_id: `job-${{index}}`, state: "queued" }}));
             await Promise.all([first, duplicate]);
             await prefetchVisiblePeople(title);
             if (calls.length !== 8) throw new Error("completed prefetch was enqueued again");
-            console.log(JSON.stringify({{ count: calls.length, ids, names: calls.map((call) => call.payload.person_name) }}));
+            console.log(JSON.stringify({{ count: calls.length, ids, priorities, names: calls.map((call) => call.payload.person_name) }}));
             '''
         )
         result = json.loads(output)
         self.assertEqual(8, result["count"])
         self.assertNotIn("p-ready", result["ids"])
         self.assertNotIn("演员9", result["names"])
+        self.assertEqual(120, result["priorities"]["p-director"])
+
+    def test_generated_detail_placeholder_and_generic_media_genre_still_trigger_metadata_enrichment(self):
+        output = run_node_module(
+            f'''
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const calls = [];
+            const {{ configureDetail, enrichThinTitleMetadata }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              api: {{ async postV2(path, payload) {{ calls.push({{ path, payload }}); return {{ item_key: "douban:36474027" }}; }} }},
+            }});
+            const title = {{
+              item_key: "douban:36474027", title: "镖人：风起大漠", media_type: "电影",
+              item: {{
+                summary: "正在补齐这部电影的剧情简介；目前已确认类型为电影。",
+                genres: ["电影"], directors: ["袁和平"], casts: ["吴京"],
+              }},
+            }};
+            await enrichThinTitleMetadata(title);
+            if (calls.length !== 1 || calls[0].path !== "/api/v2/titles/douban:36474027/enrich") throw new Error(`generated placeholder blocked enrichment: ${{JSON.stringify(calls)}}`);
+            console.log(JSON.stringify(calls));
+            '''
+        )
+        calls = json.loads(output)
+        self.assertEqual(1, len(calls))
+
+    def test_degraded_portrait_attempt_can_be_retried_in_the_same_detail_session(self):
+        output = run_node_module(
+            f'''
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const calls = [];
+            const {{ configureDetail, prefetchVisiblePeople }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              api: {{ async postV2(path, payload) {{ calls.push({{ path, payload }}); return {{ job_id: `job-${{calls.length}}`, state: "degraded" }}; }} }},
+            }});
+            const title = {{
+              item_key: "douban:retry", title: "肖像重试",
+              item: {{ directors: ["导演甲"], casts: [] }},
+              people: [{{ id: "person-retry", name: "导演甲", role: "director", portrait: {{ url: "", media_status: "missing" }} }}],
+            }};
+            await prefetchVisiblePeople(title);
+            await prefetchVisiblePeople(title);
+            if (calls.length !== 2) throw new Error(`degraded portrait stayed permanently cached: ${{calls.length}}`);
+            console.log(JSON.stringify(calls));
+            '''
+        )
+        calls = json.loads(output)
+        self.assertEqual(2, len(calls))
+
+    def test_people_refresh_preserves_existing_ready_portrait_image_nodes(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            globalThis.document.createDocumentFragment = () => new FakeElement("fragment");
+            const root = new FakeElement("main");
+            const timers = [];
+            let titleReads = 0;
+            const readyPortrait = {{ url: "/media/director-ready.webp", media_status: "ready" }};
+            const missingPortrait = {{ url: "", media_status: "missing" }};
+            const titleMissing = {{
+              item_key: "douban:portrait-stable", title: "人物节点稳定测试", year: 2024, media_type: "电影", state: "watched",
+              poster: {{ url: "/media/title-ready.webp", media_status: "ready" }}, backdrop: {{ url: "", media_status: "missing" }},
+              item: {{ summary: "完整简介。", genres: ["剧情"], directors: ["导演甲"], casts: ["演员乙"] }},
+              people: [
+                {{ id: "person-director-stable", name: "导演甲", role: "director", portrait: readyPortrait, media_status: "ready" }},
+                {{ id: "person-cast-new", name: "演员乙", role: "cast", portrait: missingPortrait, media_status: "missing" }},
+              ],
+            }};
+            const titleReady = {{
+              ...titleMissing,
+              people: [
+                titleMissing.people[0],
+                {{ id: "person-cast-new", name: "演员乙", role: "cast", portrait: {{ url: "/media/cast-ready.webp", media_status: "ready" }}, media_status: "ready" }},
+              ],
+            }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              async fetchJson(path) {{
+                if (path.startsWith("/api/v2/titles/")) {{ titleReads += 1; return titleReads === 1 ? titleMissing : titleReady; }}
+                return {{ focus_id: "douban:portrait-stable", nodes: [], edges: [] }};
+              }},
+              api: {{
+                async postV2() {{ return {{ job_id: "portrait-job-stable", state: "queued" }}; }},
+                async getV2() {{ return {{ id: "portrait-job-stable", state: "ready" }}; }},
+              }},
+              setTimer(callback) {{ timers.push(callback); return timers.length; }}, clearTimer() {{}}, mediaPollInterval: 1,
+            }});
+            await renderTitleDetail("douban:portrait-stable"); await flush();
+            const cardFor = (name) => collectNodes(root).find((node) => node.classList?.contains("person-card") && node.textContent.includes(name));
+            const imageFor = (card) => collectNodes(card).find((node) => node.tagName === "IMG");
+            const directorCard = cardFor("导演甲");
+            const directorImage = imageFor(directorCard);
+            if (!directorCard || !directorImage || timers.length < 1) throw new Error("portrait test did not reach the pending refresh state");
+            await timers.shift()(); await flush();
+            if (cardFor("导演甲") !== directorCard || imageFor(cardFor("导演甲")) !== directorImage) {{
+              throw new Error("a different person completing reloaded an already ready director portrait");
+            }}
+            console.log(JSON.stringify({{ sameCard: true, sameImage: true, titleReads }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["sameCard"])
+        self.assertTrue(result["sameImage"])
 
     def test_detail_people_jobs_poll_refresh_title_and_patch_people_section(self):
         output = run_node_module(
@@ -2393,7 +4492,7 @@ class UiV3ContractTests(unittest.TestCase):
             const timers = [];
             const posts = [];
             const gets = [];
-            const titleMissing = {{ item_key: "douban:42", title: "People Poll", media_type: "movie", year: 2024, poster: {{ url: "", media_status: "missing" }}, backdrop: {{ url: "", media_status: "missing" }}, item: {{ directors: ["Director A"], casts: ["Actor B"] }}, people: [{{ id: "person-director", role: "director", name: "Director A", portrait: {{ url: "", media_status: "missing" }} }}, {{ id: "person-cast", role: "cast", name: "Actor B", portrait: {{ url: "", media_status: "missing" }} }}] }};
+            const titleMissing = {{ item_key: "douban:42", title: "People Poll", media_type: "movie", year: 2024, poster: {{ url: "/media/poster.webp", media_status: "ready" }}, backdrop: {{ url: "", media_status: "missing" }}, item: {{ summary: "Complete synopsis", genres: ["Drama"], directors: ["Director A"], casts: ["Actor B"] }}, people: [{{ id: "person-director", role: "director", name: "Director A", portrait: {{ url: "", media_status: "missing" }} }}, {{ id: "person-cast", role: "cast", name: "Actor B", portrait: {{ url: "", media_status: "missing" }} }}] }};
             const titleReady = {{ ...titleMissing, people: [{{ id: "person-director", role: "director", name: "Director A", portrait: {{ url: "/media/director.webp", media_status: "ready" }} }}, {{ id: "person-cast", role: "cast", name: "Actor B", portrait: {{ url: "", media_status: "degraded" }} }}] }};
             const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
             configureDetail({{
@@ -2405,22 +4504,36 @@ class UiV3ContractTests(unittest.TestCase):
             await renderTitleDetail("douban:42");
             const page = root.firstElementChild;
             const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
-            if (posts.length !== 2) throw new Error(`expected two portrait jobs, got ${{posts.length}}`);
-            if (!collect(page).map((node) => node.textContent).join(" ").includes("in-progress")) throw new Error("portrait controls did not enter pending state");
+            const portraitPosts = posts.filter((post) => post.payload.kind === "portrait");
+            if (portraitPosts.length !== 2) throw new Error(`expected two portrait jobs, got ${{posts.length}} total / ${{portraitPosts.length}} portrait`);
+            if (!collect(page).map((node) => node.textContent).join(" ").includes("正在匹配 2 位演职人员肖像")) throw new Error("portrait controls did not enter pending state");
+            const pendingJobs = collect(page).filter((node) => node.className === "person-card__job");
+            const pendingText = pendingJobs.map((node) => node.textContent).join(" ");
+            const pendingStates = pendingJobs.map((node) => node.dataset.state).sort();
+            if (pendingJobs.length !== 2 || !pendingText.includes("正在匹配真实肖像")) throw new Error(`pending portrait status was not user-facing Chinese: ${{pendingText}}`);
+            if (["in-progress", "success", "failed"].some((state) => pendingText.includes(state))) throw new Error(`pending portrait status leaked internal enum: ${{pendingText}}`);
+            if (pendingStates.join(",") !== "in-progress,in-progress") throw new Error(`pending portrait data-state was lost: ${{pendingStates}}`);
             for (let index = 0; index < 4; index += 1) await Promise.resolve();
             await timers.shift()();
             await timers.shift()();
             for (let index = 0; index < 8; index += 1) await Promise.resolve();
             const titleReads = gets.filter((path) => path === "/api/v2/titles/douban:42").length;
-            const text = collect(page).map((node) => node.textContent).join(" ");
+            const nodes = collect(page);
+            const text = nodes.map((node) => node.textContent).join(" ");
+            const terminalJobs = nodes.filter((node) => node.className === "person-card__job");
+            const terminalText = terminalJobs.map((node) => node.textContent).join(" ");
+            const terminalStates = terminalJobs.map((node) => node.dataset.state).sort();
             if (titleReads < 2) throw new Error(`terminal portrait jobs did not refresh title: ${{gets}}`);
             if (root.firstElementChild !== page) throw new Error("detail refresh remounted the title page");
-            if (!text.includes("success") || !text.includes("failed") || !text.includes("本地肖像已就绪")) throw new Error(`terminal portrait state was not patched into people rail: ${{text}}`);
-            console.log(JSON.stringify({{ posts, gets, samePage: root.firstElementChild === page, text }}));
+            if (!terminalText.includes("真实肖像已补齐") || !terminalText.includes("暂未找到可核对的肖像")) throw new Error(`terminal portrait state was not patched into people rail: ${{terminalText}}`);
+            if (["in-progress", "success", "failed"].some((state) => terminalText.includes(state))) throw new Error(`terminal portrait status leaked internal enum: ${{terminalText}}`);
+            if (terminalStates.join(",") !== "failed,success") throw new Error(`terminal portrait data-state was lost: ${{terminalStates}}`);
+            if (!text.includes("肖像暂未命中") || !text.includes("本地肖像已就绪")) throw new Error(`portrait media availability was not preserved: ${{text}}`);
+            console.log(JSON.stringify({{ posts, gets, samePage: root.firstElementChild === page, text, pendingStates, terminalStates }}));
             '''
         )
         result = json.loads(output)
-        self.assertEqual(2, len(result["posts"]))
+        self.assertEqual(2, len([post for post in result["posts"] if post["payload"]["kind"] == "portrait"]))
         self.assertTrue(result["samePage"])
 
     def test_person_sheet_is_contextual_closable_and_restores_trigger_focus(self):
@@ -3488,7 +5601,7 @@ class UiV3ContractTests(unittest.TestCase):
             configureDetail({{ root, async fetchJson(path) {{ return path.startsWith("/api/v2/titles/") ? title : {{ focus_id: "douban:42", nodes: [], edges: [] }}; }}, onExploreUniverse(id) {{ routed.push(id); }} }});
             await renderTitleDetail("douban:42");
             const collect = (node) => [node, ...node.children.flatMap((child) => collect(child))];
-            const action = collect(root).find((node) => node.textContent === "在口味宇宙展开");
+            const action = collect(root).find((node) => node.textContent === "在探索实验室展开");
             if (!action || typeof action.onclick !== "function") throw new Error("detail universe action missing");
             action.onclick();
             if (routed[0] !== "douban:42" || routed[0] === title.title) throw new Error("detail routed with guessed title instead of stable id");
@@ -3542,7 +5655,7 @@ class UiV3ContractTests(unittest.TestCase):
             snapshot = controller.snapshot();
             if (snapshot.state !== "wish" || snapshot.itemKeys.some((key) => key.includes("STALE"))) throw new Error("stale cursor response overwrote the new filter");
 
-            viewport.scrollTop = 1500; viewport.dispatchEvent({{ type: "scroll" }});
+            viewport.scrollTop = 2400; viewport.dispatchEvent({{ type: "scroll" }});
             const frame = [...rafs.entries()][0]; if (!frame) throw new Error("scroll did not schedule virtualization RAF"); rafs.delete(frame[0]); frame[1]();
             snapshot = controller.snapshot();
             if (snapshot.topSpacer <= 0 || snapshot.bottomSpacer < 0) throw new Error("scrolled virtual spacers were not updated");
@@ -3559,17 +5672,970 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertEqual("wish", result["state"])
         self.assertGreater(result["topSpacer"], 0)
 
+    def test_library_scroll_preserves_ready_card_and_image_nodes_in_same_and_overlapping_windows(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const rafs = new Map(); let rafId = 0;
+            const requestFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            const cancelFrame = (id) => rafs.delete(id);
+            const items = Array.from({{ length: 80 }}, (_value, index) => ({{
+              item_key: `douban:S${{index}}`, title: `Stable ${{index}}`, state: "watched", year: 2000 + index,
+              poster: {{ url: `/media/stable-${{index}}.webp`, media_status: "ready" }},
+              item: {{ genres: ["剧情"], summary: `Stable summary ${{index}}` }},
+            }}));
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root,
+              fetchJson: async () => ({{ counts: {{ watched: 80, all: 80 }}, items, next_cursor: null }}),
+              createResizeObserver: () => null,
+              windowTarget: null,
+              requestFrame,
+              cancelFrame,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const viewport = root.querySelector('[data-role="library-window"]');
+            const cardFor = (key) => collectNodes(root).find((node) => node.classList?.contains("library-card") && node.firstElementChild?.getAttribute("href") === `/title/${{encodeURIComponent(key)}}`);
+            const imageFor = (card) => collectNodes(card).find((node) => node.tagName === "IMG");
+
+            const firstCard = cardFor("douban:S0");
+            const firstImage = imageFor(firstCard);
+            viewport.scrollTop = 60; viewport.dispatchEvent({{ type: "scroll" }});
+            let frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1](); await flush();
+            if (cardFor("douban:S0") !== firstCard || imageFor(cardFor("douban:S0")) !== firstImage) {{
+              throw new Error("same virtual window remounted an already decoded card/image");
+            }}
+
+            const overlapCard = cardFor("douban:S8");
+            const overlapImage = imageFor(overlapCard);
+            viewport.scrollTop = 750; viewport.dispatchEvent({{ type: "scroll" }});
+            frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1](); await flush();
+            if (cardFor("douban:S8") !== overlapCard || imageFor(cardFor("douban:S8")) !== overlapImage) {{
+              throw new Error("overlapping virtual rows remounted an already decoded card/image");
+            }}
+            controller.dispose();
+            console.log(JSON.stringify({{ sameWindowStable: true, overlappingWindowStable: true, snapshot: controller.snapshot() }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["sameWindowStable"])
+        self.assertTrue(result["overlappingWindowStable"])
+
+    def test_library_restores_and_reports_its_internal_scroll_position(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const rafs = new Map(); let rafId = 0; const reported = [];
+            const requestFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            const items = Array.from({{ length: 80 }}, (_value, index) => ({{ item_key: `douban:P${{index}}`, title: `Position ${{index}}`, poster: {{ url: `/media/p-${{index}}.webp`, media_status: "ready" }} }}));
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root,
+              fetchJson: async () => ({{ counts: {{ watched: 80 }}, items, next_cursor: null }}),
+              createResizeObserver: () => null, windowTarget: null, requestFrame,
+              cancelFrame(id) {{ rafs.delete(id); }},
+              onScrollChange(value) {{ reported.push(value); }},
+            }});
+            await controller.mount({{ state: "watched", scrollTop: 750 }}); await flush();
+            const restored = controller.snapshot();
+            if (restored.scrollTop !== 750 || restored.anchorItemKey !== "douban:P2") throw new Error(`internal scroll was not restored: ${{JSON.stringify(restored)}}`);
+            const viewport = root.querySelector('[data-role="library-window"]');
+            viewport.scrollTop = 900; viewport.dispatchEvent({{ type: "scroll" }});
+            const frame = [...rafs.entries()][0]; if (!frame) throw new Error("scroll change did not schedule one frame"); rafs.delete(frame[0]); frame[1]();
+            if (reported.at(-1) !== 900) throw new Error(`internal scroll was not reported: ${{JSON.stringify(reported)}}`);
+            console.log(JSON.stringify({{ restored, reported }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(750, result["restored"]["scrollTop"])
+        self.assertEqual(900, result["reported"][-1])
+
+    def test_library_suspend_aborts_incremental_fetch_and_resume_restores_exact_window(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const requests = [];
+            const observers = [];
+            const rafs = new Map(); let rafId = 0;
+            class FakeObserver {{
+              constructor(callback) {{ this.callback = callback; this.disconnected = false; observers.push(this); }}
+              observe(target) {{ this.target = target; }}
+              disconnect() {{ this.disconnected = true; }}
+            }}
+            const fetchJson = (path, options = {{}}) => new Promise((resolve, reject) => requests.push({{ path, options, resolve, reject }}));
+            const requestFrame = (callback) => {{ const id = ++rafId; rafs.set(id, callback); return id; }};
+            const items = Array.from({{ length: 24 }}, (_value, index) => ({{
+              item_key: `douban:S${{index}}`, title: `Suspend ${{index}}`,
+              poster: {{ url: `/media/suspend-${{index}}.webp`, media_status: "ready" }},
+            }}));
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson, createObserver: (callback) => new FakeObserver(callback),
+              createResizeObserver: () => null, windowTarget: null,
+              requestFrame, cancelFrame(id) {{ rafs.delete(id); }},
+            }});
+            const mounted = controller.mount({{ state: "candidate" }}); await flush();
+            requests[0].resolve({{ counts: {{ candidate: 48 }}, items, next_cursor: "page-2" }});
+            await mounted; await flush();
+            const viewport = root.querySelector('[data-role="library-window"]');
+            viewport.scrollTop = 750; viewport.dispatchEvent({{ type: "scroll" }});
+            for (const [id, callback] of [...rafs]) {{ rafs.delete(id); callback(); }}
+
+            observers[0].callback([{{ isIntersecting: true }}]); await flush();
+            if (requests.length !== 2) throw new Error("incremental page did not start before suspension");
+            controller.suspend(); await flush();
+            if (!requests[1].options.signal.aborted || !observers[0].disconnected) throw new Error("suspend did not abort fetch and observer");
+            viewport.scrollTop = 0;
+            controller.resume({{ scrollTop: 750 }});
+            for (const [id, callback] of [...rafs]) {{ rafs.delete(id); callback(); }}
+            const resumed = controller.snapshot();
+            if (resumed.scrollTop !== 750 || resumed.itemCount !== 24 || resumed.suspended) throw new Error(`resume lost the exact window: ${{JSON.stringify(resumed)}}`);
+            if (observers.length !== 2 || observers[1].disconnected || requests.length !== 2) throw new Error("resume leaked or eagerly refetched the next page");
+            controller.dispose();
+            console.log(JSON.stringify({{ resumed, observers: observers.length, requests: requests.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(750, result["resumed"]["scrollTop"])
+        self.assertEqual(24, result["resumed"]["itemCount"])
+        self.assertEqual(2, result["requests"])
+
+    def test_library_loads_enough_pages_before_restoring_a_deep_internal_position(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            let reads = 0;
+            const allItems = Array.from({{ length: 120 }}, (_value, index) => ({{
+              item_key: `douban:D${{index}}`, title: `Deep ${{index}}`,
+              poster: {{ url: `/media/deep-${{index}}.webp`, media_status: "ready" }},
+            }}));
+            const fetchJson = async (path) => {{
+              reads += 1;
+              const match = path.match(/[?&]cursor=([^&]+)/);
+              const page = match ? Number(decodeURIComponent(match[1]).slice(1)) : 0;
+              const start = page * 24;
+              const next = start + 24 < allItems.length ? `p${{page + 1}}` : null;
+              return {{ counts: {{ watched: 120 }}, items: allItems.slice(start, start + 24), next_cursor: next }};
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson, createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched", scrollTop: 5000 }}); await flush();
+            const snapshot = controller.snapshot();
+            if (reads !== 2 || snapshot.itemCount !== 48 || snapshot.scrollTop !== 5000) throw new Error(`deep restore did not load enough rows for the readable layout: ${{JSON.stringify({{ reads, snapshot }})}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ reads, snapshot }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["reads"])
+        self.assertEqual(48, result["snapshot"]["itemCount"])
+        self.assertEqual(5000, result["snapshot"]["scrollTop"])
+
+    def test_library_renders_real_counts_story_metadata_and_queues_visible_missing_posters(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const mediaJobs = [];
+            const payload = {{
+              counts: {{ all: 280, watched: 244, wish: 36, candidate: 40 }}, next_cursor: null,
+              items: [{{
+                item_key: "douban:42", title: "中文片名", state: "watched", year: 2024, media_type: "电影",
+                poster: {{ url: "", media_status: "missing" }},
+                item: {{ douban_rating: 8.8, my_rating: 5, genres: ["剧情", "悬疑"], summary: "一段足以让人决定是否观看的剧情简介。" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root,
+              fetchJson: async () => payload,
+              postJson: async (path, body) => {{ mediaJobs.push({{ path, body }}); return {{ id: "poster-job", state: "queued" }}; }},
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const text = root.textContent;
+            if (!["244", "36", "中文片名", "豆瓣 8.8", "剧情 / 悬疑", "一段足以让人决定是否观看的剧情简介。"].every((part) => text.includes(part))) throw new Error(`library stayed metadata-thin: ${{text}}`);
+            const posterJobs = mediaJobs.filter((job) => job.path === "/api/v2/media/jobs");
+            if (posterJobs.length !== 1 || posterJobs[0].body.kind !== "poster" || posterJobs[0].body.identity_key !== "douban:42") throw new Error(`visible missing poster was not queued once: ${{JSON.stringify(mediaJobs)}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ text, mediaJobs }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, len([job for job in result["mediaJobs"] if job["path"] == "/api/v2/media/jobs"]))
+
+    def test_library_card_prefers_media_badge_label_over_raw_media_type(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const payload = {{
+              counts: {{ all: 1, watched: 0, wish: 1, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "external:documentary-library",
+                title: "Mystery Map",
+                display_title: "\u795e\u79d8\u5730\u56fe",
+                state: "wish",
+                year: 2017,
+                media_type: "\u7535\u89c6\u5267",
+                media_badge: {{ label: "\u7eaa\u5f55\u7247\u5267\u96c6", icon: "tv", tone: "cyan" }},
+                poster: {{ url: "", media_status: "missing" }},
+                stills: [],
+                item: {{ genres: ["\u7eaa\u5f55\u7247", "\u5192\u9669"], summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "wish" }}); await flush();
+            const metadata = root.querySelector(".library-card__meta");
+            if (metadata?.textContent !== "\u7eaa\u5f55\u7247\u5267\u96c6 \u00b7 2017") {{
+              throw new Error(`library ignored media badge: ${{metadata?.textContent}}`);
+            }}
+            controller.dispose();
+            console.log(JSON.stringify({{ metadata: metadata.textContent }}));
+            '''
+        )
+        self.assertEqual("\u7eaa\u5f55\u7247\u5267\u96c6 \u00b7 2017", json.loads(output)["metadata"])
+
+    def test_library_card_prefers_verified_display_title_over_original_title(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "external:localized-library",
+                title: "Mystery Map",
+                display_title: "\u795e\u79d8\u5730\u56fe",
+                original_title: "Mystery Map",
+                title_localization_source: "douban",
+                state: "watched", year: 2017, media_type: "\u7535\u89c6\u5267",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }}, stills: [],
+                item: {{ genres: ["\u7eaa\u5f55\u7247"], summary: "\u5df2\u6838\u5bf9\u7684\u4e2d\u6587\u7b80\u4ecb\u3002" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const heading = root.querySelector(".library-card__title");
+            if (heading?.textContent !== "\u795e\u79d8\u5730\u56fe") throw new Error(`library heading ignored display_title: ${{heading?.textContent}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ heading: heading.textContent }}));
+            '''
+        )
+        self.assertEqual("\u795e\u79d8\u5730\u56fe", json.loads(output)["heading"])
+
+    def test_library_renders_verified_still_preview_without_expanding_the_card_contract(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:stills", title: "有剧照的作品", state: "watched", year: 2024, media_type: "电视剧",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: [
+                  {{ id: "still-1", url: "/api/image-proxy?url=one", media_status: "ready" }},
+                  {{ id: "still-2", url: "/api/image-proxy?url=two", media_status: "ready" }},
+                ],
+                item: {{ douban_rating: 8.9, genres: ["剧情"], summary: "有剧照预览的简介。" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const preview = root.querySelector(".library-card__visuals");
+            const images = preview?.querySelectorAll?.("img") || [];
+            if (!preview || images.length !== 2 || !root.textContent.includes("剧照 · 2")) throw new Error(`library still preview missing: ${{root.textContent}}`);
+            if ([...images].some((image) => !image.src.includes("/api/image-proxy?url="))) throw new Error("library used an unverified still URL");
+            controller.dispose();
+            console.log(JSON.stringify({{ preview: Boolean(preview), imageCount: images.length }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["preview"])
+        self.assertEqual(2, result["imageCount"])
+
+    def test_library_hides_unresolved_stills_behind_designed_loading_and_failure_states(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:still-state", title: "剧照状态测试", state: "watched", year: 2026, media_type: "电影",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: [
+                  {{ url: "/api/image-proxy?url=failed", media_status: "ready" }},
+                  {{ url: "/api/image-proxy?url=loaded", media_status: "ready" }},
+                  {{ url: "/api/image-proxy?url=deferred", media_status: "ready" }},
+                ],
+                item: {{ douban_rating: 8.6, genres: ["剧情"], summary: "用于验证剧照加载状态。" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const frames = root.querySelectorAll(".library-card__still-frame");
+            const images = root.querySelectorAll(".library-card__still");
+            const loading = root.querySelectorAll(".library-card__visual-loading");
+            if (frames.length !== 3 || loading.length !== 3) throw new Error(`every unresolved still needs a designed loading surface: ${{loading.length}}/${{frames.length}}`);
+            if (images.some((image) => image.hidden !== true)) throw new Error("an unresolved img could expose the browser broken-image glyph");
+
+            images[0].dispatchEvent({{ type: "error" }}); await flush();
+            if (frames[0].querySelector("img")) throw new Error("failed still kept the native img element visible");
+            if (!frames[0].querySelector(".library-card__visual-fallback-mark") || !frames[0].textContent.includes("视觉资料暂缺")) throw new Error(`designed failure fallback missing: ${{frames[0].textContent}}`);
+
+            images[1].naturalWidth = 1600; images[1].naturalHeight = 900;
+            images[1].dispatchEvent({{ type: "load" }}); await flush();
+            if (images[1].hidden || images[1].dataset.mediaState !== "ready") throw new Error("loaded still was not revealed as ready");
+            if (frames[1].querySelector(".library-card__visual-loading")) throw new Error("loading surface remained after the still became ready");
+            controller.dispose();
+            console.log(JSON.stringify({{ frames: frames.length, loading: loading.length, fallback: frames[0].textContent, ready: images[1].dataset.mediaState }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("ready", result["ready"])
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.library-card__visual-loading\s*\{[^}]*animation:", re.DOTALL)
+        self.assertIn("@keyframes library-still-shimmer", css)
+
+    def test_library_horizontal_stills_use_rail_rooted_prefetch_and_scroll_loading(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const stillObservers = [];
+            const createStillObserver = (callback, options) => {{
+              const observer = {{
+                callback, options, observed: [], disconnected: false,
+                observe(target) {{ this.observed.push(target); }},
+                disconnect() {{ this.disconnected = true; }},
+              }};
+              stillObservers.push(observer);
+              return observer;
+            }};
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:rail-loading", title: "\u6a2a\u5411\u52a0\u8f7d\u6d4b\u8bd5", state: "watched", year: 2026, media_type: "\u7535\u5f71",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: Array.from({{ length: 5 }}, (_, index) => ({{
+                  id: "still-" + (index + 1), url: "/api/image-proxy?url=still-" + (index + 1), media_status: "ready",
+                }})),
+                item: {{ douban_rating: 8.8, genres: ["\u5267\u60c5"], summary: "\u7528\u4e8e\u9a8c\u8bc1\u6a2a\u5411\u5267\u7167\u6309\u9700\u52a0\u8f7d\u3002", directors: ["\u5bfc\u6f14"], casts: ["\u6f14\u5458"] }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson: async () => payload, createStillObserver,
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const rail = root.querySelector(".library-card__visuals-rail");
+            const frames = root.querySelectorAll(".library-card__still-frame");
+            const images = root.querySelectorAll("img");
+            if (stillObservers.length !== 1 || stillObservers[0].options?.root !== rail) throw new Error("stills were not observed relative to their horizontal rail");
+            if (stillObservers[0].observed.length !== 5) throw new Error("not every still frame was observed: " + stillObservers[0].observed.length);
+            const initialStates = frames.map((frame) => frame.dataset.mediaState);
+            if (initialStates.slice(0, 3).some((state) => state !== "loading") || initialStates.slice(3).some((state) => state !== "deferred")) {{
+              throw new Error("the first three stills were not scheduled ahead of the viewport: " + initialStates.join(","));
+            }}
+            if (!images[0].src || !images[1].src || images.slice(2).some((image) => image.src)) throw new Error("the two-slot background lane did not hold the third prefetched still in queue");
+            images[0].dispatchEvent({{ type: "load" }}); await flush();
+            if (!images[2].src) throw new Error("the third still did not start immediately after the first slot completed");
+            images[1].dispatchEvent({{ type: "load" }}); images[2].dispatchEvent({{ type: "load" }}); await flush();
+            stillObservers[0].callback([{{ isIntersecting: true, target: frames[3] }}]); await flush();
+            if (!images[3].src || !images[4].src) throw new Error("visible still and its forward neighbour were not prefetched");
+            images[3].dispatchEvent({{ type: "load" }}); images[4].dispatchEvent({{ type: "load" }}); await flush();
+            controller.dispose();
+            if (!stillObservers[0].disconnected) throw new Error("still observer was not disconnected with the card");
+            console.log(JSON.stringify({{ observed: stillObservers[0].observed.length, loaded: images.filter((image) => Boolean(image.src)).length, initialStates }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(5, result["observed"])
+        self.assertEqual(5, result["loaded"])
+        self.assertEqual(["loading", "loading", "loading", "deferred", "deferred"], result["initialStates"])
+
+    def test_library_rail_pointer_interaction_warms_the_next_two_stills(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:pointer-warm", title: "\u6307\u9488\u9884\u70ed\u6d4b\u8bd5", state: "watched", year: 2026, media_type: "\u7535\u5f71",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: Array.from({{ length: 6 }}, (_, index) => ({{
+                  id: "still-" + (index + 1), url: "/api/image-proxy?url=pointer-" + (index + 1), media_status: "ready",
+                }})),
+                item: {{ douban_rating: 8.8, genres: ["\u5267\u60c5"], summary: "\u7528\u4e8e\u9a8c\u8bc1\u62d6\u52a8\u524d\u9884\u70ed\u540e\u7eed\u5267\u7167\u3002" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson: async () => payload, createStillObserver: () => null,
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const rail = root.querySelector(".library-card__visuals-rail");
+            const frames = root.querySelectorAll(".library-card__still-frame");
+            const images = root.querySelectorAll("img");
+            images[0].dispatchEvent({{ type: "load" }}); await flush();
+            images[1].dispatchEvent({{ type: "load" }}); images[2].dispatchEvent({{ type: "load" }}); await flush();
+            frames.forEach((frame, index) => {{ frame.offsetLeft = index * 220; frame.offsetWidth = 210; }});
+            rail.clientWidth = 220; rail.scrollWidth = 1320; rail.scrollLeft = 440;
+            rail.dispatchEvent({{ type: "pointerdown", pointerId: 9, button: 0, clientX: 180 }}); await flush();
+            const states = frames.map((frame) => frame.dataset.mediaState);
+            if (!images[3].src || !images[4].src) throw new Error("pointer intent did not warm the next two stills");
+            if (images[5].src || states[5] !== "deferred") throw new Error("pointer warming escaped beyond the next two stills");
+            const loaded = images.map((image) => Boolean(image.src));
+            controller.dispose();
+            console.log(JSON.stringify({{ states, loaded }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("loading", result["states"][3])
+        self.assertEqual("loading", result["states"][4])
+        self.assertEqual("deferred", result["states"][5])
+        self.assertEqual([True, True, True, True, True, False], result["loaded"])
+
+    def test_library_dispose_cancels_active_and_queued_still_requests_without_starting_more(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            Object.defineProperty(FakeElement.prototype, "src", {{
+              configurable: true,
+              get() {{ return this._src || ""; }},
+              set(value) {{
+                this._src = String(value || "");
+                if (this._src) this.srcAssignments = (this.srcAssignments || 0) + 1;
+              }},
+            }});
+            const observers = [];
+            const createStillObserver = (callback, options) => {{
+              const observer = {{
+                callback, options, observed: [],
+                observe(target) {{ this.observed.push(target); }},
+                disconnect() {{}},
+              }};
+              observers.push(observer);
+              return observer;
+            }};
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:cancel-stills", title: "\u5267\u7167\u53d6\u6d88\u6d4b\u8bd5", state: "watched", year: 2026, media_type: "\u7535\u5f71",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: Array.from({{ length: 6 }}, (_, index) => ({{
+                  id: "still-" + index,
+                  url: "/api/image-proxy?url=" + encodeURIComponent("still-" + index),
+                  media_status: "ready",
+                }})),
+                item: {{ douban_rating: 8.8, genres: ["\u5267\u60c5"], summary: "\u7528\u4e8e\u9a8c\u8bc1\u53d6\u6d88\u884c\u4e3a\u7684\u5b8c\u6574\u7b80\u4ecb" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson: async () => payload, createStillObserver,
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const images = root.querySelectorAll("img");
+            const frames = root.querySelectorAll(".library-card__still-frame");
+            observers[0].callback(frames.map((target) => ({{ isIntersecting: true, target }})));
+            await flush();
+            frames[2].dispatchEvent({{ type: "pointerenter" }});
+            await flush();
+            const assignmentsBeforeDispose = images.reduce((total, image) => total + Number(image.srcAssignments || 0), 0);
+            if (assignmentsBeforeDispose !== 2) {{
+              throw new Error("promoted library still escaped the two-slot background lane: " + assignmentsBeforeDispose);
+            }}
+            controller.dispose();
+            await flush();
+            const assignmentsAfterDispose = images.reduce((total, image) => total + Number(image.srcAssignments || 0), 0);
+            if (assignmentsAfterDispose !== assignmentsBeforeDispose) {{
+              throw new Error("disposing the library started queued stills: " + assignmentsBeforeDispose + " -> " + assignmentsAfterDispose);
+            }}
+            if (images.some((image) => image.src)) throw new Error("disposing the library left active still requests attached");
+            console.log(JSON.stringify({{ assignmentsBeforeDispose, assignmentsAfterDispose }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(2, result["assignmentsBeforeDispose"])
+        self.assertEqual(result["assignmentsBeforeDispose"], result["assignmentsAfterDispose"])
+
+    def test_library_still_rail_captures_pointer_only_after_drag_threshold(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:rail-pointer", title: "\u5267\u7167\u6307\u9488\u6062\u590d", state: "watched", year: 2026, media_type: "\u7535\u5f71",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: [{{ id: "still-1", url: "/api/image-proxy?url=still-1", media_status: "ready" }}],
+                item: {{ douban_rating: 8.8, genres: ["\u5267\u60c5"], summary: "\u7528\u4e8e\u9a8c\u8bc1\u8f68\u9053\u6307\u9488\u6062\u590d\u7684\u5b8c\u6574\u7b80\u4ecb", directors: ["\u5bfc\u6f14\u7532"], casts: ["\u6f14\u5458\u4e59"] }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson: async () => payload, createStillObserver: () => null,
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const rail = root.querySelector(".library-card__visuals-rail");
+            const captures = []; const releases = [];
+            rail.setPointerCapture = (pointerId) => captures.push(pointerId);
+            rail.releasePointerCapture = (pointerId) => releases.push(pointerId);
+
+            rail.dispatchEvent({{ type: "pointerdown", pointerId: 7, button: 0, clientX: 200 }});
+            if (captures.length) throw new Error("a simple still click was captured before any drag movement");
+            rail.dispatchEvent({{ type: "pointermove", pointerId: 7, clientX: 198, preventDefault() {{}} }});
+            if (captures.length) throw new Error("sub-threshold pointer movement was treated as a drag");
+            rail.dispatchEvent({{ type: "pointerup", pointerId: 7 }});
+            if (releases.length) throw new Error("an uncaptured click pointer was released as though it were a drag");
+
+            rail.dispatchEvent({{ type: "pointerdown", pointerId: 8, button: 0, clientX: 200 }});
+            rail.dispatchEvent({{ type: "pointermove", pointerId: 8, clientX: 180, preventDefault() {{}} }});
+            if (captures.length !== 1 || captures[0] !== 8) throw new Error("pointer capture did not begin when horizontal dragging crossed the threshold");
+            rail.dispatchEvent({{ type: "pointerup", pointerId: 8 }});
+            if (releases.length !== 1 || releases[0] !== 8) throw new Error("drag pointer capture was not released exactly once");
+            controller.dispose();
+            console.log(JSON.stringify({{ captures, releases }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual([8], result["captures"])
+        self.assertEqual([8], result["releases"])
+
+    def test_library_still_frame_adopts_the_loaded_image_intrinsic_aspect_ratio(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:intrinsic-still", title: "真实比例剧照", state: "watched", year: 2026, media_type: "电影",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                stills: [{{ id: "still-wide", url: "/api/image-proxy?url=wide", media_status: "ready" }}],
+                item: {{ douban_rating: 8.6, genres: ["剧情"], summary: "验证剧照真实比例。", directors: ["导演"], casts: ["演员"] }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson: async () => payload, createStillObserver: () => null,
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const frame = root.querySelector(".library-card__still-frame");
+            const image = root.querySelector("img");
+            image.naturalWidth = 900; image.naturalHeight = 600;
+            image.dispatchEvent({{ type: "load" }});
+            const aspect = frame.style["--still-aspect"] || "";
+            if (aspect !== "900 / 600") throw new Error("intrinsic still ratio was not applied: " + aspect);
+            controller.dispose();
+            console.log(JSON.stringify({{ aspect }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("900 / 600", result["aspect"])
+
+    def test_library_preserves_each_item_still_rail_position_across_card_rebuilds(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const item = (key, title, state) => ({{
+              item_key: key, title, state, year: 2026, media_type: "电影",
+              poster: {{ url: "/media/" + encodeURIComponent(key) + ".webp", media_status: "ready" }},
+              stills: Array.from({{ length: 4 }}, (_, index) => ({{
+                id: key + "-still-" + index, url: "/api/image-proxy?url=" + encodeURIComponent(key + "-" + index), media_status: "ready",
+              }})),
+              item: {{ douban_rating: 8.7, genres: ["剧情"], summary: title + " 的简介。", directors: ["导演"], casts: ["演员"] }},
+            }});
+            const payloads = {{
+              watched: {{ counts: {{ all: 2, watched: 1, wish: 1, candidate: 0 }}, next_cursor: null, items: [item("item:alpha", "影片 A", "watched")] }},
+              wish: {{ counts: {{ all: 2, watched: 1, wish: 1, candidate: 0 }}, next_cursor: null, items: [item("item:beta", "影片 B", "wish")] }},
+            }};
+            const fetchJson = async (path) => {{
+              const state = new URL(path, "https://cinescope.test").searchParams.get("state") || "watched";
+              return payloads[state];
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson, createStillObserver: () => null,
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const alphaRail = root.querySelector(".library-card__visuals-rail");
+            alphaRail.clientWidth = 240; alphaRail.scrollWidth = 1040; alphaRail.scrollLeft = 420;
+            alphaRail.dispatchEvent({{ type: "scroll" }});
+
+            await controller.setFilter("wish"); await flush();
+            const betaRail = root.querySelector(".library-card__visuals-rail");
+            if (Number(betaRail.scrollLeft || 0) !== 0) throw new Error("a different title inherited the previous rail position");
+            betaRail.clientWidth = 240; betaRail.scrollWidth = 1040; betaRail.scrollLeft = 85;
+            betaRail.dispatchEvent({{ type: "scroll" }});
+
+            await controller.setFilter("watched"); await flush();
+            const restoredAlpha = root.querySelector(".library-card__visuals-rail");
+            if (Number(restoredAlpha.scrollLeft || 0) !== 420) throw new Error("title A rail position was not restored: " + Number(restoredAlpha.scrollLeft || 0));
+
+            await controller.setFilter("wish"); await flush();
+            const restoredBeta = root.querySelector(".library-card__visuals-rail");
+            if (Number(restoredBeta.scrollLeft || 0) !== 85) throw new Error("title B rail position was not restored independently: " + Number(restoredBeta.scrollLeft || 0));
+            controller.dispose();
+            console.log(JSON.stringify({{ alpha: Number(restoredAlpha.scrollLeft || 0), beta: Number(restoredBeta.scrollLeft || 0) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(420, result["alpha"])
+        self.assertEqual(85, result["beta"])
+
+    def test_library_keeps_public_tv_visual_hydration_out_of_the_foreground_path(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const enrichJobs = [];
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:tv", title: "待补剧集", state: "watched", year: 2024, media_type: "电视剧",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }}, stills: [],
+                item: {{ genres: ["剧情"], summary: "已有简介。" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root,
+              fetchJson: async (path) => path.includes("/api/v2/library") ? payload : payload.items[0],
+              postJson: async (path, body) => {{ enrichJobs.push({{ path, body }}); return {{ item_key: "item:tv", item: {{ summary: "补齐后的简介。" }}, stills: [{{ url: "/api/image-proxy?url=still" }}] }}; }},
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            if (enrichJobs.length) throw new Error(`public TV hydration blocked the foreground path: ${{JSON.stringify(enrichJobs)}}`);
+            if (!root.textContent.includes("待补剧集") || !root.textContent.includes("已有简介。")) throw new Error("local TV card did not remain immediately readable");
+            controller.dispose();
+            console.log(JSON.stringify({{ enrichJobs }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual([], result["enrichJobs"])
+
+    def test_library_keeps_poster_out_of_visual_rail_when_real_stills_are_missing(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "item:poster-visual", title: "海报占位作品", state: "watched", year: 2024, media_type: "电影",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+                backdrop: {{ url: "/media/poster.webp", media_status: "ready" }}, stills: [],
+                item: {{ douban_rating: 8.5, genres: ["剧情"], summary: "已有中文简介", directors: ["导演甲"], casts: ["演员乙"] }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const preview = root.querySelector(".library-card__visuals");
+            const images = preview?.querySelectorAll?.("img") || [];
+            if (!preview || images.length !== 0) throw new Error(`poster leaked into real visual rail: ${{images.length}}`);
+            if (!root.textContent.includes("暂未找到可核对的真实剧照")) {{
+              throw new Error(`real-visual empty state was unclear: ${{root.textContent}}`);
+            }}
+            controller.dispose();
+            console.log(JSON.stringify({{ imageCount: images.length, text: root.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(0, result["imageCount"])
+
+    def test_library_leaves_slow_metadata_hydration_to_background_coordinator(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const posts = [];
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "douban:6985810", title: "Slow metadata title", state: "watched", year: 2012, media_type: "\u7535\u5f71",
+                poster: {{ url: "/media/poster.webp", media_status: "ready" }}, stills: [],
+                item: {{ genres: ["\u5267\u60c5"], summary: "本地已有的中文简介应立即可读。", directors: [], casts: [] }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson: async () => payload,
+              postJson: async (path, body) => {{ posts.push({{ path, body }}); return {{}}; }},
+              setTimer(callback) {{ callback(); return 1; }}, clearTimer() {{}},
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const blockingPosts = posts.filter((entry) => entry.path.includes("/enrich"));
+            if (blockingPosts.length) throw new Error("library started foreground metadata hydration: " + JSON.stringify(blockingPosts));
+            if (!root.textContent.includes("Slow metadata title") || !root.textContent.includes("本地已有的中文简介应立即可读。")) throw new Error("local card did not render while background hydration remains deferred");
+            controller.dispose();
+            console.log(JSON.stringify({{ posts, text: root.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertFalse(any("/enrich" in post["path"] for post in result["posts"]))
+
+    def test_library_replaces_largely_english_synopsis_with_a_chinese_localization_status(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const payload = {{
+              counts: {{ all: 2, watched: 2, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [
+                {{
+                  item_key: "item:english-summary", title: "Tomorrow's Worlds", state: "watched", year: 2014, media_type: "电视剧",
+                  poster: {{ url: "/media/english.webp", media_status: "ready" }},
+                  item: {{ genres: ["科幻", "历史"], summary: "Historian Dominic Sandbrook and leading creators tell the story of science fiction across television and cinema." }},
+                }},
+                {{
+                  item_key: "item:chinese-summary", title: "中文简介作品", state: "watched", year: 2024, media_type: "电影",
+                  poster: {{ url: "/media/chinese.webp", media_status: "ready" }},
+                  item: {{ genres: ["剧情"], summary: "这是一段已经核对的中文剧情简介。" }},
+                }},
+              ],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const text = root.textContent;
+            if (text.includes("Historian Dominic")) throw new Error(`English synopsis leaked into the Chinese library: ${{text}}`);
+            if (!text.includes("这是一部以科幻 / 历史为核心的电视剧；中文剧情简介正在自动补齐。")) throw new Error(`Chinese localization status missing: ${{text}}`);
+            if (!text.includes("这是一段已经核对的中文剧情简介。")) throw new Error("verified Chinese synopsis was replaced");
+            controller.dispose();
+            console.log(JSON.stringify({{ text }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertNotIn("Historian Dominic", result["text"])
+        self.assertIn("中文剧情简介正在自动补齐", result["text"])
+
+    def test_library_without_genres_keeps_media_type_instead_of_showing_a_bare_placeholder(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const payload = {{
+              counts: {{ all: 1, watched: 1, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [{{
+                item_key: "douban:no-genre", title: "类型缺失但有媒体类型", state: "watched",
+                media_type: "电视剧", year: 2022,
+                poster: {{ url: "/media/no-genre.webp", media_status: "ready" }},
+                item: {{ genres: [], summary: "有媒体类型的条目。" }},
+              }}],
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson: async () => payload, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const text = root.textContent;
+            if (!text.includes("评分样本不足") || !text.includes("类型：电视剧") || text.includes("类型待补充")) throw new Error(`library score/type fallback was ambiguous: ${{text}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ text }}));
+            '''
+        )
+        self.assertIn("类型：电视剧", json.loads(output)["text"])
+
+    def test_library_suspension_pauses_poster_job_polling_and_resume_restores_it(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const timers = new Map(); const gets = []; let timerId = 0;
+            const item = {{
+              item_key: "douban:suspend-poster", title: "挂起补图作品", state: "watched",
+              poster: {{ url: "", media_status: "missing" }}, item: {{ genres: ["剧情"] }},
+            }};
+            const fetchJson = async (path) => {{
+              if (path.startsWith("/api/v2/media/jobs/")) {{
+                gets.push(path);
+                return {{ id: "job-suspend", state: "ready" }};
+              }}
+              return {{ counts: {{ watched: 1, wish: 0, all: 1, candidate: 0 }}, items: [item], next_cursor: null }};
+            }};
+            const runScheduledTimers = async () => {{
+              const scheduled = [...timers.entries()];
+              timers.clear();
+              for (const [_id, callback] of scheduled) {{ await callback(); await flush(); }}
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const controller = createLibraryController({{
+              root: new FakeElement("main"), fetchJson,
+              postJson: async () => ({{ id: "job-suspend", state: "queued" }}),
+              setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }},
+              clearTimer(id) {{ timers.delete(id); }},
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush(); await flush();
+            if (timers.size !== 1) throw new Error(`poster poll was not scheduled before suspension: ${{timers.size}}`);
+            controller.suspend(); await flush();
+            await runScheduledTimers();
+            if (gets.length !== 0) throw new Error(`suspended library still polled a media job: ${{JSON.stringify(gets)}}`);
+            controller.resume(); await flush(); await flush();
+            if (timers.size !== 1) throw new Error(`poster poll was not restored after resume: ${{timers.size}}`);
+            await runScheduledTimers();
+            if (gets.length !== 1 || gets[0] !== "/api/v2/media/jobs/job-suspend") throw new Error(`resumed library did not poll the retained media job once: ${{JSON.stringify(gets)}}`);
+            const snapshot = controller.snapshot();
+            controller.dispose();
+            console.log(JSON.stringify({{ gets, snapshot }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["/api/v2/media/jobs/job-suspend"], result["gets"])
+        self.assertFalse(result["snapshot"]["suspended"])
+
+    def test_library_polls_visible_poster_jobs_and_refreshes_cards_in_place(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const timers = []; let libraryReads = 0; let titleReads = 0;
+            const item = (index) => ({{ item_key: `douban:P${{index}}`, title: `作品${{index}}`, state: "watched", poster: {{ url: `/media/p-${{index}}.webp`, media_status: "ready" }}, item: {{ genres: ["剧情"] }} }});
+            const firstPage = Array.from({{ length: 24 }}, (_value, index) => item(index));
+            const secondPage = Array.from({{ length: 24 }}, (_value, index) => item(index + 24));
+            const missing = {{ item_key: "douban:poster", title: "补图作品", state: "watched", poster: {{ url: "", media_status: "missing" }}, item: {{ genres: ["剧情"] }} }};
+            firstPage[12] = missing;
+            const ready = {{ ...missing, poster: {{ url: "/media/poster-ready.webp", media_status: "ready" }} }};
+            const fetchJson = async (path) => {{
+              if (path.startsWith("/api/v2/media/jobs/")) return {{ id: "job-poster", state: "ready" }};
+              if (path === "/api/v2/titles/douban%3Aposter") {{ titleReads += 1; return ready; }}
+              libraryReads += 1;
+              if (path.includes("cursor=page-2")) return {{ counts: {{ watched: 48, wish: 0, all: 48, candidate: 0 }}, items: secondPage, next_cursor: null }};
+              return {{ counts: {{ watched: 48, wish: 0, all: 48, candidate: 0 }}, items: firstPage, next_cursor: "page-2" }};
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{
+              root, fetchJson,
+              postJson: async () => ({{ id: "job-poster", state: "queued" }}),
+              setTimer(callback) {{ timers.push(callback); return timers.length; }}, clearTimer() {{}},
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            await controller.loadNext(); await flush();
+            const viewport = root.querySelector('[data-role="library-window"]');
+            viewport.scrollTop = 900;
+            if (timers.length !== 1) throw new Error(`poster poll was not scheduled: ${{timers.length}}`);
+            await timers.shift()(); await flush();
+            if (timers.length !== 1) throw new Error("terminal poster did not schedule one library refresh");
+            await timers.shift()(); await flush();
+            const snapshot = controller.snapshot();
+            const target = collectNodes(root).find((node) => node.tagName === "A" && node.getAttribute("href") === "/title/douban%3Aposter");
+            const frame = target && collectNodes(target).find((node) => node.classList?.contains("media-frame"));
+            if (libraryReads !== 2 || titleReads !== 1 || snapshot.itemCount !== 48 || snapshot.scrollTop !== 900 || frame?.dataset?.mediaState !== "ready") throw new Error(`library poster refresh truncated or remounted the window: ${{JSON.stringify({{ libraryReads, titleReads, snapshot, mediaState: frame?.dataset?.mediaState }})}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ libraryReads, titleReads, snapshot, mediaState: frame.dataset.mediaState }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("ready", result["mediaState"])
+        self.assertEqual(48, result["snapshot"]["itemCount"])
+
+    def test_library_continues_poster_queue_after_the_first_visible_wave_degrades(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const posts = [];
+            const items = Array.from({{ length: 14 }}, (_value, index) => ({{
+              item_key: `item:M${{index}}`, title: `Missing ${{index}}`, state: "candidate",
+              poster: {{ url: "", media_status: "missing" }}, item: {{}},
+            }}));
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const controller = createLibraryController({{
+              root: new FakeElement("main"),
+              fetchJson: async () => ({{ counts: {{ all: 14, candidate: 14 }}, items, next_cursor: null }}),
+              postJson: async (_path, body) => {{ posts.push(body.identity_key); return {{ state: "degraded" }}; }},
+              createResizeObserver: () => null, windowTarget: null,
+            }});
+            await controller.mount({{ state: "candidate" }});
+            for (let index = 0; index < 8; index += 1) await flush();
+            if (posts.length !== 14 || new Set(posts).size !== 14) throw new Error(`poster queue stopped after first wave: ${{JSON.stringify(posts)}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ posts }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(14, len(result["posts"]))
+
+    def test_taste_heading_uses_an_intentional_two_line_lockup(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderTasteDna }} = await import("{module_url('js/features/taste.js')}");
+            const root = new FakeElement("main");
+            const controller = renderTasteDna(root, {{ fetchJson: async () => ({{ summary: {{}}, groups: {{}} }}) }});
+            await controller.ready;
+            const title = collectNodes(root).find((node) => node.classList?.contains("taste-title"));
+            const lines = title ? collectNodes(title).filter((node) => node.classList?.contains("taste-title__line")) : [];
+            if (!title || lines.length !== 2) throw new Error(`taste title lockup missing: ${{lines.length}}`);
+            if (lines[0].textContent !== "\u4f60\u7684\u53e3\u5473\uff0c" || lines[1].textContent !== "\u4e0d\u662f\u4e00\u4e32\u6807\u7b7e\u3002") throw new Error(`taste title lines changed: ${{lines.map((line) => line.textContent).join("|")}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ lines: lines.map((line) => line.textContent) }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["\u4f60\u7684\u53e3\u5473\uff0c", "\u4e0d\u662f\u4e00\u4e32\u6807\u7b7e\u3002"], result["lines"])
+
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.taste-title__line\s*\{[^}]*display:\s*block[^}]*white-space:\s*nowrap", re.DOTALL)
+        self.assertRegex(
+            css,
+            r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.taste-title\s*\{[^}]*font-size:\s*clamp\(",
+            re.DOTALL,
+        )
+
     def test_taste_renders_all_five_groups_with_safe_local_evidence_links(self):
         prelude = fake_dom_module_prelude()
         output = run_node_module(
             f'''
             {prelude}
-            const payload = {{ summary: {{ profile_key: "default" }}, groups: {{
-              stable: [{{ feature: "稳定 <script>偏好", score: 0.9, evidence_item_ids: ["douban:1"], sources: ["library"] }}],
-              conflicting: [{{ feature: "冲突", score: -0.2, evidence_item_ids: ["douban:2"], sources: ["rating"] }}],
-              recent: [{{ feature: "最近信号", score: 0.4, evidence_item_ids: ["douban:3"], sources: ["sync"] }}],
-              negative: [{{ feature: "避雷", score: -0.8, evidence_item_ids: ["douban:4"], sources: ["feedback"] }}],
-              unexplored: [{{ feature: "未探索", score: 0.1, evidence_item_ids: ["douban:5", "https://evil.test/title"] , sources: ["wish"] }}],
+            const payload = {{ summary: {{ rated_count: 123, liked_count: 119, disliked_count: 1 }}, groups: {{
+              stable: [{{ feature: "genre:剧情", score: 0.9, evidence_item_ids: ["douban:1"], evidence_count: 1, evidence_titles: [{{ id: "douban:1", title: "剧情证据" }}], sources: ["library-rating"] }}],
+              conflicting: [{{ feature: "country:中国大陆", score: -0.2, evidence_item_ids: ["douban:2"], evidence_count: 1, evidence_titles: [{{ id: "douban:2", title: "冲突证据" }}], sources: ["library-rating"] }}],
+              recent: [{{ feature: "genre:犯罪", score: 0.4, evidence_item_ids: ["douban:3"], evidence_count: 1, evidence_titles: [{{ id: "douban:3", title: "最近证据" }}], sources: ["douban-sync"] }}],
+              negative: [{{ feature: "genre:古装", score: -0.8, evidence_item_ids: ["douban:4"], evidence_count: 1, evidence_titles: [{{ id: "douban:4", title: "避雷证据" }}], sources: ["feedback"] }}],
+              unexplored: [{{ feature: "稳定 <script>偏好", score: 0.1, evidence_item_ids: ["douban:5", "https://evil.test/title"], evidence_count: 2, evidence_titles: [{{ id: "douban:5", title: "未探索证据" }}, {{ id: "https://evil.test/title", title: "不安全证据" }}], sources: ["wishlist"] }}],
             }} }};
             const {{ renderTasteDna }} = await import("{module_url('js/features/taste.js')}");
             const root = new FakeElement("main");
@@ -3579,7 +6645,7 @@ class UiV3ContractTests(unittest.TestCase):
             if (groups.join(",") !== "stable,conflicting,recent,negative,unexplored") throw new Error(`missing taste groups: ${{groups}}`);
             const links = collectNodes(root).filter((node) => node.tagName === "A");
             if (links.length !== 5 || links.some((link) => !link.getAttribute("href").startsWith("/title/") || link.getAttribute("href").includes("evil.test"))) throw new Error("unsafe evidence link rendered");
-            if (!root.textContent.includes("稳定 <script>偏好") || root.textContent.includes("近30天") || root.textContent.includes("30 天")) throw new Error("taste copy was unsafe or invented a time window");
+            if (!root.textContent.includes("偏爱剧情") || !root.textContent.includes("123") || root.textContent.includes("douban:1") || root.textContent.includes("近30天") || root.textContent.includes("30 天")) throw new Error("taste copy stayed machine-oriented or invented a time window");
             controller.dispose();
             console.log(JSON.stringify({{ groups, hrefs: links.map((link) => link.getAttribute("href")), text: root.textContent }}));
             '''
@@ -3587,6 +6653,78 @@ class UiV3ContractTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(["stable", "conflicting", "recent", "negative", "unexplored"], result["groups"])
         self.assertTrue(all(href.startswith("/title/") for href in result["hrefs"]))
+
+    def test_health_assets_dashboard_separates_actions_from_legacy_diagnostics(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const repairs = []; const posts = [];
+            const fetchJson = async (path) => {{
+              if (path === "/api/v2/media/health") return {{
+                assets: {{ total: 12, bytes: 4096, by_kind: {{ poster: 7, backdrop: 5 }} }},
+                jobs: {{ queued: 2, pending: 1, processing: 3, failed: 1, unavailable: 2, missing: 1 }},
+                delivery: "local-only",
+              }};
+              if (path === "/api/v2/diagnostics") return {{
+                app_version: "9.8.7",
+                cache_bytes: 8192,
+                provider_attempt_health: {{ basis: "historical_attempts", attempts_total: 7 }},
+                media_audit: {{ total: 10, ready: 6, degraded: 2, ambiguous: 1, missing: 1, wrong_identity_candidates: 1 }},
+                observability_limits: {{
+                  media_audit_window: {{ scope: "recent_recommendation_batches", selected_batches: 2, rows_audited: 10, truncated: false }},
+                  wrong_identity_candidates_scope: "global_historical_identity_rejected_hard_conflicts",
+                  recommendation_media_identity_attribution: "unavailable_without_stable_foreign_key",
+                }},
+              }};
+              return {{}};
+            }};
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const root = new FakeElement("main");
+            const controller = renderHealth(root, {{
+              fetchJson,
+              autoSyncSettings: true,
+              postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ state: "waiting_for_login", user_id: "123456789", job_id: "blocked-job" }}; }},
+              onRepairAssets: () => repairs.push("repair"),
+            }});
+            await controller.ready;
+            const nodes = collectNodes(root);
+            const dashboard = nodes.find((node) => node.classList?.contains("health-assets"));
+            if (!dashboard) throw new Error("actionable asset dashboard missing");
+            const cards = collectNodes(dashboard).filter((node) => node.classList?.contains("health-asset-card"));
+            const byLabel = Object.fromEntries(cards.map((card) => [card.children[0]?.textContent, card.textContent]));
+            if (!byLabel["海报可用"]?.includes("7") || !byLabel["剧照可用"]?.includes("5")) throw new Error(`kind counts missing: ${{JSON.stringify(byLabel)}}`);
+            if (!byLabel["本地缓存"]?.includes("12") || !byLabel["本地缓存"]?.includes("4 KB") || !byLabel["本地缓存"]?.includes("8 KB")) throw new Error("cache evidence was not merged");
+            if (!byLabel["等待修复"]?.includes("6") || !byLabel["确认失效"]?.includes("4")) throw new Error(`action counts wrong: ${{JSON.stringify(byLabel)}}`);
+            const advanced = collectNodes(dashboard).find((node) => node.classList?.contains("health-advanced"));
+            if (!advanced || advanced.tagName !== "DETAILS" || advanced.open) throw new Error("legacy diagnostics were not collapsed");
+            if (!advanced.textContent.includes("历史审计") || !advanced.textContent.includes("6 / 10") || !advanced.textContent.includes("身份冲突") || !advanced.textContent.includes("9.8.7")) throw new Error("advanced diagnostics lost evidence");
+            const primaryText = dashboard.children.filter((node) => node !== advanced).map((node) => node.textContent).join("");
+            if (primaryText.includes("6 / 10") || primaryText.includes("256")) throw new Error("historical audit leaked into the primary dashboard");
+            const repair = nodes.find((node) => node.textContent === "检查并修复素材");
+            const authorize = nodes.find((node) => node.textContent === "浏览器授权并自动续传");
+            if (!repair || !authorize) throw new Error("asset actions missing");
+            repair.dispatchEvent({{ type: "click", preventDefault() {{}} }});
+            authorize.dispatchEvent({{ type: "click" }});
+            await flush();
+            const syncAdvanced = nodes.find((node) => node.classList?.contains("sync-advanced"));
+            if (repairs.length !== 1) throw new Error("repair action did not invoke the existing workflow hook");
+            if (posts.at(-1)?.path !== "/api/v2/sync/browser-auth") throw new Error(`health action did not start browser authorization: ${{JSON.stringify(posts)}}`);
+            if (syncAdvanced?.open) throw new Error("manual Cookie recovery was opened by the primary action");
+            controller.dispose();
+            console.log(JSON.stringify({{ byLabel, repairs: repairs.length, advanced: advanced.textContent, authorizationPath: posts.at(-1)?.path }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["repairs"])
+        self.assertEqual("/api/v2/sync/browser-auth", result["authorizationPath"])
+
+    def test_health_asset_dashboard_is_symmetric_responsive_and_motion_safe(self):
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.health-assets__grid\s*\{[^}]*grid-template-columns:\s*repeat\(5,\s*minmax\(0,\s*1fr\)\)", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(min-width:\s*721px\)\s*and\s*\(max-width:\s*1100px\)[\s\S]*?\.health-assets__grid\s*\{[^}]*repeat\(6,\s*minmax\(0,\s*1fr\)\)", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.health-assets__grid\s*\{[^}]*minmax\(0,\s*1fr\)", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.health-assets__action", re.DOTALL)
 
     def test_health_uses_unknown_diagnostics_and_renders_media_health_with_incomplete_job(self):
         prelude = fake_dom_module_prelude()
@@ -3597,7 +6735,7 @@ class UiV3ContractTests(unittest.TestCase):
             const fetchJson = async (path) => {{
               calls.push(path);
               if (path === "/api/v2/media/health") return {{ assets: {{ total: 12, bytes: 4096 }}, jobs: {{ queued: 2, failed: 1 }}, delivery: "local-only" }};
-              if (path === "/api/v2/sync/jobs/restored") return {{ id: "restored", state: "complete", user_id: "272042071" }};
+              if (path === "/api/v2/sync/jobs/restored") return {{ id: "restored", state: "complete", user_id: "123456789" }};
               throw new Error(path);
             }};
             const timers = new Map(); let timerId = 0;
@@ -3606,7 +6744,8 @@ class UiV3ContractTests(unittest.TestCase):
             const controller = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}), syncState: {{ knownJobIds: ["restored"] }}, setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }}, clearTimer(id) {{ timers.delete(id); }} }});
             await controller.ready;
             const text = root.textContent;
-            if (!text.includes("12") || !text.includes("4 KB") || !text.includes("queued") || !text.includes("2")) throw new Error("media health was not rendered");
+            if (!text.includes("12") || !text.includes("4 KB") || !text.includes("排队 2") || !text.includes("失败 1")) throw new Error("media health was not rendered in human-readable Chinese");
+            if (text.includes("local-only") || text.includes("queued")) throw new Error("internal media states leaked into the Chinese settings page");
             if (!text.includes("—") || !text.includes("尚未提供")) throw new Error("unknown provider diagnostics were fabricated");
             if (text.includes("0 ms") || text.includes("100%") || text.includes("healthy")) throw new Error("health fabricated latency or percentages");
             if (!text.includes("记录不完整") || text.includes("同步成功")) throw new Error("incomplete restored job was shown as success");
@@ -3618,6 +6757,37 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIn("/api/v2/media/health", result["calls"])
         self.assertIn("/api/v2/diagnostics", result["calls"])
         self.assertIn("/api/v2/sync/jobs/restored", result["calls"])
+
+    def test_health_autofills_known_douban_identity_and_keeps_cookie_in_advanced_panel(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const root = new FakeElement("main");
+            const controller = renderHealth(root, {{
+              personalization: {{ source: "douban-sync", user_id: "123456789", watched_count: 244, wish_count: 36 }},
+              discovery: {{ status: "partial", local_index_size: 456, live_size: 83, source_counts: {{ tmdb: 24, omdb: 12, tvmaze: 18, anilist: 15, jikan: 14 }}, config: {{ tmdb_configured: true, omdb_configured: true }} }},
+              fetchJson: async (path) => path === "/api/v2/media/health" ? {{ assets: {{}}, jobs: {{}}, delivery: "local-only" }} : {{}},
+              postJson: async () => ({{}}),
+            }});
+            await controller.ready;
+            const advanced = collectNodes(root).find((node) => node.classList?.contains("sync-advanced"));
+            if (controller.sync.elements.profile.value !== "123456789") throw new Error("known Douban identity was not auto-filled");
+            if (!root.textContent.includes("已连接豆瓣") || !root.textContent.includes("244 部看过") || !root.textContent.includes("36 部想看")) throw new Error("connected sync state was not human-readable");
+            const discoveryCopy = [
+              "在线候选源与本地片库", "本机片库 456", "本次在线补充 83",
+              "在线来源", "身份与质量筛选", "本次推荐", "本地片库与图片缓存",
+              "搜索和详情主体优先读取本机 SQLite 片库", "TMDb 24", "IMDb 12",
+            ];
+            if (discoveryCopy.some((copy) => !root.textContent.includes(copy))) throw new Error(`online/local discovery boundary was not clear: ${{root.textContent}}`);
+            if (!advanced || advanced.tagName !== "DETAILS" || advanced.open) throw new Error("optional Cookie controls were not collapsed as an advanced panel");
+            controller.dispose();
+            console.log(JSON.stringify({{ profile: "123456789", text: root.textContent, advanced: advanced.tagName }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("123456789", result["profile"])
 
     def test_health_merges_runtime_diagnostics_and_aborts_stale_parallel_reads(self):
         prelude = fake_dom_module_prelude()
@@ -3648,12 +6818,14 @@ class UiV3ContractTests(unittest.TestCase):
             firstMedia.resolve({{ assets: {{ total: 12, bytes: 4096 }}, jobs: {{ queued: 2 }}, delivery: "local-only" }});
             await first.ready;
             const mergedText = root.textContent;
-            if (!mergedText.includes("8 KB") || !mergedText.includes("7") || !mergedText.includes("历史 attempts")) throw new Error("diagnostics metrics were not merged");
-            const metricCards = collectNodes(root).filter((node) => node.tagName === "ARTICLE");
-            const auditCard = metricCards.find((card) => card.children[0]?.textContent === "媒体审计（最近有界窗口）");
-            const wrongIdentityCard = metricCards.find((card) => card.children[0]?.textContent === "全局历史错图候选");
-            if (!auditCard || !auditCard.textContent.includes("6 / 10") || auditCard.textContent.includes("错图候选")) throw new Error("bounded row media audit scope was misleading");
-            if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("1") || !wrongIdentityCard.textContent.includes("无法归属具体推荐行")) throw new Error("global historical wrong-identity scope was not explicit");
+            if (!mergedText.includes("8 KB") || !mergedText.includes("7") || !mergedText.includes("历史请求记录")) throw new Error("diagnostics metrics were not merged");
+            const advanced = collectNodes(root).find((node) => node.classList?.contains("health-advanced"));
+            if (!advanced || advanced.tagName !== "DETAILS" || advanced.open) throw new Error("historical diagnostics were not kept in the closed advanced panel");
+            const metricCards = collectNodes(advanced).filter((node) => node.tagName === "ARTICLE");
+            const auditCard = metricCards.find((card) => card.children[0]?.textContent === "历史审计");
+            const wrongIdentityCard = metricCards.find((card) => card.children[0]?.textContent === "身份冲突");
+            if (!auditCard || !auditCard.textContent.includes("6 / 10") || !auditCard.textContent.includes("仅供历史排查") || auditCard.textContent.includes("错图候选")) throw new Error("bounded row media audit scope was misleading");
+            if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("1") || !wrongIdentityCard.textContent.includes("历史聚合，无法归属当前推荐卡片")) throw new Error("global historical wrong-identity scope was not explicit");
 
             const second = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}) }});
             await Promise.resolve();
@@ -3695,9 +6867,11 @@ class UiV3ContractTests(unittest.TestCase):
             const root = new FakeElement("main");
             const controller = renderHealth(root, {{ fetchJson, postJson: async () => ({{}}) }});
             await controller.ready;
-            const cards = collectNodes(root).filter((node) => node.tagName === "ARTICLE");
-            const auditCard = cards.find((card) => card.children[0]?.textContent === "媒体审计（最近有界窗口）");
-            const wrongIdentityCard = cards.find((card) => card.children[0]?.textContent === "全局历史错图候选");
+            const advanced = collectNodes(root).find((node) => node.classList?.contains("health-advanced"));
+            if (!advanced || advanced.tagName !== "DETAILS" || advanced.open) throw new Error("unknown historical diagnostics escaped the closed advanced panel");
+            const cards = collectNodes(advanced).filter((node) => node.tagName === "ARTICLE");
+            const auditCard = cards.find((card) => card.children[0]?.textContent === "历史审计");
+            const wrongIdentityCard = cards.find((card) => card.children[0]?.textContent === "身份冲突");
             if (!auditCard || !auditCard.textContent.includes("3 / 4") || auditCard.textContent.includes("错图候选")) throw new Error("row audit did not remain separate");
             if (!wrongIdentityCard || !wrongIdentityCard.textContent.includes("—") || !wrongIdentityCard.textContent.includes("尚未提供") || wrongIdentityCard.textContent.includes("0")) throw new Error("unknown global scope rendered a fabricated zero");
             controller.dispose();
@@ -3719,12 +6893,12 @@ class UiV3ContractTests(unittest.TestCase):
             const posts = []; const publicStates = []; const timers = new Map(); let timerId = 0;
             const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
             const root = new FakeElement("div");
-            const controller = renderSyncPanel(root, {{ storage, fetchJson: async () => ({{}}), postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ job_id: "job-one", state: "queued", user_id: "272042071" }}; }}, onStateChange(state) {{ publicStates.push(JSON.parse(JSON.stringify(state))); }}, setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }}, clearTimer(id) {{ timers.delete(id); }} }});
+            const controller = renderSyncPanel(root, {{ storage, fetchJson: async () => ({{}}), postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ job_id: "job-one", state: "queued", user_id: "123456789" }}; }}, onStateChange(state) {{ publicStates.push(JSON.parse(JSON.stringify(state))); }}, setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }}, clearTimer(id) {{ timers.delete(id); }} }});
             if (controller.elements.cookie.value !== "bid=tab-secret; ck=hidden") throw new Error("tab session cookie was not auto-filled");
-            controller.elements.profile.value = "https://www.douban.com/people/272042071/?cookie=profile-secret";
+            controller.elements.profile.value = "https://www.douban.com/people/123456789/?cookie=profile-secret";
             await controller.start();
             if (posts[0].path !== "/api/v2/sync/jobs" || posts[0].payload.max_pages !== 250) throw new Error("sync did not default to the 250-page safety cap");
-            if (posts[0].payload.user !== "https://www.douban.com/people/272042071/") throw new Error("profile URL was not reduced to its public canonical form");
+            if (posts[0].payload.user !== "https://www.douban.com/people/123456789/") throw new Error("profile URL was not reduced to its public canonical form");
             if (!root.textContent.includes("默认自动翻页到末页") || !root.textContent.includes("250")) throw new Error("auto-pagination copy was missing");
             const rawPublic = JSON.stringify({{ snapshots: publicStates, controller: controller.snapshot() }});
             if (rawPublic.includes("tab-secret") || rawPublic.includes("ck=hidden") || rawPublic.includes("profile-secret") || rawPublic.toLowerCase().includes("cookie")) throw new Error("cookie escaped into public persistence snapshots");
@@ -3748,14 +6922,14 @@ class UiV3ContractTests(unittest.TestCase):
             const posts = [];
             const postJson = async (path, payload) => {{
               posts.push({{ path, payload }});
-              return {{ job_id: "job-resumed", state: "complete", user_id: "272042071", counts: {{ items: 8, collect_count: 6, wish_count: 2, pages_ok: 2, pages_failed: 0 }}, diagnostics: [] }};
+              return {{ job_id: "job-resumed", state: "complete", user_id: "123456789", counts: {{ items: 8, collect_count: 6, wish_count: 2, pages_ok: 2, pages_failed: 0 }}, diagnostics: [] }};
             }};
             const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
             const firstRoot = new FakeElement("div");
             const first = renderSyncPanel(firstRoot, {{ storage, fetchJson: async () => ({{}}), postJson }});
             if (first.elements.cookie.value !== "bid=stale-tab-secret; ck=hidden") throw new Error("preloaded tab cookie was not visible");
             first.acceptJob({{
-              id: "job-resume-source", state: "needs_cookie", user_id: "272042071",
+              id: "job-resume-source", state: "needs_cookie", user_id: "123456789",
               counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }},
               diagnostics: [{{ status: "collect", start: 0, classification: "login_required" }}],
             }});
@@ -3852,7 +7026,7 @@ class UiV3ContractTests(unittest.TestCase):
             const root = new FakeElement("div");
             const controller = renderSyncPanel(root, {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
             controller.acceptJob({{
-              id: "live-job", state: "complete", user_id: "272042071",
+              id: "live-job", state: "complete", user_id: "123456789",
               counts: {{ items: 280, collect_count: 244, wish_count: 36, pages_ok: 22, pages_failed: 0 }},
               stopped_reason: "已到达空白分页", diagnostics: [],
             }});
@@ -3925,10 +7099,10 @@ class UiV3ContractTests(unittest.TestCase):
             const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
             const syncRoot = new FakeElement("div");
             const sync = renderSyncPanel(syncRoot, {{ storage, postJson, fetchJson: async () => ({{}}), onStateChange(state) {{ emissions.push(JSON.parse(JSON.stringify(state))); }} }});
-            sync.elements.profile.value = "272042071";
+            sync.elements.profile.value = "123456789";
             sync.elements.cookie.value = "dispose-secret";
             const startPending = sync.start(); await flush();
-            sync.acceptJob({{ id: "resume-source", state: "needs_cookie", user_id: "272042071", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }}, diagnostics: [{{ status: "collect", start: 0, classification: "login_required" }}] }});
+            sync.acceptJob({{ id: "resume-source", state: "needs_cookie", user_id: "123456789", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }}, diagnostics: [{{ status: "collect", start: 0, classification: "login_required" }}] }});
             const resumePending = sync.resume("resume-source"); await flush();
             if (posts.length !== 2 || !posts.every((call) => call.options.signal && !call.options.signal.aborted)) throw new Error("start/resume did not receive controlled signals");
             const detachedSecret = sync.elements.cookie;
@@ -3972,7 +7146,7 @@ class UiV3ContractTests(unittest.TestCase):
             }});
             controller.elements.cookie.value = "new-cookie-secret";
             controller.acceptJob({{
-              id: "known-job", user_id: "272042071", state: "needs_cookie",
+              id: "known-job", user_id: "123456789", state: "needs_cookie",
               counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }},
               stopped_reason: "new-cookie-secret", errors: ["new-cookie-secret"],
               diagnostics: [{{ status: "collect", start: 0, classification: "login_required", message: "new-cookie-secret" }}],
@@ -3993,6 +7167,32 @@ class UiV3ContractTests(unittest.TestCase):
         self.assertIsNone(result["malicious"]["counts"])
         self.assertIn("豆瓣需要登录态", result["text"])
 
+    def test_sync_panel_keeps_only_latest_job_and_can_clear_history(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const deletes = []; const emissions = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              fetchJson: async () => ({{}}), postJson: async () => ({{}}),
+              deleteJson: async (path) => {{ deletes.push(path); return {{ removed: 2 }}; }},
+              onStateChange(state) {{ emissions.push(JSON.parse(JSON.stringify(state))); }},
+            }});
+            controller.acceptJob({{ id: "old-job", state: "failed", user_id: "123456789", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 1 }} }});
+            controller.acceptJob({{ id: "latest-job", state: "complete", user_id: "123456789", counts: {{ items: 280, collect_count: 244, wish_count: 36, pages_ok: 22, pages_failed: 0 }} }}, {{ replace: true }});
+            if (controller.snapshot().knownJobIds.join(",") !== "latest-job") throw new Error("latest sync did not replace stale records");
+            await controller.clearHistory();
+            if (deletes[0] !== "/api/v2/sync/jobs" || controller.snapshot().knownJobIds.length) throw new Error("sync history was not cleared");
+            if (!root.textContent.includes("\u6682\u65e0\u540c\u6b65\u8bb0\u5f55")) throw new Error("empty sync history state was not rendered");
+            controller.dispose();
+            console.log(JSON.stringify({{ deletes, emissions }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["/api/v2/sync/jobs"], result["deletes"])
+
     def test_task7_library_resize_anchor_and_repeated_cursor_guard(self):
         prelude = fake_dom_module_prelude()
         output = run_node_module(
@@ -4010,14 +7210,14 @@ class UiV3ContractTests(unittest.TestCase):
             const ready = controller.mount({{ state: "all" }}); await flush();
             requests[0].resolve({{ items: Array.from({{ length: 80 }}, (_v, index) => item(index)), next_cursor: "repeat-cursor" }}); await ready;
             const viewport = root.querySelector('[data-role="library-window"]');
-            viewport.scrollTop = 840; viewport.dispatchEvent({{ type: "scroll" }}); let frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
+            viewport.scrollTop = 500; viewport.dispatchEvent({{ type: "scroll" }}); let frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
             const before = controller.snapshot();
-            if (before.columns !== 4 || before.anchorItemKey !== "douban:R8") throw new Error(`unexpected desktop anchor ${{JSON.stringify(before)}}`);
+            if (before.columns !== 2 || before.anchorItemKey !== "douban:R2") throw new Error(`unexpected readable desktop anchor ${{JSON.stringify(before)}}`);
             viewport.clientWidth = 390; resizeObservers[0].callback([{{ target: viewport, contentRect: {{ width: 390 }} }}]);
             if (rafs.size !== 1) throw new Error("resize was not merged through the existing RAF");
             frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
             const mobile = controller.snapshot();
-            if (mobile.columns !== 1 || mobile.anchorItemKey !== "douban:R8" || mobile.renderedItemCount === before.renderedItemCount) throw new Error(`resize did not preserve anchor/update window: ${{JSON.stringify(mobile)}}`);
+            if (mobile.columns !== 1 || mobile.anchorItemKey !== "douban:R2" || mobile.renderedItemCount === before.renderedItemCount) throw new Error(`resize did not preserve anchor/update window: ${{JSON.stringify(mobile)}}`);
 
             const next = controller.loadNext(); await flush();
             if (!requests[1].path.includes("cursor=repeat-cursor")) throw new Error("next cursor was not requested");
@@ -4033,9 +7233,9 @@ class UiV3ContractTests(unittest.TestCase):
             '''
         )
         result = json.loads(output)
-        self.assertEqual(4, result["before"]["columns"])
+        self.assertEqual(2, result["before"]["columns"])
         self.assertEqual(1, result["mobile"]["columns"])
-        self.assertEqual("douban:R8", result["mobile"]["anchorItemKey"])
+        self.assertEqual("douban:R2", result["mobile"]["anchorItemKey"])
         self.assertEqual(2, result["requests"])
 
     def test_task7_library_failed_cursor_retries_then_successful_cycle_stops(self):
@@ -4083,7 +7283,7 @@ class UiV3ContractTests(unittest.TestCase):
             const controller = createLibraryController({{ root, fetchJson: async () => ({{ items: Array.from({{ length: 40 }}, (_v, index) => ({{ item_key: `douban:F${{index}}`, title: `F${{index}}`, poster: {{ url: "", media_status: "missing" }} }})), next_cursor: null }}), createResizeObserver: () => null, windowTarget, requestFrame, cancelFrame(id) {{ rafs.delete(id); }} }});
             await controller.mount({{ state: "all" }});
             const viewport = root.querySelector('[data-role="library-window"]');
-            if (controller.snapshot().columns !== 4 || typeof windowListeners.get("resize") !== "function") throw new Error("window resize fallback was not installed");
+            if (controller.snapshot().columns !== 2 || typeof windowListeners.get("resize") !== "function") throw new Error("window resize fallback was not installed");
             viewport.clientWidth = 390; windowListeners.get("resize")();
             const frame = [...rafs.entries()][0]; rafs.delete(frame[0]); frame[1]();
             if (controller.snapshot().columns !== 1) throw new Error("window resize fallback did not reflow columns");
@@ -4106,17 +7306,17 @@ class UiV3ContractTests(unittest.TestCase):
             const {{ renderTasteDna }} = await import("{module_url('js/features/taste.js')}");
             const tasteRoot = new FakeElement("main");
             const taste = renderTasteDna(tasteRoot, {{ fetchJson: async () => ({{ groups: {{ stable: [{{ feature: "Null score", score: null }}], conflicting: [{{ feature: "Missing score" }}], recent: [], negative: [], unexplored: [] }} }}) }}); await taste.ready;
-            if (!tasteRoot.textContent.includes("信号分数 —") || tasteRoot.textContent.includes("信号分数 0.00")) throw new Error("missing taste score became zero");
+            if (!tasteRoot.textContent.includes("探索中") || tasteRoot.textContent.includes("非常鲜明") || tasteRoot.textContent.includes("信号分数 0.00")) throw new Error("missing taste score was presented as measured strength");
 
             const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
             const healthRoot = new FakeElement("main");
             const health = renderHealth(healthRoot, {{ fetchJson: async (path) => path === "/api/v2/media/health" ? {{ assets: {{ total: null, bytes: null }}, jobs: {{ queued: null }}, delivery: "local-only" }} : ({{}}), postJson: async () => ({{}}) }}); await health.ready;
             const healthText = healthRoot.textContent;
-            if (healthText.includes("0 B") || healthText.includes("queued 0") || !healthText.includes("queued —")) throw new Error("missing health values became zero");
+            if (healthText.includes("0 B") || healthText.includes("排队 0") || !healthText.includes("排队 —")) throw new Error("missing health values became zero");
 
             const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
             const syncRoot = new FakeElement("div"); const sync = renderSyncPanel(syncRoot, {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}) }});
-            sync.acceptJob({{ id: "empty-counts", state: "complete", user_id: "272042071", counts: {{}} }});
+            sync.acceptJob({{ id: "empty-counts", state: "complete", user_id: "123456789", counts: {{}} }});
             const job = sync.snapshot().jobs["empty-counts"];
             if (!job.incomplete || syncRoot.textContent.includes("同步完成")) throw new Error("complete with empty counts was shown as success");
             taste.dispose(); health.dispose(); sync.dispose();
@@ -4125,7 +7325,7 @@ class UiV3ContractTests(unittest.TestCase):
         )
         result = json.loads(output)
         self.assertTrue(result["job"]["incomplete"])
-        self.assertIn("queued —", result["health"])
+        self.assertIn("排队 —", result["health"])
 
     def test_task7_profile_and_options_emit_immediately_but_cookie_edits_never_emit(self):
         prelude = fake_dom_module_prelude()
@@ -4135,14 +7335,14 @@ class UiV3ContractTests(unittest.TestCase):
             const emissions = [];
             const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
             const controller = renderSyncPanel(new FakeElement("div"), {{ fetchJson: async () => ({{}}), postJson: async () => ({{}}), onStateChange(state) {{ emissions.push(JSON.parse(JSON.stringify(state))); }} }});
-            controller.elements.profile.value = "272042071"; controller.elements.profile.dispatchEvent({{ type: "input" }});
+            controller.elements.profile.value = "123456789"; controller.elements.profile.dispatchEvent({{ type: "input" }});
             controller.elements.includeWish.checked = false; controller.elements.includeWish.dispatchEvent({{ type: "change" }});
             controller.elements.includeDo.checked = true; controller.elements.includeDo.dispatchEvent({{ type: "change" }});
             const beforeCookie = emissions.length;
             controller.elements.cookie.value = "never-persist"; controller.elements.cookie.dispatchEvent({{ type: "input" }});
             if (emissions.length !== beforeCookie || beforeCookie !== 3) throw new Error("edit emission policy was wrong");
             const last = emissions.at(-1);
-            if (last.profile !== "272042071" || last.options.includeWish !== false || last.options.includeDo !== true || JSON.stringify(emissions).includes("never-persist")) throw new Error("public edit state was incomplete or secret-bearing");
+            if (last.profile !== "123456789" || last.options.includeWish !== false || last.options.includeDo !== true || JSON.stringify(emissions).includes("never-persist")) throw new Error("public edit state was incomplete or secret-bearing");
             const detachedProfile = controller.elements.profile; controller.dispose(); detachedProfile.value = "after-dispose"; detachedProfile.dispatchEvent({{ type: "input" }});
             if (emissions.length !== beforeCookie) throw new Error("disposed edit listener still emitted state");
             console.log(JSON.stringify({{ emissions }}));
@@ -4204,12 +7404,12 @@ class UiV3ContractTests(unittest.TestCase):
             const serverError = new Error("server secret text"); serverError.status = 500; requests[1].reject(serverError); await flush();
             if (timers.size !== 1) throw new Error("500 did not keep one retry timer");
             timerEntry = [...timers.entries()][0]; timer = timerEntry[1]; const secondDelay = timer.delay; if (secondDelay <= firstDelay) throw new Error("retry backoff did not increase"); timers.delete(timerEntry[0]); timer.callback(); await flush();
-            requests[2].resolve({{ id: "retry-job", state: "running", user_id: "272042071", counts: {{ items: 1, collect_count: 1, wish_count: 0, pages_ok: 1, pages_failed: 0 }} }}); await flush();
+            requests[2].resolve({{ id: "retry-job", state: "running", user_id: "123456789", counts: {{ items: 1, collect_count: 1, wish_count: 0, pages_ok: 1, pages_failed: 0 }} }}); await flush();
             if (timers.size !== 1) throw new Error("successful running poll lost its single timer");
 
-            controller.acceptJob({{ id: "bad-400", state: "running", user_id: "272042071", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 0 }} }});
+            controller.acceptJob({{ id: "bad-400", state: "running", user_id: "123456789", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 0 }} }});
             const bad400 = controller.refreshJob("bad-400"); await flush(); const error400 = new Error("secret 400"); error400.status = 400; requests[3].reject(error400); await bad400;
-            controller.acceptJob({{ id: "bad-404", state: "running", user_id: "272042071", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 0 }} }});
+            controller.acceptJob({{ id: "bad-404", state: "running", user_id: "123456789", counts: {{ items: 0, collect_count: 0, wish_count: 0, pages_ok: 0, pages_failed: 0 }} }});
             const bad404 = controller.refreshJob("bad-404"); await flush(); const error404 = new Error("secret 404"); error404.status = 404; requests[4].reject(error404); await bad404;
             const text = root.textContent;
             if (text.includes("secret 400") || text.includes("secret 404") || !text.includes("HTTP 404") || timers.size !== 1) throw new Error("non-retryable polling error was leaked or retried");
@@ -4260,26 +7460,108 @@ class UiV3ContractTests(unittest.TestCase):
                 self.assertIn(transition.strip().split(maxsplit=1)[0], {"transform", "opacity"})
         self.assertIn("prefers-reduced-motion", css)
 
+    def test_detail_round_trip_restores_the_exact_library_view_without_refetching(self):
+        output = run_node_module(
+            f'''
+            globalThis.document = {{ readyState: "loading", addEventListener() {{}}, querySelectorAll() {{ return []; }} }};
+            globalThis.window = {{ matchMedia: () => ({{ matches: false }}) }};
+            const {{ createAppRouteHandler, reduceUiState }} = await import("{module_url('js/app.js')}");
+
+            const heading = (text) => ({{ textContent: text, setAttribute() {{}}, focus() {{}} }});
+            const libraryHeading = heading("片库");
+            const detailHeading = heading("作品详情");
+            const libraryViewport = {{ scrollTop: 875 }};
+            const libraryNode = {{
+              id: "library-node",
+              dataset: {{ space: "library" }},
+              querySelector(selector) {{
+                if (selector === "h1") return libraryHeading;
+                if (selector === ".library-window") return libraryViewport;
+                return null;
+              }},
+            }};
+            const detailNode = {{ id: "detail-node", querySelector(selector) {{ return selector === "h1" ? detailHeading : null; }} }};
+            const appView = {{
+              children: [], dataset: {{}},
+              get childNodes() {{ return this.children; }},
+              replaceChildren(...nodes) {{
+                if (this.children.includes(libraryNode) && !nodes.includes(libraryNode)) libraryViewport.scrollTop = 0;
+                this.children = nodes;
+              }},
+              querySelector(selector) {{
+                if (selector === ".tonight-page") return null;
+                if (selector === ".space--library" || selector === '[data-space="library"]') return this.children.find((node) => node === libraryNode) || null;
+                if (selector === "h1") return this.children[0]?.querySelector?.("h1") || null;
+                return null;
+              }},
+            }};
+            const store = {{
+              state: {{ activePath: null, activeParams: {{}}, detailReturnPath: "/tonight", recommendation: {{ channels: {{}} }}, library: {{ state: "candidate", explicit: true, scrollTop: 875 }} }},
+              getState() {{ return this.state; }},
+              dispatch(action) {{ this.state = reduceUiState(this.state, action); }},
+            }};
+            let libraryRenders = 0;
+            let libraryDisposals = 0;
+            let librarySuspends = 0;
+            let libraryResumes = 0;
+            const libraryController = {{
+              snapshot() {{ return {{ scrollTop: libraryViewport.scrollTop }}; }},
+              suspend() {{ librarySuspends += 1; }},
+              resume({{ scrollTop }}) {{ libraryResumes += 1; libraryViewport.scrollTop = scrollTop; }},
+              dispose() {{ libraryDisposals += 1; }},
+            }};
+            const renderLibraryView = async (root) => {{ libraryRenders += 1; root.replaceChildren(libraryNode); return libraryController; }};
+            const explorationGate = {{
+              invalidate() {{}},
+              async render() {{ appView.replaceChildren(detailNode); }},
+            }};
+            const passiveGate = {{ invalidate() {{}}, async restore() {{}}, async render() {{}} }};
+            const handler = createAppRouteHandler({{
+              appView, store, restoreGate: passiveGate, explorationGate, universeGate: passiveGate,
+              prepare() {{}}, setNavigation() {{}}, renderTonightView() {{}}, renderPlaceholder() {{}},
+              renderLibraryView, renderTasteView: async () => ({{ dispose() {{}} }}), renderHealthView: async () => ({{ dispose() {{}} }}),
+              setStatus() {{}}, announceRoute() {{}},
+            }});
+
+            await handler({{ name: "library", path: "/library", params: {{}} }});
+            await handler({{ name: "title", path: "/title/douban:1", params: {{ id: "douban:1" }} }});
+            if (libraryDisposals !== 0 || librarySuspends !== 1 || appView.children[0] !== detailNode) throw new Error("library was disposed or not suspended before detail opened");
+            await handler({{ name: "library", path: "/library", params: {{}} }});
+            if (libraryRenders !== 1) throw new Error(`library refetched on detail return: ${{libraryRenders}}`);
+            if (libraryDisposals !== 0 || libraryResumes !== 1 || appView.children[0] !== libraryNode || libraryViewport.scrollTop !== 875) {{
+              throw new Error("library DOM, controller, or internal scroll position was not restored exactly");
+            }}
+            handler.dispose();
+            if (libraryDisposals !== 1) throw new Error("restored library controller was not disposed at app teardown");
+            console.log(JSON.stringify({{ libraryRenders, libraryDisposals, librarySuspends, libraryResumes, node: appView.children[0]?.id, scrollTop: libraryViewport.scrollTop }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(1, result["libraryRenders"])
+        self.assertEqual(1, result["libraryDisposals"])
+        self.assertEqual(875, result["scrollTop"])
+
     def test_store_persists_library_and_non_sensitive_sync_allowlist_without_raw_cookie(self):
         output = run_node_module(
             f'''
             import {{ persistUiState, restoreUiState, UI_STATE_KEY }} from "{module_url('js/core/store.js')}";
             const values = new Map(); const storage = {{ getItem(key) {{ return values.get(key) ?? null; }}, setItem(key, value) {{ values.set(key, String(value)); }} }};
             persistUiState({{
-              activePath: "/health", library: {{ state: "wish" }},
-              sync: {{ profile: "https://www.douban.com/people/272042071/?cookie=must-not-persist", options: {{ maxPages: 250, includeWish: true, includeDo: false, expectedCollect: 244, expectedWish: 36 }}, knownJobIds: ["job-a", "job-a", "bad/id"], payload: {{ cookie: "must-not-persist" }} }},
+              activePath: "/health", library: {{ state: "wish", scrollTop: 1234 }},
+              sync: {{ profile: "https://www.douban.com/people/123456789/?cookie=must-not-persist", options: {{ maxPages: 250, includeWish: true, includeDo: false, expectedCollect: 244, expectedWish: 36 }}, knownJobIds: ["job-a", "job-a", "bad/id"], payload: {{ cookie: "must-not-persist" }} }},
               doubanCookie: "must-not-persist",
             }}, storage);
             const raw = values.get(UI_STATE_KEY); const restored = restoreUiState(storage);
             if (raw.includes("must-not-persist") || raw.toLowerCase().includes("cookie")) throw new Error("raw persisted snapshot contains cookie material");
-            if (restored.activePath !== "/health" || restored.library.state !== "wish") throw new Error("route or library filter was not restored");
-            if (restored.sync.profile !== "https://www.douban.com/people/272042071/" || restored.sync.options.maxPages !== 250) throw new Error("safe sync profile/options were not restored");
+            if (restored.activePath !== "/health" || restored.library.state !== "wish" || restored.library.scrollTop !== 1234) throw new Error("route or library filter/position was not restored");
+            if (restored.sync.profile !== "https://www.douban.com/people/123456789/" || restored.sync.options.maxPages !== 250) throw new Error("safe sync profile/options were not restored");
             if (restored.sync.knownJobIds.join(",") !== "job-a") throw new Error("known job IDs were not allowlisted and deduplicated");
             console.log(JSON.stringify({{ raw, restored }}));
             '''
         )
         result = json.loads(output)
         self.assertEqual("wish", result["restored"]["library"]["state"])
+        self.assertEqual(1234, result["restored"]["library"]["scrollTop"])
         self.assertEqual(["job-a"], result["restored"]["sync"]["knownJobIds"])
 
     def test_universe_stylesheet_is_static_responsive_and_motion_safe(self):
@@ -4319,7 +7601,7 @@ class UiV3ContractTests(unittest.TestCase):
 
         rail_control = re.search(r"\.rail-control\s*\{([^}]*)\}", css)
         self.assertIsNotNone(rail_control)
-        self.assertRegex(rail_control.group(1), r"font-size\s*:\s*0\.68rem")
+        self.assertRegex(rail_control.group(1), r"font-size\s*:\s*0\.8rem")
         self.assertRegex(rail_control.group(1), r"overflow-wrap\s*:\s*anywhere")
         self.assertNotRegex(rail_control.group(1), r"white-space\s*:\s*nowrap")
 
@@ -4367,10 +7649,27 @@ class UiV3ContractTests(unittest.TestCase):
     def test_detail_stylesheet_is_static_cinematic_and_motion_safe(self):
         html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
         css = (UI_ROOT / "styles" / "detail.css").read_text(encoding="utf-8")
+        responsive = (UI_ROOT / "styles" / "responsive.css").read_text(encoding="utf-8")
 
         self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/detail.css" />', html)
         self.assertRegex(css, r"\.detail-backdrop\s*\{[^}]*aspect-ratio:\s*16\s*/\s*7", re.DOTALL)
         self.assertRegex(css, r"\.detail-poster[^}]*\.media-frame__image\s*\{[^}]*object-fit:\s*contain", re.DOTALL)
+        self.assertRegex(css, r"\.detail-return-bar\s*\{[^}]*position:\s*sticky", re.DOTALL)
+        self.assertRegex(css, r"\.detail-evidence\s*\{[^}]*grid-template-columns:\s*repeat\(2", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.detail-evidence\s*\{[^}]*grid-template-columns:\s*1fr", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.detail-hero__content\s*\{[^}]*grid-template-columns:\s*1fr", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.detail-poster\s*\{[^}]*width:\s*min\(9rem,\s*42vw\)[^}]*margin:\s*-4rem\s+auto\s+0", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.detail-hero__copy\s*\{[^}]*width:\s*100%", re.DOTALL)
+        responsive_mobile = re.search(
+            r"@media\s*\(max-width:\s*720px\)\s*\{([\s\S]*?)\n\}\n\n@media\s*\(prefers-reduced-motion",
+            responsive,
+        )
+        self.assertIsNotNone(responsive_mobile)
+        responsive_hero = re.search(r"\.detail-hero__content\s*\{([^}]*)\}", responsive_mobile.group(1))
+        self.assertIsNotNone(responsive_hero)
+        self.assertRegex(responsive_hero.group(1), r"grid-template-columns:\s*1fr")
+        self.assertRegex(responsive_hero.group(1), r"align-items:\s*start")
+        self.assertRegex(responsive_hero.group(1), r"margin-top:\s*0")
         self.assertIn("prefers-reduced-motion", css)
         declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
         for declaration in declarations:
@@ -4392,6 +7691,57 @@ class UiV3ContractTests(unittest.TestCase):
 
         self.assertIn('<link rel="stylesheet" href="/assets/v3/styles/tonight.css" />', html)
         self.assertIn("prefers-reduced-motion", css)
+        self.assertIn(".tonight-hero-filmstrip", css)
+        self.assertIn(".tonight-hero-filmstrip__button[aria-pressed=\"true\"]", css)
+        self.assertRegex(css, r"@media \(max-width: 720px\)[\s\S]*?\.tonight-hero-filmstrip")
+        hero_rule = re.search(r"\.tonight-hero\s*\{([^}]+)\}", css)
+        self.assertIsNotNone(hero_rule)
+        self.assertRegex(hero_rule.group(1), r"(?:^|\n)\s*height:\s*clamp\(")
+        carousel_stage = re.search(r"\.cinema-carousel__stage\s*\{([^}]+)\}", css)
+        self.assertIsNotNone(carousel_stage)
+        self.assertRegex(carousel_stage.group(1), r"height:\s*clamp\(30rem,\s*58vh,\s*38rem\)")
+        self.assertNotRegex(carousel_stage.group(1), r"aspect-ratio:\s*16\s*/\s*9")
+        self.assertRegex(
+            css,
+            r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.cinema-carousel__stage\s*\{[^}]*height:\s*clamp\(24rem,\s*49vh,\s*27rem\)[^}]*min-height:\s*24rem",
+            re.DOTALL,
+        )
+        mobile_carousel = css.rsplit("@media (max-width: 720px)", 1)[1].split(
+            "@media (prefers-reduced-motion: reduce)", 1
+        )[0]
+        self.assertRegex(
+            mobile_carousel,
+            r"\.cinema-carousel__arrow\s*\{[^}]*top:\s*1rem[^}]*transform:\s*none",
+            re.DOTALL,
+        )
+        self.assertRegex(
+            mobile_carousel,
+            r"\.cinema-carousel__arrow--previous\s*\{[^}]*left:\s*auto[^}]*right:\s*4\.5rem",
+            re.DOTALL,
+        )
+        self.assertRegex(
+            mobile_carousel,
+            r"\.cinema-carousel__arrow--next\s*\{[^}]*right:\s*1rem",
+            re.DOTALL,
+        )
+        self.assertRegex(
+            mobile_carousel,
+            r"\.cinema-carousel__arrow:hover,\s*\.cinema-carousel__arrow:focus-visible\s*\{[^}]*transform:\s*scale\(1\.06\)",
+            re.DOTALL,
+        )
+        title_rule = re.search(r"\.tonight-hero__title\s*\{([^}]+)\}", css)
+        self.assertIsNotNone(title_rule)
+        self.assertRegex(title_rule.group(1), r"white-space:\s*nowrap")
+        self.assertNotIn("text-overflow: ellipsis", title_rule.group(1))
+        self.assertNotRegex(title_rule.group(1), r"overflow:\s*hidden")
+        self.assertNotIn("-webkit-line-clamp", title_rule.group(1))
+        line_height = re.search(r"line-height:\s*([0-9.]+)", title_rule.group(1))
+        self.assertIsNotNone(line_height)
+        self.assertGreaterEqual(float(line_height.group(1)), 1.0)
+        filmstrip_title = re.search(r"\.tonight-hero-filmstrip__title\s*\{([^}]+)\}", css)
+        self.assertIsNotNone(filmstrip_title)
+        self.assertRegex(filmstrip_title.group(1), r"white-space:\s*nowrap")
+        self.assertNotIn("text-overflow: ellipsis", filmstrip_title.group(1))
         declarations = re.findall(r"(?<![-\w])transition\s*:\s*([^;]+);", css)
         for declaration in declarations:
             for transition in declaration.split(","):
@@ -4402,6 +7752,11 @@ class UiV3ContractTests(unittest.TestCase):
         app_source = (UI_ROOT / "js" / "app.js").read_text(encoding="utf-8")
         self.assertNotIn("createElement(\"link\")", app_source)
         self.assertNotIn("createElement('link')", app_source)
+
+        tonight_source = (UI_ROOT / "js" / "features" / "tonight.js").read_text(encoding="utf-8")
+        self.assertIn("fitHeroTitle", tonight_source)
+        self.assertIn("scrollWidth", tonight_source)
+        self.assertIn("requestAnimationFrame", tonight_source)
 
     def test_focus_trap_cycles_dynamic_tabbables_releases_and_handles_escape(self):
         output = run_node_module(
@@ -4973,6 +8328,549 @@ class UiV3ContractTests(unittest.TestCase):
             for item in declaration.split(","):
                 self.assertIn(item.strip().split(maxsplit=1)[0], {"transform", "opacity"})
 
+    def test_put_v2_uses_same_origin_and_forces_schema(self):
+        output = run_node_module(
+            f'''
+            import {{ putV2 }} from "{module_url('js/core/api.js')}";
+            globalThis.location = {{ origin: "https://cinescope.test" }};
+            const calls = [];
+            globalThis.fetch = async (path, options) => {{ calls.push({{ path, options }}); return {{ ok: true, status: 200, json: async () => ({{ ok: true }}) }}; }};
+            await putV2("/api/v2/sync/settings", {{ schema_version: 999, enabled: true }});
+            const body = JSON.parse(calls[0].options.body);
+            if (calls[0].options.method !== "PUT" || body.schema_version !== 2 || body.enabled !== true) throw new Error("PUT V2 contract mismatch");
+            console.log(JSON.stringify({{ path: calls[0].path, method: calls[0].options.method, body }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(result["method"], "PUT")
+
+
+    def test_sync_browser_authorization_panel_is_prominent_responsive_and_motion_safe(self):
+        css = (UI_ROOT / "styles" / "spaces.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.sync-browser-auth\s*\{[^}]*grid-column:\s*1\s*/\s*-1[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto", re.DOTALL)
+        self.assertRegex(css, r"\.sync-browser-auth\[hidden\]\s*\{[^}]*display:\s*none", re.DOTALL)
+        self.assertRegex(css, r"\.sync-browser-auth\[data-state=\"waiting_for_login\"\]", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(max-width:\s*720px\)[\s\S]*?\.sync-browser-auth\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)", re.DOTALL)
+        self.assertRegex(css, r"@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.sync-submit", re.DOTALL)
+
+    def test_sync_needs_login_uses_one_click_browser_authorization_as_primary_recovery(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const posts = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              autoSettings: true,
+              fetchJson: async (path) => path === "/api/v2/sync/settings"
+                ? {{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "needs_cookie", last_job_id: "blocked-job", authorization: {{ state: "idle", has_session: false }} }}
+                : {{ state: "idle", has_session: false }},
+              postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ state: "waiting_for_login", user_id: "123456789", job_id: "blocked-job" }}; }},
+              setTimer() {{ return 1; }}, clearTimer() {{}},
+            }});
+            await controller.ready;
+            const nodes = [];
+            const walk = (node) => {{ nodes.push(node); for (const child of node.children || []) walk(child); }};
+            walk(root);
+            const authorize = nodes.find((node) => node.tagName === "BUTTON" && node.textContent.includes("浏览器授权"));
+            if (!authorize) throw new Error(`browser authorization was not the primary recovery: ${{root.textContent}}`);
+            if (root.textContent.includes("从开发者工具复制 Cookie")) throw new Error("manual Cookie instructions remained primary");
+            authorize.dispatchEvent({{ type: "click" }});
+            await flush();
+            if (posts.at(-1)?.path !== "/api/v2/sync/browser-auth") throw new Error(`wrong authorization endpoint: ${{JSON.stringify(posts)}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ posts, text: root.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(result["posts"][-1]["path"], "/api/v2/sync/browser-auth")
+
+
+    def test_sync_browser_authorization_polls_and_adopts_the_resumed_job(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const gets = []; const posts = []; const timers = new Map(); let timerId = 0;
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              autoSettings: true,
+              fetchJson: async (path) => {{
+                gets.push(path);
+                if (path === "/api/v2/sync/settings") return {{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "needs_cookie", last_job_id: "blocked-job", authorization: {{ state: "idle", has_session: false }} }};
+                if (path === "/api/v2/sync/browser-auth") return {{ state: "queued", has_session: true, user_id: "123456789", job_id: "resumed-job", resume_of: "blocked-job", resumed: true }};
+                return {{ id: "resumed-job", state: "running", user_id: "123456789" }};
+              }},
+              postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ state: "waiting_for_login", has_session: false, user_id: "123456789", job_id: "blocked-job" }}; }},
+              setTimer(callback) {{ const id = ++timerId; timers.set(id, callback); return id; }},
+              clearTimer(id) {{ timers.delete(id); }},
+            }});
+            await controller.ready;
+            controller.elements.authorizeBrowser.dispatchEvent({{ type: "click" }});
+            await flush();
+            const pending = [...timers.entries()];
+            if (pending.length !== 1) throw new Error(`authorization poll was not scheduled: ${{pending.length}}`);
+            timers.delete(pending[0][0]); pending[0][1]();
+            await flush(); await flush();
+            const snapshot = controller.snapshot();
+            if (!gets.includes("/api/v2/sync/browser-auth")) throw new Error(`authorization status was not polled: ${{JSON.stringify(gets)}}`);
+            if (!snapshot.knownJobIds.includes("resumed-job")) throw new Error(`resumed job was not adopted: ${{JSON.stringify(snapshot)}}`);
+            if (!root.textContent.includes("自动续传")) throw new Error(`resume status was not visible: ${{root.textContent}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ gets, posts, snapshot }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("/api/v2/sync/browser-auth", result["gets"])
+        self.assertIn("resumed-job", result["snapshot"]["knownJobIds"])
+
+
+
+    def test_sync_blocked_job_card_uses_browser_authorization_before_manual_cookie(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const posts = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              autoSettings: true,
+              fetchJson: async () => ({{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "complete", authorization: {{ state: "idle", has_session: false }} }}),
+              postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ state: "waiting_for_login", user_id: "123456789", job_id: "blocked-job" }}; }},
+              setTimer() {{ return 1; }}, clearTimer() {{}},
+            }});
+            await controller.ready;
+            controller.acceptJob({{ id: "blocked-job", state: "needs_cookie", user_id: "123456789", counts: {{ items: 16, collect_count: 16, wish_count: 0, pages_ok: 1, pages_failed: 1 }}, diagnostics: [{{ status: "collect", start: 15, classification: "login_required" }}] }});
+            const nodes = []; const walk = (node) => {{ nodes.push(node); for (const child of node.children || []) walk(child); }}; walk(root);
+            const recovery = nodes.find((node) => node.classList?.contains("sync-job__resume"));
+            if (!recovery || !recovery.textContent.includes("浏览器授权")) throw new Error(`blocked job kept manual recovery primary: ${{root.textContent}}`);
+            recovery.dispatchEvent({{ type: "click" }}); await flush();
+            if (posts.at(-1)?.path !== "/api/v2/sync/browser-auth") throw new Error(`blocked job used wrong endpoint: ${{JSON.stringify(posts)}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ posts, label: recovery.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual("/api/v2/sync/browser-auth", result["posts"][-1]["path"])
+
+    def test_sync_run_now_opens_browser_authorization_when_login_is_required(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const posts = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const controller = renderSyncPanel(new FakeElement("div"), {{
+              autoSettings: true,
+              fetchJson: async () => ({{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "complete", authorization: {{ state: "idle", has_session: false }} }}),
+              postJson: async (path, payload) => {{
+                posts.push({{ path, payload }});
+                if (path === "/api/v2/sync/run-now") return {{ job_id: "blocked-job", state: "needs_cookie", user_id: "123456789", authorization_required: true }};
+                if (path === "/api/v2/sync/browser-auth") return {{ state: "waiting_for_login", user_id: "123456789", job_id: "blocked-job" }};
+                return {{}};
+              }},
+              setTimer() {{ return 1; }}, clearTimer() {{}},
+            }});
+            await controller.ready;
+            controller.elements.runNow.dispatchEvent({{ type: "click" }});
+            await flush(); await flush();
+            const paths = posts.map((call) => call.path);
+            if (JSON.stringify(paths) !== JSON.stringify(["/api/v2/sync/run-now", "/api/v2/sync/browser-auth"])) throw new Error(`login recovery was not automatic: ${{JSON.stringify(paths)}}`);
+            controller.dispose();
+            console.log(JSON.stringify({{ paths }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["/api/v2/sync/run-now", "/api/v2/sync/browser-auth"], result["paths"])
+
+    def test_health_updates_connected_banner_from_async_auto_sync_settings(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const calls = [];
+            const fetchJson = async (path) => {{
+              calls.push(path);
+              if (path === "/api/v2/sync/settings") return {{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "complete" }};
+              if (path === "/api/v2/media/health") return {{ assets: {{}}, jobs: {{}}, delivery: "local-only" }};
+              return {{}};
+            }};
+            const {{ renderHealth }} = await import("{module_url('js/features/health.js')}");
+            const root = new FakeElement("main");
+            const controller = renderHealth(root, {{
+              fetchJson,
+              postJson: async () => ({{}}),
+              putJson: async () => ({{}}),
+              autoSyncSettings: true,
+              personalization: {{}},
+              setTimer() {{ return 1; }},
+              clearTimer() {{}},
+            }});
+            await controller.ready;
+            const banner = collectNodes(root).find((node) => node.classList?.contains("sync-connected"));
+            if (!banner || banner.dataset.state !== "connected") throw new Error("async settings did not connect the health banner");
+            if (!banner.textContent.includes("已连接豆瓣") || !banner.textContent.includes("用户 123456789")) throw new Error("connected identity missing: " + banner.textContent);
+            if (banner.textContent.includes("等待连接")) throw new Error("stale waiting state remained visible");
+            controller.dispose();
+            console.log(JSON.stringify({{ calls, banner: banner.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("/api/v2/sync/settings", result["calls"])
+        self.assertIn("用户 123456789", result["banner"])
+
+    def test_sync_auto_dashboard_uses_relative_schedule_copy(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              autoSettings: true,
+              now: () => 1500000,
+              fetchJson: async (path) => path === "/api/v2/sync/settings"
+                ? {{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "complete", last_success_at: 1000, next_run_at: 2000 }}
+                : {{}},
+              postJson: async () => ({{}}),
+              putJson: async () => ({{}}),
+              setTimer() {{ return 1; }},
+              clearTimer() {{}},
+            }});
+            await controller.ready;
+            const meta = collectNodes(root).find((node) => node.classList?.contains("sync-automation__meta"));
+            if (!meta?.textContent.includes("上次成功：约 8 分钟前")) throw new Error("relative previous time missing: " + meta?.textContent);
+            if (!meta?.textContent.includes("下次检查：约 8 分钟后")) throw new Error("relative next time missing: " + meta?.textContent);
+            if (meta.textContent.includes("1970") || meta.textContent.includes("/")) throw new Error("absolute local date leaked: " + meta.textContent);
+            const visible = meta.textContent;
+            controller.dispose();
+            console.log(JSON.stringify({{ visible }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("约 8 分钟前", result["visible"])
+        self.assertIn("约 8 分钟后", result["visible"])
+
+    def test_sync_auto_dashboard_restores_only_latest_successful_job(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const gets = [];
+            const fetchJson = async (path) => {{
+              gets.push(path);
+              if (path === "/api/v2/sync/settings") return {{
+                user_id: "123456789",
+                enabled: true,
+                interval_minutes: 60,
+                last_state: "complete",
+                last_job_id: "latest-success",
+              }};
+              if (path === "/api/v2/sync/jobs/latest-success") return {{
+                id: "latest-success",
+                state: "complete",
+                user_id: "123456789",
+                counts: {{ items: 547, collect_count: 401, wish_count: 146, pages_ok: 28, pages_failed: 0 }},
+              }};
+              throw new Error("unexpected read " + path);
+            }};
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              autoSettings: true,
+              fetchJson,
+              postJson: async () => ({{}}),
+              putJson: async () => ({{}}),
+              setTimer() {{ return 1; }},
+              clearTimer() {{}},
+            }});
+            await controller.ready;
+            if (JSON.stringify(gets) !== JSON.stringify(["/api/v2/sync/settings", "/api/v2/sync/jobs/latest-success"])) throw new Error("latest successful job was not restored alone: " + JSON.stringify(gets));
+            if (root.textContent.includes("暂无同步记录")) throw new Error("empty history remained after restoring latest success");
+            if (!root.textContent.includes("同步完成") || !root.textContent.includes("条目 547")) throw new Error("latest successful job evidence missing: " + root.textContent);
+            const visible = root.textContent;
+            controller.dispose();
+            console.log(JSON.stringify({{ gets, visible }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["/api/v2/sync/settings", "/api/v2/sync/jobs/latest-success"], result["gets"])
+        self.assertIn("条目 547", result["visible"])
+
+    def test_sync_auto_dashboard_uses_saved_user_without_manual_profile_or_cookie(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const gets = []; const puts = []; const posts = [];
+            const {{ renderSyncPanel }} = await import("{module_url('js/features/sync.js')}");
+            const root = new FakeElement("div");
+            const controller = renderSyncPanel(root, {{
+              autoSettings: true,
+              fetchJson: async (path) => {{ gets.push(path); return path === "/api/v2/sync/settings" ? {{ user_id: "123456789", enabled: true, interval_minutes: 60, last_state: "complete", last_success_at: 1000, next_run_at: 2000 }} : {{}}; }},
+              putJson: async (path, payload) => {{ puts.push({{ path, payload }}); return {{ user_id: "123456789", ...payload }}; }},
+              postJson: async (path, payload) => {{ posts.push({{ path, payload }}); return {{ job_id: "auto-job", state: "queued", user_id: "123456789" }}; }},
+              setTimer() {{ return 1; }}, clearTimer() {{}},
+            }});
+            await controller.ready;
+            if (controller.elements.profile.value !== "123456789") throw new Error("saved user did not hydrate recovery form");
+            if (!root.textContent.includes("自动同步已开启") || !root.textContent.includes("用户 123456789")) throw new Error(`automatic connection status missing: ${{root.textContent}}`);
+            controller.elements.autoEnabled.checked = false;
+            controller.elements.autoEnabled.dispatchEvent({{ type: "change" }});
+            await flush();
+            controller.elements.runNow.dispatchEvent({{ type: "click" }});
+            await flush();
+            if (puts[0]?.path !== "/api/v2/sync/settings" || puts[0].payload.enabled !== false) throw new Error("settings were not saved");
+            if (posts.at(-1)?.path !== "/api/v2/sync/run-now") throw new Error("run-now did not use automatic endpoint");
+            const visible = root.textContent;
+            controller.dispose();
+            console.log(JSON.stringify({{ gets, puts, posts, visible }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertIn("/api/v2/sync/settings", result["gets"])
+        self.assertIn("用户 123456789", result["visible"])
+
+
+    def test_missing_people_portraits_use_compact_identity_monograms(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const title = {{
+              item_key: "item:missing-people", title: "缺图人物测试", media_type: "series", year: 2021,
+              poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+              backdrop: {{ url: "/media/backdrop.webp", media_status: "ready" }},
+              item: {{ summary: "完整简介", genres: ["动画"], directors: [], casts: ["Yu-Won Pang", "Eui Jeong Kim"] }},
+              people: [
+                {{ id: "person:yu-won-pang", name: "Yu-Won Pang", role: "cast", portrait: {{ url: "", media_status: "missing" }} }},
+                {{ id: "person:eui-jeong-kim", name: "Eui Jeong Kim", role: "cast", portrait: {{ url: "", media_status: "missing" }} }},
+              ],
+            }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            const root = new FakeElement("main");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => path === "/api/v2/titles/item:missing-people" ? title : {{ focus_id: "item:missing-people", nodes: [], edges: [], items: [] }},
+              api: {{ postV2: () => new Promise(() => {{}}) }},
+            }});
+            await renderTitleDetail("item:missing-people"); await flush();
+            const cards = root.querySelectorAll(".person-card");
+            const monograms = cards.map((card) => card.querySelector(".person-card__monogram")?.textContent || "");
+            if (cards.length !== 2 || JSON.stringify(monograms) !== JSON.stringify(["YP", "EK"])) throw new Error(`missing portraits did not retain recognizable identities: ${{JSON.stringify(monograms)}}`);
+            if (cards.some((card) => card.querySelector(".media-frame"))) throw new Error("generic media fallback was still rendered inside a missing person portrait");
+            if (cards.some((card) => !card.querySelector(".person-card__portrait--fallback") || !card.textContent.includes("姓名身份已保留"))) throw new Error("designed portrait fallback copy was missing");
+            console.log(JSON.stringify({{ monograms, text: root.textContent }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertEqual(["YP", "EK"], result["monograms"])
+        css = (UI_ROOT / "styles" / "detail.css").read_text(encoding="utf-8")
+        self.assertRegex(css, r"\.person-card__portrait--fallback\s*\{[^}]*min-height:\s*13\.5rem", re.DOTALL)
+        self.assertRegex(css, r"\.person-card__monogram\s*\{[^}]*font-size:\s*clamp\(", re.DOTALL)
+
+    def test_library_prewarms_detail_on_intent_with_bounded_deduplicated_concurrency(self):
+        prelude = fake_dom_module_prelude()
+        output = run_node_module(
+            f'''
+            {prelude}
+            const detailCalls = [];
+            const deferred = () => {{ let resolve; const promise = new Promise((yes) => {{ resolve = yes; }}); return {{ promise, resolve }}; }};
+            const pending = new Map();
+            const payload = {{
+              counts: {{ all: 3, watched: 3, wish: 0, candidate: 0 }}, next_cursor: null,
+              items: [1, 2, 3].map((index) => ({{
+                item_key: `item:warm-${{index}}`, title: `预热作品${{index}}`, state: "watched", media_type: "电影", year: 2024,
+                poster: {{ url: "", media_status: "missing" }}, item: {{ genres: ["剧情"], summary: "详情预热测试" }},
+              }})),
+            }};
+            const fetchJson = (path) => {{
+              if (!path.startsWith("/api/v2/titles/")) return Promise.resolve(payload);
+              detailCalls.push(path);
+              const request = deferred(); pending.set(path, request); return request.promise;
+            }};
+            const {{ createLibraryController }} = await import("{module_url('js/features/library.js')}");
+            const root = new FakeElement("main");
+            const controller = createLibraryController({{ root, fetchJson, createResizeObserver: () => null, windowTarget: null }});
+            await controller.mount({{ state: "watched" }}); await flush();
+            const links = root.querySelectorAll(".library-card__link");
+            links[0].dispatchEvent({{ type: "pointerenter" }});
+            links[0].dispatchEvent({{ type: "pointerenter" }});
+            links[1].dispatchEvent({{ type: "focus" }});
+            links[2].dispatchEvent({{ type: "pointerdown" }});
+            await flush();
+            if (detailCalls.length !== 2) throw new Error(`detail prewarm concurrency was not bounded at two: ${{JSON.stringify(detailCalls)}}`);
+            if (new Set(detailCalls).size !== 2) throw new Error("duplicate intent event started duplicate detail prewarm");
+            if (detailCalls.some((path) => path.includes("%3A"))) throw new Error(`item key colon was incorrectly encoded: ${{JSON.stringify(detailCalls)}}`);
+            pending.get("/api/v2/titles/item:warm-1").resolve({{ item_key: "item:warm-1" }}); await flush();
+            if (detailCalls.length !== 3 || detailCalls[2] !== "/api/v2/titles/item:warm-3") throw new Error(`queued detail did not start when capacity opened: ${{JSON.stringify(detailCalls)}}`);
+            pending.get("/api/v2/titles/item:warm-2").resolve({{ item_key: "item:warm-2" }});
+            pending.get("/api/v2/titles/item:warm-3").resolve({{ item_key: "item:warm-3" }});
+            await flush(); controller.dispose();
+            console.log(JSON.stringify({{ detailCalls }}));
+            '''
+        )
+        self.assertEqual(
+            ["/api/v2/titles/item:warm-1", "/api/v2/titles/item:warm-2", "/api/v2/titles/item:warm-3"],
+            json.loads(output)["detailCalls"],
+        )
+
+
+    def test_carousel_hides_native_image_until_synchronous_load_completes(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const images = [];
+            class ImmediateImage extends FakeElement {{
+              constructor() {{ super("img"); this.naturalWidth = 1280; images.push(this); }}
+              set src(value) {{
+                this._src = String(value || "");
+                this.hiddenWhenAssigned = this.hidden;
+                if (this._src) this.dispatchEvent({{ type: "load" }});
+              }}
+              get src() {{ return this._src || ""; }}
+            }}
+            document.createElement = (tagName) => String(tagName).toLowerCase() === "img"
+              ? new ImmediateImage()
+              : new FakeElement(tagName);
+            const {{ renderCinemaCarousel }} = await import("{module_url('js/components/cinema-carousel.js')}");
+            const carousel = renderCinemaCarousel({{
+              slides: [{{ id: "one", title: "Visual lifecycle", media: {{ url: "/media/still.webp", kind: "backdrop", status: "ready" }} }}],
+            }});
+            const image = images.find((candidate) => candidate.classList.contains("cinema-carousel__image"));
+            const frame = image?.parentNode;
+            if (!image) throw new Error("carousel image missing");
+            if (image.hiddenWhenAssigned !== true) throw new Error("carousel exposed the native image before src assignment");
+            if (image.hidden) throw new Error("carousel image stayed hidden after a successful load");
+            if (frame?.dataset?.mediaState !== "ready") throw new Error("carousel frame did not reach ready state");
+            console.log(JSON.stringify({{ hiddenWhenAssigned: image.hiddenWhenAssigned, hidden: image.hidden, state: frame.dataset.mediaState }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["hiddenWhenAssigned"])
+        self.assertFalse(result["hidden"])
+        self.assertEqual("ready", result["state"])
+
+    def test_detail_backdrop_hides_native_image_until_synchronous_load_completes(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const images = [];
+            class ImmediateImage extends FakeElement {{
+              constructor() {{ super("img"); this.naturalWidth = 1280; images.push(this); }}
+              set src(value) {{
+                this._src = String(value || "");
+                this.hiddenWhenAssigned = this.hidden;
+                if (this._src) this.dispatchEvent({{ type: "load" }});
+              }}
+              get src() {{ return this._src || ""; }}
+            }}
+            document.createElement = (tagName) => String(tagName).toLowerCase() === "img"
+              ? new ImmediateImage()
+              : new FakeElement(tagName);
+            const root = new FakeElement("main");
+            const title = {{
+              item_key: "douban:sync-still", title: "Synchronous still", media_type: "电影", year: 2025, state: "candidate",
+              poster: {{ url: "/media/poster.webp", media_status: "ready" }},
+              backdrop: {{ url: "", media_status: "missing" }},
+              stills: [{{ id: "still-0", url: "/media/still.webp", media_status: "ready" }}],
+              item: {{ summary: "这是一段完整中文简介。", genres: ["剧情"], directors: ["导演甲"], casts: ["演员乙"], raw: {{}} }},
+              people: [],
+            }};
+            const universe = {{ focus_id: "douban:sync-still", nodes: [], edges: [] }};
+            const {{ configureDetail, renderTitleDetail }} = await import("{module_url('js/features/detail.js')}");
+            configureDetail({{
+              root,
+              fetchJson: async (path) => path.startsWith("/api/v2/titles/") ? title : universe,
+              api: {{ postV2: async () => ({{ state: "failed" }}), getV2: async () => ({{ state: "failed" }}) }},
+            }});
+            await renderTitleDetail("douban:sync-still"); await flush();
+            const image = images.find((candidate) => candidate.classList.contains("detail-backdrop__still"));
+            const backdrop = image?.parentNode;
+            if (!image) throw new Error("detail still missing");
+            if (image.hiddenWhenAssigned !== true) throw new Error("detail exposed the native image before src assignment");
+            if (image.hidden) throw new Error("detail still stayed hidden after a successful load");
+            if (backdrop?.dataset?.mediaState !== "ready") throw new Error("detail backdrop did not reach ready state");
+            console.log(JSON.stringify({{ hiddenWhenAssigned: image.hiddenWhenAssigned, hidden: image.hidden, state: backdrop.dataset.mediaState }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["hiddenWhenAssigned"])
+        self.assertFalse(result["hidden"])
+        self.assertEqual("ready", result["state"])
+
+    def test_lightbox_hides_native_image_until_synchronous_load_completes(self):
+        output = run_node_module(
+            f'''
+            {fake_dom_module_prelude()}
+            const images = [];
+            class ImmediateImage extends FakeElement {{
+              constructor() {{ super("img"); this.naturalWidth = 1280; images.push(this); }}
+              set src(value) {{
+                this._src = String(value || "");
+                this.hiddenWhenAssigned = this.hidden;
+                if (this._src) this.dispatchEvent({{ type: "load" }});
+              }}
+              get src() {{ return this._src || ""; }}
+            }}
+            document.createElement = (tagName) => String(tagName).toLowerCase() === "img"
+              ? new ImmediateImage()
+              : new FakeElement(tagName);
+            document.body = new FakeElement("body");
+            document.body.style = {{ overflow: "" }};
+            document.removeEventListener = () => {{}};
+            const {{ openMediaLightbox }} = await import("{module_url('js/components/media-lightbox.js')}");
+            const lightbox = openMediaLightbox({{
+              items: [{{ url: "/media/still.webp", label: "Still one" }}],
+              title: "Visual lifecycle",
+              documentTarget: document,
+              windowTarget: window,
+            }});
+            const image = images.find((candidate) => candidate.classList.contains("media-lightbox__image"));
+            const mount = image?.parentNode;
+            if (!image || !lightbox) throw new Error("lightbox image missing");
+            if (image.hiddenWhenAssigned !== true) throw new Error("lightbox exposed the native image before src assignment");
+            if (image.hidden) throw new Error("lightbox image stayed hidden after a successful load");
+            if (mount?.dataset?.state !== "ready") throw new Error("lightbox did not reach ready state");
+            console.log(JSON.stringify({{ hiddenWhenAssigned: image.hiddenWhenAssigned, hidden: image.hidden, state: mount.dataset.state }}));
+            '''
+        )
+        result = json.loads(output)
+        self.assertTrue(result["hiddenWhenAssigned"])
+        self.assertFalse(result["hidden"])
+        self.assertEqual("ready", result["state"])
+
+    def test_native_broken_image_surfaces_have_explicit_hidden_guards(self):
+        css = "\n".join(
+            (UI_ROOT / "styles" / name).read_text(encoding="utf-8")
+            for name in ("components.css", "detail.css")
+        )
+        for selector in (
+            ".cinema-carousel__image[hidden]",
+            ".detail-backdrop__still[hidden]",
+            ".media-lightbox__image[hidden]",
+        ):
+            self.assertRegex(css, re.escape(selector) + r"\s*\{[^}]*display:\s*none", selector)
+
+
+    def test_detail_related_cards_keep_a_readable_desktop_body_in_a_horizontal_rail(self):
+        css = (UI_ROOT / "styles" / "detail.css").read_text(encoding="utf-8")
+
+        related_item = re.search(r"\.detail-related-works__item\s*\{(?P<body>[^}]*)\}", css, re.DOTALL)
+        self.assertIsNotNone(related_item, "detail relations need a dedicated card-width rule")
+        self.assertRegex(
+            related_item.group("body"),
+            r"flex:\s*0\s+0\s+clamp\(22rem,\s*28vw,\s*26rem\)",
+            "desktop relation cards must not be compressed into poster-only slivers",
+        )
+        self.assertRegex(related_item.group("body"), r"scroll-snap-align:\s*start")
+
+        related_link = re.search(
+            r"\.detail-related-works\s+\.title-card__link\s*\{(?P<body>[^}]*)\}",
+            css,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(related_link, "relation cards need their own poster-to-copy proportion")
+        self.assertRegex(
+            related_link.group("body"),
+            r"grid-template-columns:\s*clamp\(7\.8rem,\s*10vw,\s*9rem\)\s+minmax\(11rem,\s*1fr\)",
+            "relation copy needs a readable minimum column beside the poster",
+        )
 
 if __name__ == "__main__":
     unittest.main()

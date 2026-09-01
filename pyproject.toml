@@ -1,10 +1,10 @@
 [project]
 name = "douban-taste-recommender"
-version = "0.1.0"
-description = "Personal movie/series recommender based on Douban ratings, taste profile, and Douban public candidate pools."
+version = "0.2.0"
+description = "Local-first Douban sync, explainable recommendations, trusted media, and multi-focus movie discovery."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["Pillow>=10"]
+dependencies = ["Pillow>=10", "requests[socks]>=2.31", "websocket-client>=1.8", "opencc-python-reimplemented>=0.1.7"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

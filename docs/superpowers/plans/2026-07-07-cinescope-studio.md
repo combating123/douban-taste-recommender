@@ -25,25 +25,25 @@
 
 ## File Structure
 
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\serialization.py` — JSON round-trip and Cookie redaction.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py` — diagnostics, page classification, scale, fallback parsing.
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\storage.py` — non-sensitive JSON cache under `output/cache`.
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\candidate_planner.py` — movie/series/anime query planner.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\douban_sources.py` — fetch planned candidates with partial diagnostics.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\recommender.py` — sectioned quality-first ranking.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py` — sync/cache/recommend APIs.
-- Replace: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py` — CineScope Studio UI.
-- Modify: `C:\Users\11616\douban-taste-recommender\README.md` — clean Chinese guide and Cookie tutorial.
-- Add/modify tests in `C:\Users\11616\douban-taste-recommender\tests\`.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\serialization.py` — JSON round-trip and Cookie redaction.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py` — diagnostics, page classification, scale, fallback parsing.
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\storage.py` — non-sensitive JSON cache under `output/cache`.
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\candidate_planner.py` — movie/series/anime query planner.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\douban_sources.py` — fetch planned candidates with partial diagnostics.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\recommender.py` — sectioned quality-first ranking.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py` — sync/cache/recommend APIs.
+- Replace: `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py` — CineScope Studio UI.
+- Modify: `C:\path\to\douban-taste-recommender\README.md` — clean Chinese guide and Cookie tutorial.
+- Add/modify tests in `C:\path\to\douban-taste-recommender\tests\`.
 
 ---
 
 ### Task 1: Serialization Safety and README Encoding Guard
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\serialization.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\tests\test_serialization.py`
-- Create/Modify: `C:\Users\11616\douban-taste-recommender\tests\test_readme.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\serialization.py`
+- Modify: `C:\path\to\douban-taste-recommender\tests\test_serialization.py`
+- Create/Modify: `C:\path\to\douban-taste-recommender\tests\test_readme.py`
 
 **Interfaces:**
 - Consumes: `MediaItem` from `douban_recommender.models`.
@@ -82,7 +82,7 @@ class ReadmeEncodingTests(unittest.TestCase):
 - [ ] **Step 2: Verify failure**
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH="$PWD\src"
 $env:PYTHONDONTWRITEBYTECODE="1"
 python -m unittest tests.test_serialization tests.test_readme -v
@@ -140,8 +140,8 @@ git commit -m "chore: harden serialization and readable docs"
 ### Task 2: Crawl Diagnostics and Page Classification
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\tests\test_crawler.py`
 
 **Interfaces:**
 - Produces: `PageDiagnostic`, enhanced `CrawlResult`, `classify_collection_page(page_html: str, parsed_count: int) -> tuple[str, str]`.
@@ -232,8 +232,8 @@ git commit -m "feat: classify douban crawl pages"
 ### Task 3: Scale Sync to 242 / 34 and Add Completeness
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\tests\test_crawler.py`
 
 **Interfaces:**
 - Produces: `calculate_completeness(collect_count: int, wish_count: int, expected_collect: int | None, expected_wish: int | None) -> dict[str, object]`; `crawl_user_collections` default `max_pages=40`, clamp `1..200`, `include_do=False`, expected counts.
@@ -350,8 +350,8 @@ git commit -m "feat: scale douban sync with completeness"
 ### Task 4: Add Fallback Parser and Anime Inference
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\tests\test_crawler.py`
 
 **Interfaces:**
 - Produces: `parse_fallback_subject_links(page_html: str, status: str) -> list[MediaItem]`; `infer_media_type` returns `动漫` for animation/anime signals.
@@ -427,8 +427,8 @@ git commit -m "feat: parse douban collection variants"
 ### Task 5: Non-Sensitive Local Cache
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\storage.py`
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_storage.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\storage.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_storage.py`
 
 **Interfaces:**
 - Produces: `CacheStore`, `CacheSummary`, `default_cache_dir(root: Path) -> Path`.
@@ -543,8 +543,8 @@ git commit -m "feat: add local non-sensitive cache"
 ### Task 6: Candidate Planner for Movie, Series, and Anime
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\candidate_planner.py`
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_candidate_planner.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\candidate_planner.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_candidate_planner.py`
 
 **Interfaces:**
 - Produces: `CandidateQuery`, `build_candidate_plan(profile, include_movies=True, include_series=True, include_anime=True, depth='deep', wishlist=None) -> list[CandidateQuery]`.
@@ -653,8 +653,8 @@ git commit -m "feat: plan movie series anime candidates"
 ### Task 7: Fetch Planned Candidates with Partial Success
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\douban_sources.py`
-- Create/Modify: `C:\Users\11616\douban-taste-recommender\tests\test_douban_sources.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\douban_sources.py`
+- Create/Modify: `C:\path\to\douban-taste-recommender\tests\test_douban_sources.py`
 
 **Interfaces:**
 - Produces: `CandidateFetchReport`, `fetch_candidates_from_plan(plan: list[CandidateQuery], fetcher=None, sleep_seconds=0.15) -> CandidateFetchReport`.
@@ -739,8 +739,8 @@ git commit -m "feat: fetch planned douban candidates"
 ### Task 8: Quality-First Recommendation Sections
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\recommender.py`
-- Create/Modify: `C:\Users\11616\douban-taste-recommender\tests\test_recommender.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\recommender.py`
+- Create/Modify: `C:\path\to\douban-taste-recommender\tests\test_recommender.py`
 
 **Interfaces:**
 - Produces: enhanced `Recommendation` fields `section`, `badges`, `quality_label`, `short_reason`, `risk_label`, `is_wishlist`; `recommend(..., include_anime=True)`.
@@ -824,8 +824,8 @@ git commit -m "feat: rank cinescope recommendations"
 ### Task 9: Sync, Cache, and Enhanced Recommendation APIs
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`
-- Create/Modify: `C:\Users\11616\douban-taste-recommender\tests\test_web_api.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`
+- Create/Modify: `C:\path\to\douban-taste-recommender\tests\test_web_api.py`
 
 **Interfaces:**
 - Produces: `POST /api/sync-douban`, legacy alias `/api/crawl-douban`, `GET /api/cache`, `DELETE /api/cache`, `build_recommendation_sections(recs) -> list[dict[str, object]]`.
@@ -928,8 +928,8 @@ git commit -m "feat: add cinescope web APIs"
 ### Task 10: CineScope Studio UI Redesign
 
 **Files:**
-- Replace: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py`
-- Create/Modify: `C:\Users\11616\douban-taste-recommender\tests\test_ui_html.py`
+- Replace: `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py`
+- Create/Modify: `C:\path\to\douban-taste-recommender\tests\test_ui_html.py`
 
 **Interfaces:**
 - Consumes: `/api/sync-douban`, `/api/recommend`, `/api/cache`.
@@ -1014,8 +1014,8 @@ git commit -m "feat: redesign cinescope studio UI"
 ### Task 11: Complete README and Cookie Tutorial
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\README.md`
-- Modify: `C:\Users\11616\douban-taste-recommender\tests\test_readme.py`
+- Modify: `C:\path\to\douban-taste-recommender\README.md`
+- Modify: `C:\path\to\douban-taste-recommender\tests\test_readme.py`
 
 **Interfaces:**
 - Produces: clean UTF-8 guide with quick start, 242/34 sync advice, movie/series/anime scope, Cookie tutorial, privacy promise, verification commands.
@@ -1074,7 +1074,7 @@ git commit -m "docs: rewrite cinescope studio guide"
 - [ ] **Step 1: Run complete unit test suite**
 
 ```powershell
-cd C:\Users\11616\douban-taste-recommender
+cd C:\path\to\douban-taste-recommender
 $env:PYTHONPATH="$PWD\src"
 $env:PYTHONDONTWRITEBYTECODE="1"
 python -m unittest discover -s tests -v
@@ -1093,7 +1093,7 @@ Expected: command exits with code 0 and creates `output\cinescope-smoke.html`.
 - [ ] **Step 3: Run web smoke**
 
 ```powershell
-$job = Start-Job -ScriptBlock { Set-Location 'C:\Users\11616\douban-taste-recommender'; $env:PYTHONPATH="$PWD\src"; python -m douban_recommender.web --no-browser }
+$job = Start-Job -ScriptBlock { Set-Location 'C:\path\to\douban-taste-recommender'; $env:PYTHONPATH="$PWD\src"; python -m douban_recommender.web --no-browser }
 Start-Sleep -Seconds 2
 try { (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:7861).Content | Select-String 'CineScope Studio' } finally { Stop-Job $job; Remove-Job $job }
 ```
@@ -1124,4 +1124,3 @@ Skip this command when Step 1 through Step 4 produce no code changes.
 - Spec coverage: sync diagnostics, 242 / 34 completeness, page count 40 / 200, local cache, movie / series / anime candidates, quality-first scoring, costume-drama downranking, poster-wall UI, Cookie tutorial, and verification are mapped to tasks.
 - Placeholder scan: the plan uses concrete file paths, commands, expected outcomes, and code snippets for each code-changing task.
 - Type consistency: `PageDiagnostic`, `CandidateQuery`, `CandidateFetchReport`, `CacheStore`, enhanced `Recommendation`, `/api/sync-douban`, and `build_recommendation_sections` are introduced before dependent tasks use them.
-

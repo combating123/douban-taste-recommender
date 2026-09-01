@@ -21,10 +21,10 @@
 
 ## File Structure
 
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\curated_catalog.py` — expand people photos and global anime seed candidates.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\recommender.py` — add diversity reranking and richer badges/reasons.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py` — expose richer anime sections if needed through existing `build_recommendation_sections`.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py` — rebuild carousel and person UI.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\curated_catalog.py` — expand people photos and global anime seed candidates.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\recommender.py` — add diversity reranking and richer badges/reasons.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py` — expose richer anime sections if needed through existing `build_recommendation_sections`.
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py` — rebuild carousel and person UI.
 - Modify tests: `tests/test_curated_catalog.py`, `tests/test_recommender.py`, `tests/test_ui_html.py`, `tests/test_web_api.py`.
 
 ---
@@ -316,8 +316,8 @@ Expected: all tests pass.
 ```powershell
 Get-NetTCPConnection -LocalPort 7860,7861 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 $env:PYTHONPATH="$PWD\src"
-Start-Process -FilePath python -ArgumentList @('-m','douban_recommender.web','--host','127.0.0.1','--port','7860','--no-browser') -WorkingDirectory "C:\Users\11616\douban-taste-recommender" -WindowStyle Hidden
-Start-Process -FilePath python -ArgumentList @('-m','douban_recommender.web','--host','127.0.0.1','--port','7861','--no-browser') -WorkingDirectory "C:\Users\11616\douban-taste-recommender" -WindowStyle Hidden
+Start-Process -FilePath python -ArgumentList @('-m','douban_recommender.web','--host','127.0.0.1','--port','7860','--no-browser') -WorkingDirectory "C:\path\to\douban-taste-recommender" -WindowStyle Hidden
+Start-Process -FilePath python -ArgumentList @('-m','douban_recommender.web','--host','127.0.0.1','--port','7861','--no-browser') -WorkingDirectory "C:\path\to\douban-taste-recommender" -WindowStyle Hidden
 ```
 
 - [ ] **Step 3: Browser audit**

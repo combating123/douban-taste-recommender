@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
@@ -12,11 +13,12 @@ from typing import Any, Mapping
 from ..database import AppDatabase
 from ..privacy import sanitize_source_url, scrub_sensitive
 from .models import StoredAsset, ValidatedImage
-from .validator import validate_image_bytes
+from .validator import validate_image_bytes, validate_image_kind
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ASSET_ROUTE_RE = re.compile(r"^([0-9a-f]{64})(\.(?:jpg|jpeg|png|webp))?$", re.I)
+LOOKUP_CACHE_TTL_SECONDS = 30.0
 
 
 class MediaStore:
@@ -25,8 +27,11 @@ class MediaStore:
         self.database = database
         self.root.mkdir(parents=True, exist_ok=True)
         self.database.initialize()
+        self._lookup_cache: dict[tuple[str, str], tuple[tuple[object, ...], float, StoredAsset | None]] = {}
+        self._lookup_cache_lock = threading.Lock()
 
     def put(self, validated: ValidatedImage, source_url: str, kind: str) -> StoredAsset:
+        validate_image_kind(validated, kind)
         asset_id = validated.sha256.lower()
         relative_path = Path(asset_id[:2]) / f"{asset_id}{validated.extension}"
         final_path = (self.root / relative_path).resolve()
@@ -93,6 +98,15 @@ class MediaStore:
         return stored
 
     def lookup(self, asset_id: str) -> StoredAsset | None:
+        cache_lock = getattr(self, "_lookup_cache_lock", None)
+        if cache_lock is None:
+            cache_lock = threading.Lock()
+            self._lookup_cache_lock = cache_lock
+            self._lookup_cache = {}
+        lookup_cache = getattr(self, "_lookup_cache", None)
+        if not isinstance(lookup_cache, dict):
+            lookup_cache = {}
+            self._lookup_cache = lookup_cache
         match = ASSET_ROUTE_RE.fullmatch(str(asset_id or "").strip())
         if not match:
             return None
@@ -109,8 +123,22 @@ class MediaStore:
                 (key,),
             ).fetchone()
         if not row:
+            with cache_lock:
+                lookup_cache.pop((key, route_extension), None)
             return None
-        return self._validated_row(row, key, route_extension)
+        fingerprint = self._lookup_fingerprint(row)
+        cache_key = (key, route_extension)
+        now = time.monotonic()
+        with cache_lock:
+            cached = lookup_cache.get(cache_key)
+            if cached and cached[0] == fingerprint and now - cached[1] < LOOKUP_CACHE_TTL_SECONDS:
+                return cached[2]
+        stored = self._validated_row(row, key, route_extension)
+        with cache_lock:
+            lookup_cache[cache_key] = (fingerprint, now, stored)
+            if len(lookup_cache) > 2048:
+                lookup_cache.pop(next(iter(lookup_cache)))
+        return stored
 
     def bind_asset(
         self,
@@ -252,6 +280,7 @@ class MediaStore:
         try:
             payload = path.read_bytes()
             validated = validate_image_bytes(payload, mime_type, min_width=1, min_height=1)
+            validate_image_kind(validated, str(row["kind"] or ""))
             width = int(row["width"])
             height = int(row["height"])
             byte_size = int(row["byte_size"])
@@ -280,6 +309,31 @@ class MediaStore:
             source_url=str(row["source_url"]),
             kind=str(row["kind"]),
             status=str(row["status"]),
+        )
+
+    def _lookup_fingerprint(self, row: Any) -> tuple[object, ...]:
+        relative_text = str(row["relative_path"] or "").strip()
+        try:
+            relative_path = PurePosixPath(relative_text)
+            path = (self.root / Path(*relative_path.parts)).resolve()
+            stat = path.stat() if self._is_within_root(path) and path.is_file() else None
+        except (OSError, RuntimeError, ValueError):
+            stat = None
+        return (
+            str(row["asset_id"] or ""),
+            str(row["sha256"] or ""),
+            relative_text,
+            str(row["mime_type"] or ""),
+            str(row["extension"] or ""),
+            int(row["width"] or 0),
+            int(row["height"] or 0),
+            int(row["byte_size"] or 0),
+            str(row["source_url"] or ""),
+            str(row["kind"] or ""),
+            str(row["status"] or ""),
+            None if stat is None else int(stat.st_size),
+            None if stat is None else int(stat.st_mtime_ns),
+            None if stat is None else int(stat.st_ctime_ns),
         )
 
     def _is_within_root(self, path: Path) -> bool:

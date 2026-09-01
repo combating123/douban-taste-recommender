@@ -171,6 +171,76 @@ class MediaApiRouteTests(unittest.TestCase):
         self.assertEqual(request.query.source_urls, (item.cover,))
         self.assertEqual(request.query.provider_ids, {"douban": "9911"})
 
+    def test_media_job_hydrates_seed_aliases_and_static_exact_poster(self):
+        item = MediaItem(
+            title="\u7535\u8111\u7ebf\u5708",
+            media_type="\u52a8\u6f2b",
+            source="title_seed",
+            raw={"aliases": ["Dennou Coil"]},
+        )
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES('item:dennou-coil', ?, 'candidate', 'title_seed', ?, ?)
+                """,
+                (json.dumps(media_item_to_dict(item), ensure_ascii=False), now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO media_identities(
+                    id, title, original_titles_json, year, media_type,
+                    countries_json, metadata_json, created_at, updated_at
+                ) VALUES('item:dennou-coil', ?, '[]', NULL, ?, '[]',
+                         '{"item_key":"item:dennou-coil"}', ?, ?)
+                """,
+                (item.title, item.media_type, now, now),
+            )
+
+        self.api.create_job({"kind": "poster", "identity_key": "item:dennou-coil"})
+
+        query = self.orchestrator.requests[-1].query
+        self.assertIn("Dennou Coil", query.original_titles)
+        self.assertIn(
+            "https://cdn.myanimelist.net/images/anime/5/12844l.jpg",
+            query.source_urls,
+        )
+
+    def test_media_job_adds_curated_search_aliases_for_localized_seed_title(self):
+        item = MediaItem(
+            title="\u653b\u58f3\u673a\u52a8\u961f SAC",
+            media_type="\u52a8\u6f2b",
+            source="title_seed",
+            raw={"aliases": ["Ghost in the Shell SAC"]},
+        )
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES('item:ghost-sac', ?, 'candidate', 'title_seed', ?, ?)
+                """,
+                (json.dumps(media_item_to_dict(item), ensure_ascii=False), now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO media_identities(
+                    id, title, original_titles_json, year, media_type,
+                    countries_json, metadata_json, created_at, updated_at
+                ) VALUES('item:ghost-sac', ?, '[]', NULL, ?, '[]',
+                         '{"item_key":"item:ghost-sac"}', ?, ?)
+                """,
+                (item.title, item.media_type, now, now),
+            )
+
+        self.api.create_job({"kind": "poster", "identity_key": "item:ghost-sac"})
+
+        self.assertIn(
+            "Ghost in the Shell: Stand Alone Complex",
+            self.orchestrator.requests[-1].query.original_titles,
+        )
+
     def test_media_job_hydrates_registered_person_portrait_sources(self):
         now = time.time()
         with self.database.connection() as connection:
@@ -205,7 +275,7 @@ class MediaApiRouteTests(unittest.TestCase):
             },
         )
         with self.database.connection() as connection:
-            CatalogRegistry.register_sync_items(connection, "272042071", [item], time.time())
+            CatalogRegistry.register_sync_items(connection, "123456789", [item], time.time())
             person_id = connection.execute(
                 "SELECT id FROM person_identities WHERE name='导演甲'"
             ).fetchone()["id"]
@@ -237,6 +307,41 @@ class MediaApiRouteTests(unittest.TestCase):
         self.assertEqual(health["schema_version"], 2)
         self.assertIn("assets", health)
         self.assertIn("jobs", health)
+
+    def test_degraded_media_job_is_a_successful_terminal_lookup_not_a_missing_job(self):
+        self.orchestrator.jobs["job-degraded"] = {
+            "id": "job-degraded",
+            "kind": "portrait",
+            "state": "degraded",
+            "result": {"status": "degraded", "local_url": ""},
+            "error": "miss",
+        }
+
+        status, _, body = self.request("/api/v2/media/jobs/job-degraded")
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(200, status)
+        self.assertEqual("degraded", payload["state"])
+        self.assertEqual("miss", payload["error"])
+
+        missing_status, _, _ = self.request("/api/v2/media/jobs/job-missing")
+        self.assertEqual(404, missing_status)
+    def test_media_health_reports_ready_asset_counts_by_kind(self):
+        poster_output = io.BytesIO()
+        backdrop_output = io.BytesIO()
+        Image.new("RGB", (180, 270), "navy").save(poster_output, format="PNG")
+        Image.new("RGB", (320, 180), "teal").save(backdrop_output, format="PNG")
+        poster = self.store.put(validate_image_bytes(poster_output.getvalue()), "https://img.example/poster-kind.png", "poster")
+        backdrop = self.store.put(validate_image_bytes(backdrop_output.getvalue()), "https://img.example/backdrop-kind.png", "backdrop")
+        self.store.bind_asset("media", "douban:poster", "poster", poster, "test", 1.0, {})
+        self.store.bind_asset("media", "douban:backdrop", "backdrop", backdrop, "test", 1.0, {})
+
+        health = self.api.health()
+
+        self.assertEqual(2, health["assets"]["total"])
+        self.assertEqual(1, health["assets"]["by_kind"]["poster"])
+        self.assertEqual(1, health["assets"]["by_kind"]["backdrop"])
+        self.assertEqual(0, health["assets"]["by_kind"]["portrait"])
 
     def test_media_job_never_exposes_external_url_as_ready(self):
         self.orchestrator.jobs["job-external"] = {

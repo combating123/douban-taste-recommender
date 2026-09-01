@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 import html
 import re
 import time
@@ -21,6 +22,7 @@ DEFAULT_HEADERS = {
 }
 
 MAX_CRAWL_PAGES = 250
+MIN_GLOBAL_COOKIE_SECRET_LENGTH = 8
 
 COUNTRY_WORDS = [
     "中国大陆",
@@ -137,7 +139,7 @@ def normalize_douban_user_id(value: str) -> str:
 
 
 def build_user_collection_url(user_id: str, status: str, start: int) -> str:
-    if status not in {"collect", "wish"}:
+    if status not in {"collect", "wish", "do"}:
         raise ValueError("status 只能是 collect 或 wish")
     safe_user_id = urllib.parse.quote(normalize_douban_user_id(user_id), safe="")
     return f"https://movie.douban.com/people/{safe_user_id}/{status}?start={int(start)}&sort=time&rating=all&filter=all&mode=grid"
@@ -160,6 +162,7 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
 
         intro = clean_html(first_match(r'''<li\s+class=["']intro["'][^>]*>(.*?)</li>''', block))
         comment = clean_html(first_match(r'''<span\s+class=["']comment["'][^>]*>(.*?)</span>''', block))
+        activity_date = _extract_collection_date(block)
         rating_match = re.search(r"rating(\d)-t", block)
         my_rating = float(rating_match.group(1)) if rating_match else None
         cover = html.unescape(first_match(r'''<img[^>]+src=["']([^"']+)["']''', block))
@@ -179,8 +182,27 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
             title_variants=[title, *title_parts],
         )
         tag = "想看" if status == "wish" else "看过"
+        if status == "do":
+            tag = "\u5728\u770b"
         media_type = infer_media_type(title, intro)
         aliases = [part for part in title_parts[1:] if part != title]
+        raw = {
+            "intro": intro,
+            "aliases": aliases,
+            "episode_runtime_minutes": runtime_minutes,
+            "comment": comment,
+        }
+        if activity_date:
+            # Keep the user's collection activity date separate from the
+            # local sync timestamp. This is what the recent-watch timeline
+            # should display when the source provides it.
+            raw["activity_date"] = activity_date
+            if status == "collect":
+                raw["watched_date"] = activity_date
+            elif status == "wish":
+                raw["wish_date"] = activity_date
+            elif status == "do":
+                raw["in_progress_date"] = activity_date
         items.append(MediaItem(
             title=title,
             my_rating=my_rating,
@@ -196,11 +218,7 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
             cover=cover,
             summary=comment,
             source=f"douban_user:{status}",
-            raw={
-                "intro": intro,
-                "aliases": aliases,
-                "episode_runtime_minutes": runtime_minutes,
-            },
+            raw=raw,
         ))
     fallback_items = parse_fallback_subject_links(page_html or "", status=status)
     seen_ids = {item.douban_id for item in items if item.douban_id}
@@ -262,19 +280,56 @@ def parse_fallback_subject_links(page_html: str, status: str) -> list[MediaItem]
         local = page_html[max(0, match.start() - 300): match.end() + 300]
         title = clean_html(first_match(r'''<img[^>]+alt=["']([^"']+)["']''', inner + local)) or clean_html(inner)
         cover = html.unescape(first_match(r'''<img[^>]+src=["']([^"']+)["']''', inner + local))
+        activity_date = _extract_collection_date(local)
         if not title or subject_id in seen:
             continue
         seen.add(subject_id)
         tag = "想看" if status == "wish" else "看过"
+        raw = {}
+        if activity_date:
+            raw["activity_date"] = activity_date
+            if status == "collect":
+                raw["watched_date"] = activity_date
+            elif status == "wish":
+                raw["wish_date"] = activity_date
+            elif status == "do":
+                raw["in_progress_date"] = activity_date
         items.append(MediaItem(
             title=title,
             url=url,
             douban_id=subject_id,
             cover=cover,
-            tags=[tag],
+            tags=["\u5728\u770b" if status == "do" else tag],
             source=f"douban_user:{status}",
+            raw=raw,
         ))
     return items
+
+
+def _extract_collection_date(block: str) -> str:
+    """Extract a calendar activity date from a Douban collection card."""
+
+    markup = str(block or "")
+    candidates: list[str] = []
+    for pattern in (
+        r'''<[^>]+class=["'][^"']*\bdate\b[^"']*["'][^>]*>(.*?)</[^>]+>''',
+        r'''<[^>]+class=["'][^"']*\b(?:time|collect-date|activity-date)\b[^"']*["'][^>]*>(.*?)</[^>]+>''',
+        r'''data-(?:date|time)=["']([^"']+)["']''',
+    ):
+        candidates.extend(re.findall(pattern, markup, flags=re.I | re.S))
+    # Mobile markup has occasionally rendered the date without a class.
+    candidates.extend(re.findall(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b", markup))
+    for candidate in candidates:
+        value = clean_html(candidate)
+        match = re.search(r"\b((?:19|20)\d{2}-\d{2}-\d{2})\b", value)
+        if not match:
+            continue
+        try:
+            datetime.strptime(match.group(1), "%Y-%m-%d")
+        except ValueError:
+            continue
+        return match.group(1)
+    return ""
 
 
 def split_item_blocks(page_html: str) -> list[str]:
@@ -442,8 +497,11 @@ def redact_cookie_from_message(message: str, cookie: str) -> str:
     if not stripped_cookie:
         return redacted_message
 
-    redacted_message = redacted_message.replace(stripped_cookie, redact_cookie(stripped_cookie))
-    redacted_message = redacted_message.replace(stripped_cookie.replace(" ", ""), redact_cookie(stripped_cookie))
+    redacted_cookie = redact_cookie(stripped_cookie)
+    redacted_message = redacted_message.replace(stripped_cookie, redacted_cookie)
+    compact_cookie = stripped_cookie.replace(" ", "")
+    if compact_cookie != stripped_cookie:
+        redacted_message = redacted_message.replace(compact_cookie, redacted_cookie)
 
     for part in stripped_cookie.split(";"):
         text = part.strip()
@@ -453,7 +511,13 @@ def redact_cookie_from_message(message: str, cookie: str) -> str:
             name, value = text.split("=", 1)
             name = name.strip()
             value = value.strip()
-            if value:
+            if name and value:
+                redacted_message = re.sub(
+                    rf"(?i)\b{re.escape(name)}\s*=\s*{re.escape(value)}",
+                    f"{name}=<redacted>",
+                    redacted_message,
+                )
+            if value and len(value) >= MIN_GLOBAL_COOKIE_SECRET_LENGTH:
                 redacted_message = redacted_message.replace(value, "<redacted>")
             if name:
                 redacted_message = re.sub(
@@ -461,12 +525,7 @@ def redact_cookie_from_message(message: str, cookie: str) -> str:
                     f"{name}=<redacted>",
                     redacted_message,
                 )
-                redacted_message = re.sub(
-                    rf"(?i)\b{re.escape(name)}\s*=\s*{re.escape(value)}",
-                    f"{name}=<redacted>",
-                    redacted_message,
-                )
-        else:
+        elif len(text) >= MIN_GLOBAL_COOKIE_SECRET_LENGTH:
             redacted_message = redacted_message.replace(text, "<redacted>")
     return redacted_message
 

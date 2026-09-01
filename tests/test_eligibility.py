@@ -126,6 +126,42 @@ class GeneralEligibilityTests(unittest.TestCase):
         self.assertTrue(unknown.eligible)
         self.assertTrue(any(signal.code == "rating-unknown" for signal in unknown.penalties))
 
+    def test_douban_default_cover_is_not_a_recommendable_title(self):
+        for media_type, cover in (
+            ("电影", "https://img2.doubanio.com/cuphead/movie-static/pics/movie_default_large.png"),
+            ("电视剧", "https://img2.doubanio.com/cuphead/movie-static/pics/tv_default_large.png"),
+        ):
+            with self.subTest(cover=cover):
+                item = MediaItem(
+                    title="未验证的新条目",
+                    media_type=media_type,
+                    source=f"douban_explore:{media_type}:sort=R",
+                    cover=cover,
+                )
+
+                decision = evaluate_eligibility(
+                    item,
+                    set(),
+                    RecommendationIntent(media_types=(media_type,)),
+                )
+
+                self.assertFalse(decision.eligible)
+                self.assertIn("placeholder-cover", decision.reasons)
+
+    def test_unrated_public_douban_discovery_noise_is_not_recommendable(self):
+        item = MediaItem(
+            title="Idhayam Murali",
+            media_type="电影",
+            source="douban_explore:电影:sort=R",
+            douban_rating=None,
+            tags=[],
+        )
+
+        decision = evaluate_eligibility(item, set(), RecommendationIntent(media_types=("电影",)))
+
+        self.assertFalse(decision.eligible)
+        self.assertIn("unrated-public-discovery", decision.reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

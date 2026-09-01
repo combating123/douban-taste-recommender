@@ -315,6 +315,26 @@ class FeedbackServiceTests(unittest.TestCase):
         self.assertGreater(profile.positive["genre:悬疑"], 0)
         self.assertGreater(profile.negative["genre:古装"], 0)
 
+    def test_feedback_signals_expose_active_permanent_exclusion_tokens(self):
+        event_id = self.service.record_feedback(
+            FeedbackEvent(
+                event_type="permanent-avoid",
+                item_key="douban:123",
+                profile_key="profile-1",
+                payload={"identity_tokens": ["douban:123", "title-year-type:目标|2024|电影"]},
+            )
+        )
+
+        active = self.service.feedback_signals("profile-1")
+        self.assertEqual(
+            active.permanent_excluded_item_keys,
+            ("douban:123", "title-year-type:目标|2024|电影"),
+        )
+
+        self.service.undo_feedback(event_id)
+        undone = self.service.feedback_signals("profile-1")
+        self.assertEqual(undone.permanent_excluded_item_keys, ())
+
 
 if __name__ == "__main__":
     unittest.main()

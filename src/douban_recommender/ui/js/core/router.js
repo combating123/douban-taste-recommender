@@ -177,7 +177,10 @@ export function createRouter(routes, { onRoute, onScrollSaved } = {}) {
       return lastNavigation;
     },
     navigate(path, state = {}) {
-      navigate(path, state);
+      const browser = browserWindow();
+      const sourcePath = currentRoute?.path || normalisePath(browser.location.pathname);
+      const navigationState = state && typeof state === "object" && !Array.isArray(state) ? state : {};
+      navigate(path, { ...navigationState, from: sourcePath });
       return lastNavigation;
     },
     destroy() {

@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from math import log10
 
+from .candidate_origin import candidate_origin
 from .models import MediaItem, canonical_media_type, normalize_title, recommendation_item_key
 from .profiler import TasteProfile
+from .ratings import fused_rating
 
 
 @dataclass
@@ -27,6 +29,8 @@ class Recommendation:
         item = self.item
         raw = item.raw if isinstance(item.raw, dict) else {}
         aliases = raw.get("aliases") if isinstance(raw.get("aliases"), list) else []
+        source_ratings = raw.get("ratings") if isinstance(raw.get("ratings"), dict) else {}
+        provider_ids = raw.get("provider_ids") if isinstance(raw.get("provider_ids"), dict) else {}
         return {
             "title": item.title,
             "year": item.year,
@@ -44,7 +48,18 @@ class Recommendation:
             "cover": item.cover,
             "summary": item.summary,
             "source": item.source,
+            "candidate_origin": candidate_origin(item),
             "aliases": [str(value).strip() for value in aliases if str(value).strip()],
+            "source_ratings": dict(source_ratings),
+            "provider_ids": dict(provider_ids),
+            "backdrop": str(raw.get("backdrop") or ""),
+            "stills": list(raw.get("stills") or []) if isinstance(raw.get("stills"), list) else [],
+            "episodes": raw.get("episodes"),
+            "episode_runtime": raw.get("episode_runtime"),
+            "runtime": raw.get("runtime"),
+            "discovery_sources": list(raw.get("discovery_sources") or [])
+            if isinstance(raw.get("discovery_sources"), list)
+            else [],
             "people_photos": item.raw.get("people_photos", {}) if isinstance(item.raw, dict) else {},
             "reasons": self.reasons,
             "warnings": self.warnings,
@@ -242,6 +257,7 @@ def score_item(item: MediaItem, profile: TasteProfile, apply_costume_penalty: bo
     warnings: list[str] = []
     pos_hits: list[tuple[str, float, str]] = []
     neg_hits: list[tuple[str, float, str]] = []
+    fused = fused_rating(item)
 
     for field, values in item.feature_values().items():
         for value in values:
@@ -279,7 +295,7 @@ def score_item(item: MediaItem, profile: TasteProfile, apply_costume_penalty: bo
             neg_hits.append((f"避雷关键词：{term}", delta, f"keyword:{term}"))
 
     quality_terms = ["剧情", "叙事", "人物", "口碑", "高分"]
-    if item.douban_rating and item.douban_rating >= 8.5:
+    if fused.rating and fused.rating >= 8.5:
         score += 6.0
     if any(term in blob for term in quality_terms):
         score += 4.0
@@ -288,17 +304,19 @@ def score_item(item: MediaItem, profile: TasteProfile, apply_costume_penalty: bo
         score -= 18.0
         warnings.append("电视剧古装 / 宫廷 / 历史向内容，与你的避雷设置冲突")
 
-    if item.douban_rating is not None:
-        quality = (float(item.douban_rating) - 7.0) * 3.2
+    if fused.rating is not None:
+        quality = (float(fused.rating) - 7.0) * 3.2
         score += quality
-        if item.douban_rating >= 8.5:
-            reasons.append(f"豆瓣评分 {item.douban_rating:g}，口碑很稳")
-        elif item.douban_rating >= 8.0:
-            reasons.append(f"豆瓣评分 {item.douban_rating:g}，整体评价较高")
-        elif item.douban_rating < 6.5:
-            warnings.append(f"豆瓣评分 {item.douban_rating:g} 偏低，建议谨慎")
-    if item.vote_count:
-        score += min(4.0, log10(max(item.vote_count, 1)) * 0.8)
+        rating_source = "豆瓣评分" if fused.providers == ("douban",) else "多源综合评分"
+        if fused.rating >= 8.5:
+            reasons.append(f"{rating_source} {fused.rating:g}，口碑很稳")
+        elif fused.rating >= 8.0:
+            reasons.append(f"{rating_source} {fused.rating:g}，整体评价较高")
+        elif fused.rating < 6.5:
+            warnings.append(f"{rating_source} {fused.rating:g} 偏低，建议谨慎")
+    votes = fused.vote_count or item.vote_count or 0
+    if votes:
+        score += min(4.0, log10(max(votes, 1)) * 0.8)
     if "douban_explore" in item.source:
         score += 1.2
         reasons.append("来自豆瓣探索候选池，已利用豆瓣平台的候选排序")
@@ -338,9 +356,9 @@ def score_item(item: MediaItem, profile: TasteProfile, apply_costume_penalty: bo
         section = "动漫"
     elif item.media_type == "电视剧":
         section = "电视剧"
-    elif item.douban_rating and item.douban_rating >= 8.7:
+    elif fused.rating and fused.rating >= 8.7:
         section = "必看 Top Picks"
-    quality_label = "高分佳作" if item.douban_rating and item.douban_rating >= 8.5 else "潜力推荐"
+    quality_label = "高分佳作" if fused.rating and fused.rating >= 8.5 else "潜力推荐"
     short_reason = reasons[0] if reasons else "质量优先策略推荐"
     risk_label = warnings[0] if warnings else ""
     badges = [item.media_type] if item.media_type else []
@@ -362,10 +380,12 @@ def score_item(item: MediaItem, profile: TasteProfile, apply_costume_penalty: bo
 
 def item_quality(item: MediaItem) -> float:
     value = 0.0
-    if item.douban_rating:
-        value += float(item.douban_rating)
-    if item.vote_count:
-        value += min(2.0, log10(max(item.vote_count, 1)) / 3)
+    fused = fused_rating(item)
+    if fused.rating:
+        value += float(fused.rating)
+    votes = fused.vote_count or item.vote_count or 0
+    if votes:
+        value += min(2.0, log10(max(votes, 1)) / 3)
     if item.source:
         value += 0.2
     return value

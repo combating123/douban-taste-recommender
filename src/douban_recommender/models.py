@@ -149,6 +149,50 @@ def recommendation_item_key(item: MediaItem | dict[str, Any]) -> str:
     return "item:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
 
 
+def recommendation_identity_tokens(item: MediaItem | dict[str, Any]) -> tuple[str, ...]:
+    """Return stable aliases used to suppress duplicate versions of the same work.
+
+    Provider IDs remain the strongest identity.  A normalized title/year/type alias
+    bridges records where one source has a Douban ID and another source does not.
+    """
+
+    if isinstance(item, dict):
+        getter = item.get
+        raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
+    else:
+        getter = lambda key, default="": getattr(item, key, default)
+        raw = item.raw if isinstance(item.raw, dict) else {}
+    titles = [str(getter("title") or "").strip()]
+    original_title = str(raw.get("original_title") or "").strip()
+    if original_title:
+        titles.append(original_title)
+    for field_name in ("original_titles", "aliases"):
+        values = raw.get(field_name)
+        if isinstance(values, str):
+            values = [values]
+        if isinstance(values, (list, tuple, set)):
+            titles.extend(str(value or "").strip() for value in values)
+    year = str(getter("year") or "").strip()
+    media_type = canonical_media_type(getter("media_type") or "").strip()
+    tokens = [recommendation_item_key(item)]
+    provider_ids = raw.get("provider_ids")
+    if isinstance(provider_ids, dict):
+        for provider, identifier in sorted(provider_ids.items(), key=lambda entry: str(entry[0])):
+            normalized_provider = re.sub(r"[^a-z0-9._~-]+", "", str(provider or "").casefold())
+            normalized_identifier = str(identifier or "").strip().casefold()
+            if normalized_provider and normalized_identifier:
+                tokens.append(f"provider:{normalized_provider}:{normalized_identifier}")
+    for title in titles:
+        normalized = normalize_title(title)
+        if not normalized:
+            continue
+        if year:
+            tokens.append(f"title-year-type:{normalized}|{year}|{media_type}")
+        else:
+            tokens.append(f"title-type:{normalized}|{media_type}")
+    return tuple(dict.fromkeys(token for token in tokens if token))
+
+
 def normalize_title(title: str) -> str:
     text = str(title or "").lower().strip()
     for ch in " 　\t\r\n:：-—_·.,，。!！?？《》<>[]【】()（）/\\|\"":

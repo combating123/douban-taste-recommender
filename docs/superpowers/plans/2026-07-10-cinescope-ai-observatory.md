@@ -1,4 +1,4 @@
-# CineScope AI Observatory Master Implementation Plan
+﻿# CineScope AI Observatory Master Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement these plans in order. Each child plan uses checkbox (`- [ ]`) syntax for tracking.
 
@@ -29,4 +29,3 @@
 4. [`2026-07-10-cinescope-verification-rollout.md`](2026-07-10-cinescope-verification-rollout.md)
 
 Each plan must leave the application runnable and the full pre-existing test suite green before the next plan starts.
-

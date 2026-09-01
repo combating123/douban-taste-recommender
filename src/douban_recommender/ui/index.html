@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <title>CineScope · 本地 AI 影视体验</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/v3/favicon.svg" />
   <link rel="stylesheet" href="/assets/v3/styles/tokens.css" />
   <link rel="stylesheet" href="/assets/v3/styles/shell.css" />
   <link rel="stylesheet" href="/assets/v3/styles/components.css" />
@@ -12,6 +13,7 @@
   <link rel="stylesheet" href="/assets/v3/styles/detail.css" />
   <link rel="stylesheet" href="/assets/v3/styles/universe.css" />
   <link rel="stylesheet" href="/assets/v3/styles/spaces.css" />
+  <link rel="stylesheet" href="/assets/v3/styles/observatory.css" />
   <link rel="stylesheet" href="/assets/v3/styles/responsive.css" />
   <link rel="stylesheet" href="/assets/v3/styles/motion.css" />
 </head>
@@ -20,12 +22,12 @@
   <button id="rail-restore" class="rail-restore" type="button" aria-controls="primary-rail" aria-expanded="false" hidden>显示导航</button>
   <div class="cinescope-shell">
     <aside id="primary-rail" class="app-rail" aria-label="CineScope 空间导航">
-      <a class="rail-mark" href="/tonight" data-route aria-label="CineScope 今晚">CS</a>
-      <nav aria-label="主要空间">
-        <a href="/tonight" data-route><span class="rail-symbol" aria-hidden="true">✦</span><span class="rail-label">推荐</span></a>
-        <a href="/library" data-route><span class="rail-symbol" aria-hidden="true">▦</span><span class="rail-label">片库</span></a>
-        <a href="/taste" data-route><span class="rail-symbol" aria-hidden="true">◈</span><span class="rail-label">口味</span></a>
-        <a href="/health" data-route><span class="rail-symbol" aria-hidden="true">⚙</span><span class="rail-label">设置</span></a>
+      <a class="rail-mark" href="/tonight" data-route aria-label="CineScope 首页"><span aria-hidden="true">C</span><span class="visually-hidden">CineScope</span></a>
+      <nav aria-label="主导航">
+        <a href="/tonight" data-route><svg class="rail-symbol" data-lucide="play" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" /></svg><span class="rail-label">推荐</span></a>
+        <a href="/library" data-route><svg class="rail-symbol" data-lucide="library-big" viewBox="0 0 24 24" aria-hidden="true"><rect width="8" height="18" x="3" y="3" rx="1" /><path d="M7 3v18" /><path d="M20.4 18.9c.2.5-.1 1.1-.6 1.3l-1.9.7c-.5.2-1.1-.1-1.3-.6L11.1 5.1c-.2-.5.1-1.1.6-1.3l1.9-.7c.5-.2 1.1.1 1.3.6Z" /></svg><span class="rail-label">片库</span></a>
+        <a href="/taste" data-route><svg class="rail-symbol" data-lucide="sparkles" viewBox="0 0 24 24" aria-hidden="true"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z" /><path d="M20 2v4" /><path d="M22 4h-4" /><circle cx="4" cy="20" r="2" /></svg><span class="rail-label">口味</span></a>
+        <a href="/health" data-route><svg class="rail-symbol" data-lucide="settings-2" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 17H5" /><path d="M19 7h-9" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></svg><span class="rail-label">设置</span></a>
       </nav>
       <div class="rail-controls">
         <button id="rail-hide-toggle" class="rail-control" type="button" aria-controls="primary-rail" aria-expanded="true">隐藏侧栏</button>
@@ -34,9 +36,9 @@
 
     <div class="shell-content">
       <header class="top-bar">
-        <p class="eyebrow">CineScope / 私人影院</p>
-        <p id="shell-status" class="shell-status">本地片库已准备就绪</p>
-        <button id="command-lens-trigger" class="command-lens-trigger" type="button" aria-haspopup="dialog">描述今晚 · Ctrl K</button>
+        <a class="product-brand" href="/tonight" data-route>CineScope</a>
+        <p id="shell-status" class="shell-status">本地片库已连接</p>
+        <button id="command-lens-trigger" class="command-lens-trigger" type="button" aria-label="在线搜索影片、剧集与动画" title="在线搜索影片、剧集与动画 · Ctrl K" aria-haspopup="dialog"><svg class="command-lens-symbol" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg><span class="command-lens-trigger__label">在线搜索影片、剧集与动画</span></button>
       </header>
 
       <div id="command-lens-root" aria-label="Command Lens"></div>

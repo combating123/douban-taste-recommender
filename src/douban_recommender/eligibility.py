@@ -4,7 +4,8 @@ import re
 from dataclasses import dataclass
 
 from .intent_parser import RecommendationIntent
-from .models import MediaItem, canonical_media_type, normalize_title, recommendation_item_key
+from .models import MediaItem, canonical_media_type, recommendation_identity_tokens
+from .ratings import fused_rating
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class EligibilityDecision:
 PLACEHOLDER_TITLE_RE = re.compile(r"^(?:电影|电视剧|动漫|动画|影视|作品)?候选\s*#?\s*\d+$", re.I)
 MOVIE_FORMATS = {"MOVIE", "FILM", "FEATURE", "THEATRICAL", "ANIME_MOVIE", "ANIMATION_MOVIE", "动画电影"}
 SERIES_FORMATS = {"TV", "TV_SERIES", "SERIES", "ONA", "WEB", "MINISERIES"}
+PLACEHOLDER_COVER_MARKERS = ("_default_", "/default_")
 
 
 def _raw_int(raw: dict, *keys: str) -> int | None:
@@ -100,6 +102,24 @@ def _runtime(item: MediaItem, episode: bool) -> int | None:
     return _raw_int(raw, *keys)
 
 
+def catalog_quality_reasons(item: MediaItem) -> tuple[str, ...]:
+    title = str(item.title or "").strip()
+    if not title or PLACEHOLDER_TITLE_RE.fullmatch(re.sub(r"\s+", "", title)):
+        return ("placeholder-title",)
+    cover = str(item.cover or "").strip().casefold()
+    if cover and any(marker in cover for marker in PLACEHOLDER_COVER_MARKERS):
+        return ("placeholder-cover",)
+    source = str(item.source or "").strip().casefold()
+    user_tags = {str(tag or "").strip() for tag in item.tags or []}
+    if (
+        source.startswith(("douban_plan:", "douban_explore:"))
+        and item.douban_rating is None
+        and not ({"想看", "看过"} & user_tags)
+    ):
+        return ("unrated-public-discovery",)
+    return ()
+
+
 def evaluate_eligibility(
     item: MediaItem,
     seen_keys: set[str],
@@ -108,13 +128,12 @@ def evaluate_eligibility(
     reasons: list[str] = []
     penalties: list[ScoreSignal] = []
     title = str(item.title or "").strip()
-    if not title or PLACEHOLDER_TITLE_RE.fullmatch(re.sub(r"\s+", "", title)):
-        return EligibilityDecision(False, ("placeholder-title",))
+    quality_reasons = catalog_quality_reasons(item)
+    if quality_reasons:
+        return EligibilityDecision(False, quality_reasons)
 
     normalized_seen = {str(key).strip() for key in seen_keys if str(key).strip()}
-    if item.identity in normalized_seen or recommendation_item_key(item) in normalized_seen:
-        return EligibilityDecision(False, ("already-seen",))
-    if item.year is None and (normalize_title(title) in normalized_seen or title in normalized_seen):
+    if set(recommendation_identity_tokens(item)) & normalized_seen:
         return EligibilityDecision(False, ("already-seen",))
 
     item_type = canonical_media_type(item.media_type)
@@ -132,9 +151,10 @@ def evaluate_eligibility(
             return EligibilityDecision(False, ("explicit-avoid", str(term)))
 
     if intent.quality_floor is not None:
-        if item.douban_rating is not None and float(item.douban_rating) < float(intent.quality_floor):
+        quality = fused_rating(item)
+        if quality.rating is not None and quality.rating < float(intent.quality_floor):
             return EligibilityDecision(False, ("below-quality-floor",))
-        if item.douban_rating is None:
+        if quality.rating is None:
             penalties.append(ScoreSignal("rating-unknown", "评分资料不足", -6.0))
 
     if intent.year_min and item.year and int(item.year) < int(intent.year_min):

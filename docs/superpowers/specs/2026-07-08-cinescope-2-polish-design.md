@@ -1,7 +1,7 @@
 ﻿# CineScope 2.0 深度打磨设计
 
 日期：2026-07-08  
-项目：`C:\Users\11616\douban-taste-recommender`  
+项目：`C:\path\to\douban-taste-recommender`
 分支：`douban-crawler-ui-redesign`
 
 ## 背景

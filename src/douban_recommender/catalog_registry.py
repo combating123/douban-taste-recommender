@@ -20,6 +20,12 @@ _STATE_RANK = {
     "collect": 3,
     "rated": 3,
 }
+_PLACEHOLDER_PORTRAIT_MARKERS = (
+    "personage-default",
+    "celebrity-default",
+    "default-avatar",
+    "default_portrait",
+)
 
 
 @dataclass(frozen=True)
@@ -197,7 +203,11 @@ def _person_photo_sources(item: MediaItem, name: str) -> list[str]:
         values = raw_value if isinstance(raw_value, (list, tuple, set)) else (raw_value,)
         for value in values:
             url = str(value or "").strip()
-            if url.startswith(("https://", "http://")) and url not in sources:
+            if (
+                url.startswith(("https://", "http://"))
+                and not any(marker in url.casefold() for marker in _PLACEHOLDER_PORTRAIT_MARKERS)
+                and url not in sources
+            ):
                 sources.append(url)
     return sources
 
@@ -282,6 +292,143 @@ class CatalogRegistry:
         }
 
     @staticmethod
+    def reconcile_sync_snapshot(
+        connection,
+        user_id: str,
+        items: Iterable[MediaItem | dict[str, object]],
+        now: float,
+    ) -> dict[str, int]:
+        """Make a fully successful Douban crawl an authoritative user-library snapshot."""
+
+        clean_user_id = str(user_id or "").strip()
+        registrations = _coalesce_items(items)
+        snapshot_keys: set[str] = set()
+        updated = 0
+        for item_key, registration in registrations.items():
+            if registration.state not in {"watched", "wish"}:
+                continue
+            snapshot_keys.add(item_key)
+            existing = connection.execute(
+                "SELECT payload_json FROM library_items WHERE item_key=?",
+                (item_key,),
+            ).fetchone()
+            existing_payload = _json_object(existing["payload_json"]) if existing else {}
+            payload = _merge_payload(registration.payload, existing_payload)
+            status_tags = {"collect", "watched", "看过", "wish", "wanted", "想看"}
+            tags = [tag for tag in _dedupe(payload.get("tags") or []) if tag.casefold() not in status_tags]
+            status = "collect" if registration.state == "watched" else "wish"
+            tags.append("看过" if registration.state == "watched" else "想看")
+            payload["tags"] = tags
+            payload["source"] = f"douban_user:{status}"
+            source = f"douban-sync:{clean_user_id}:{registration.state}"
+            connection.execute(
+                """
+                UPDATE library_items
+                SET payload_json=?, state=?, source=?, updated_at=?
+                WHERE item_key=?
+                """,
+                (_json_dumps(payload), registration.state, source, float(now), item_key),
+            )
+            updated += 1
+
+        where = "source LIKE ? OR source LIKE 'douban_user:%'"
+        params: list[object] = [f"douban-sync:{clean_user_id}:%"]
+        if snapshot_keys:
+            placeholders = ",".join("?" for _ in snapshot_keys)
+            where = f"({where}) AND item_key NOT IN ({placeholders})"
+            params.extend(sorted(snapshot_keys))
+        deleted = connection.execute(
+            f"DELETE FROM library_items WHERE {where}",
+            params,
+        ).rowcount
+        return {"updated": updated, "deleted": max(0, int(deleted or 0)), "snapshot_items": len(snapshot_keys)}
+
+    @staticmethod
+    def register_enriched_item(
+        connection,
+        item_key: str,
+        item: MediaItem | dict[str, object],
+        now: float,
+    ) -> MediaItem:
+        """Patch verified metadata into an existing library row without changing its route key."""
+
+        cleaned = _clean_item(item)
+        if cleaned is None:
+            raise ValueError("enriched item requires a title")
+        enriched_item, enriched_payload = cleaned
+        existing = connection.execute(
+            "SELECT payload_json FROM library_items WHERE item_key=?",
+            (str(item_key),),
+        ).fetchone()
+        if existing is None:
+            raise KeyError("library item not found")
+
+        enriched_raw = enriched_payload.get("raw") if isinstance(enriched_payload.get("raw"), dict) else {}
+        repaired_identity = bool(str(enriched_raw.get("identity_repaired_from") or "").strip())
+        merged_payload = (
+            enriched_payload
+            if repaired_identity
+            else _merge_payload(enriched_payload, _json_object(existing["payload_json"]))
+        )
+        people_credit_source = str(enriched_raw.get("people_credit_source") or "").strip()
+        expected_credit_source = f"douban:{str(enriched_item.douban_id or '').strip()}"
+        if people_credit_source == expected_credit_source and expected_credit_source.removeprefix("douban:").isdigit():
+            for field in ("directors", "casts"):
+                authoritative_names = enriched_payload.get(field)
+                if isinstance(authoritative_names, list) and authoritative_names:
+                    merged_payload[field] = list(authoritative_names)
+        if isinstance(enriched_raw.get("people_photos"), dict):
+            merged_raw = merged_payload.get("raw") if isinstance(merged_payload.get("raw"), dict) else {}
+            merged_raw["people_photos"] = dict(enriched_raw["people_photos"])
+            merged_payload["raw"] = merged_raw
+        effective = media_item_from_dict(merged_payload)
+        if repaired_identity:
+            current_douban_id = str(effective.douban_id or "").strip()
+            connection.execute(
+                """
+                DELETE FROM provider_identities
+                WHERE entity_kind='media' AND entity_id=? AND provider='douban' AND provider_id<>?
+                """,
+                (str(item_key), current_douban_id),
+            )
+            for table in ("asset_candidates", "resolution_jobs", "user_asset_overrides"):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE entity_kind='media' AND entity_id=?",
+                    (str(item_key),),
+                )
+        connection.execute(
+            "UPDATE library_items SET payload_json=?, updated_at=? WHERE item_key=?",
+            (_json_dumps(merged_payload), float(now), str(item_key)),
+        )
+        CatalogRegistry._upsert_media_identity(
+            connection,
+            str(item_key),
+            effective,
+            float(now),
+            replace_existing=repaired_identity,
+        )
+        if effective.douban_id:
+            CatalogRegistry._upsert_douban_identity(connection, str(item_key), effective, float(now))
+
+        for role, names in (("director", effective.directors), ("cast", effective.casts)):
+            for name in names:
+                clean_name = unicodedata.normalize("NFKC", str(name or "").strip())
+                if not clean_name:
+                    continue
+                CatalogRegistry._upsert_person_identity(
+                    connection,
+                    clean_name,
+                    {
+                        "roles": {role},
+                        "evidence_title_ids": {str(item_key)},
+                        "known_works": {effective.title},
+                        "portrait_source_urls": set(_person_photo_sources(effective, clean_name)),
+                    },
+                    float(now),
+                )
+        return effective
+
+    @staticmethod
     def _upsert_library_item(
         connection,
         registration: _RegistrationItem,
@@ -330,7 +477,14 @@ class CatalogRegistry:
         return item
 
     @staticmethod
-    def _upsert_media_identity(connection, item_key: str, item: MediaItem, now: float) -> None:
+    def _upsert_media_identity(
+        connection,
+        item_key: str,
+        item: MediaItem,
+        now: float,
+        *,
+        replace_existing: bool = False,
+    ) -> None:
         existing = connection.execute(
             """
             SELECT original_titles_json, countries_json, metadata_json
@@ -353,7 +507,7 @@ class CatalogRegistry:
             "tags": list(item.tags),
             "raw": dict(item.raw),
         }
-        if existing is not None:
+        if existing is not None and not replace_existing:
             aliases = _dedupe([*aliases, *_json_list(existing["original_titles_json"])])
             countries = _dedupe([*countries, *_json_list(existing["countries_json"])])
             metadata = _merge_metadata(_json_object(existing["metadata_json"]), metadata)
@@ -432,6 +586,11 @@ class CatalogRegistry:
             metadata = _merge_metadata(_json_object(row["metadata_json"]), metadata)
         for key in ("roles", "evidence_title_ids", "known_works", "portrait_source_urls"):
             metadata[key] = sorted(_dedupe(metadata.get(key) if isinstance(metadata.get(key), list) else []))
+        metadata["portrait_source_urls"] = [
+            url
+            for url in metadata["portrait_source_urls"]
+            if not any(marker in url.casefold() for marker in _PLACEHOLDER_PORTRAIT_MARKERS)
+        ]
         connection.execute(
             """
             INSERT INTO person_identities(

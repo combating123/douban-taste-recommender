@@ -62,12 +62,17 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertEqual(normalize_douban_user_id(url), "moviefan123")
 
     def test_normalize_douban_user_id_extracts_tracking_profile_url(self):
-        url = "https://www.douban.com/people/272042071/?_dtcc=1&_i=33953249Yxbr5m"
-        self.assertEqual(normalize_douban_user_id(url), "272042071")
+        url = "https://www.douban.com/people/123456789/?_dtcc=1&_i=33953249Yxbr5m"
+        self.assertEqual(normalize_douban_user_id(url), "123456789")
 
     def test_build_user_collection_url_for_collect(self):
         url = build_user_collection_url("moviefan123", "collect", 30)
         self.assertEqual(url, "https://movie.douban.com/people/moviefan123/collect?start=30&sort=time&rating=all&filter=all&mode=grid")
+
+    def test_build_user_collection_url_for_in_progress_items(self):
+        url = build_user_collection_url("moviefan123", "do", 15)
+
+        self.assertEqual(url, "https://movie.douban.com/people/moviefan123/do?start=15&sort=time&rating=all&filter=all&mode=grid")
 
     def test_normalize_douban_user_id_uses_readable_chinese_errors(self):
         with self.assertRaises(ValueError) as empty_error:
@@ -100,6 +105,9 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertEqual(first.douban_id, "33404425")
         self.assertEqual(first.cover, "https://img.example/cover.jpg")
         self.assertEqual(first.summary, "孩子、家庭与犯罪的阴影")
+        self.assertEqual(first.raw["comment"], "孩子、家庭与犯罪的阴影")
+        self.assertEqual(first.raw["activity_date"], "2024-01-01")
+        self.assertEqual(first.raw["watched_date"], "2024-01-01")
 
     def test_parse_user_collection_html_handles_no_rating(self):
         items = parse_user_collection_html(COLLECT_HTML, status="wish")
@@ -108,6 +116,14 @@ class CrawlerParserTests(unittest.TestCase):
         self.assertEqual(second.title, "想见你")
         self.assertIsNone(second.my_rating)
         self.assertIn("想看", second.tags)
+        self.assertEqual(items[0].raw["wish_date"], "2024-01-01")
+
+    def test_parse_user_collection_html_marks_in_progress_items(self):
+        items = parse_user_collection_html(COLLECT_HTML, status="do")
+
+        self.assertEqual(items[0].source, "douban_user:do")
+        self.assertIn("\u5728\u770b", items[0].tags)
+        self.assertEqual(items[0].raw["in_progress_date"], "2024-01-01")
 
     def test_parse_user_collection_html_infers_series_from_title_or_intro(self):
         html = """
@@ -242,6 +258,25 @@ class CrawlerParserTests(unittest.TestCase):
                 self.assertNotIn("bid=secret-cookie-value", joined)
                 self.assertNotIn("ck=hidden-token", joined)
                 self.assertIn("<redacted>", joined)
+
+    def test_cookie_redaction_keeps_business_identifiers_when_cookie_value_is_short(self):
+        from douban_recommender.crawler import redact_cookie_from_message
+
+        message = (
+            "job=11111111111111111111111111111111 "
+            "user=123456789 push_noty_num=1 bid=secret-cookie-value"
+        )
+
+        redacted = redact_cookie_from_message(
+            message,
+            "bid=secret-cookie-value; push_noty_num=1",
+        )
+
+        self.assertIn("job=11111111111111111111111111111111", redacted)
+        self.assertIn("user=123456789", redacted)
+        self.assertIn("push_noty_num=<redacted>", redacted)
+        self.assertIn("bid=<redacted>", redacted)
+        self.assertNotIn("secret-cookie-value", redacted)
 
     def test_crawl_user_collections_clamps_zero_max_pages_to_one_page(self):
         from douban_recommender.crawler import crawl_user_collections

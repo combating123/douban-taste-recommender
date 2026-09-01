@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import html
+import io
 import json
 import os
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,14 +22,27 @@ from .profiler import KNOWN_GENRES, TasteProfile
 
 DOUBAN_EXPLORE_ENDPOINT = "https://movie.douban.com/j/new_search_subjects"
 DOUBAN_SUBJECT_SUGGEST_ENDPOINT = "https://movie.douban.com/j/subject_suggest"
+DOUBAN_REXXAR_SUBJECT_ENDPOINT = "https://m.douban.com/rexxar/api/v2/subject"
+DOUBAN_REXXAR_SEARCH_ENDPOINT = "https://m.douban.com/rexxar/api/v2/search/subjects"
+DOUBAN_REXXAR_MOVIE_ENDPOINT = "https://m.douban.com/rexxar/api/v2/movie"
+DOUBAN_REXXAR_TV_ENDPOINT = "https://m.douban.com/rexxar/api/v2/tv"
 THEMOVIEDB_SEARCH_ENDPOINT = "https://www.themoviedb.org/search"
 TMDB_API_SEARCH_ENDPOINT = "https://api.themoviedb.org/3/search"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
 OMDB_API_ENDPOINT = "https://www.omdbapi.com/"
+IMDB_SUGGESTION_ENDPOINT = "https://v2.sg.media-imdb.com/suggestion"
+IMDB_GRAPHQL_ENDPOINT = "https://api.graphql.imdb.com/"
 TVMAZE_SHOW_SEARCH_ENDPOINT = "https://api.tvmaze.com/singlesearch/shows"
+SUMMARY_TRANSLATION_VERSION = 2
 WIKIPEDIA_API_ENDPOINT = "https://zh.wikipedia.org/w/api.php"
 ANILIST_GRAPHQL_ENDPOINT = "https://graphql.anilist.co"
 JIKAN_ANIME_SEARCH_ENDPOINT = "https://api.jikan.moe/v4/anime"
+PEOPLE_PLACEHOLDER_IMAGE_MARKERS = (
+    "personage-default",
+    "celebrity-default",
+    "default-avatar",
+    "default_portrait",
+)
 POSTER_SEARCH_ALIASES: dict[str, list[str]] = {
     "社交网络": ["The Social Network"],
     "教父": ["The Godfather"],
@@ -75,7 +90,29 @@ POSTER_SEARCH_ALIASES: dict[str, list[str]] = {
     "牯岭街少年杀人事件": ["A Brighter Summer Day"],
     "老友记": ["Friends"],
     "去他妈的世界": ["The End of the F***ing World"],
+    "去他*的世界": ["去他妈的世界", "The End of the F***ing World"],
     "人生切割术": ["Severance"],
+    "王冠": ["The Crown"],
+    "浴血黑帮": ["Peaky Blinders"],
+    "万物生灵": ["All Creatures Great and Small"],
+    "伦敦生活": ["Fleabag"],
+    "办公室": ["The Office"],
+    "真探": ["True Detective"],
+    "傲骨贤妻": ["The Good Wife"],
+    "9号秘事": ["Inside No. 9"],
+    "纸牌屋": ["House of Cards"],
+    "成瘾剂量": ["Dopesick"],
+    "怪奇物语": ["Stranger Things"],
+    "瑞克和莫蒂": ["Rick and Morty"],
+    "马男波杰克": ["BoJack Horseman"],
+    "探险活宝": ["Adventure Time"],
+    "花园墙外": ["Over the Garden Wall"],
+    "恶魔城": ["Castlevania"],
+    "科拉传奇": ["The Legend of Korra"],
+    "电脑线圈": ["Dennou Coil"],
+    "昭和元禄落语心中": ["Showa Genroku Rakugo Shinju"],
+    "心理测量者": ["PSYCHO-PASS"],
+    "蓝眼武士": ["Blue Eye Samurai"],
     "3月的狮子": ["3-gatsu no Lion", "March comes in like a lion"],
     "少女歌剧 Revue Starlight": ["Shoujo Kageki Revue Starlight", "Revue Starlight"],
     "末日三问": ["Shuumatsu Nani Shitemasu ka", "WorldEnd"],
@@ -84,19 +121,6 @@ POSTER_SEARCH_ALIASES: dict[str, list[str]] = {
     "PSYCHO-PASS 心理测量者": ["PSYCHO-PASS"],
 }
 
-POSTER_SEARCH_ALIASES.update({
-    "????": ["Memento"],
-    "?????": ["Drive My Car"],
-    "????": ["The Book of Fish"],
-    "?????": ["Generation War", "Unsere M?tter, unsere V?ter"],
-    "????????": ["Love Death and Robots", "Love, Death & Robots"],
-    "????": ["Fog Hill of Five Elements"],
-    "????": ["Yao Chinese Folktales", "Yao-Chinese Folktales", "Chinese Folktales"],
-    "?????": ["Steins Gate", "Steins;Gate"],
-    "??????": ["Girls Last Tour", "Girls' Last Tour"],
-    "???": ["Mononoke"],
-    "???": ["Scissor Seven", "Wu Liuqi"],
-})
 
 STATIC_POSTER_URLS_BY_TITLE: dict[str, str] = {
     "社交网络": "https://media.themoviedb.org/t/p/w500/tAAXqX7nTMPJtXCJUVC03EuiTK0.jpg",
@@ -158,19 +182,6 @@ STATIC_POSTER_URLS_BY_TITLE: dict[str, str] = {
     "PSYCHO-PASS 心理测量者": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx13601-i42VFuHpqEOJ.jpg",
 }
 
-STATIC_POSTER_URLS_BY_TITLE.update({
-    "????": "https://m.media-amazon.com/images/M/MV5BMGQ3Y2Q4NjktN2E4Ny00Y2Q2LTliZDUtZTNiNjRhY2I0NGIyXkEyXkFqcGc@._V1_.jpg",
-    "?????": "https://m.media-amazon.com/images/M/MV5BOGE5ZWRhYjYtNzVkMS00ZGU3LTg2MTMtODYyMmJlMDMyZjU0XkEyXkFqcGc@._V1_.jpg",
-    "????": "https://m.media-amazon.com/images/M/MV5BNWYyMDkxY2ItNmRmMC00Y2ZmLTkwZGYtNDJiYmZhOGUzOGY0XkEyXkFqcGc@._V1_.jpg",
-    "?????": "https://static.tvmaze.com/uploads/images/original_untouched/7/17646.jpg",
-    "????????": "https://static.tvmaze.com/uploads/images/original_untouched/501/1253559.jpg",
-    "????": "https://m.media-amazon.com/images/M/MV5BMTZmNmNmYmQtNTIxMi00MjJjLWE5N2UtODZhMmZhOGExOGQyXkEyXkFqcGc@._V1_.jpg",
-    "????": "https://m.media-amazon.com/images/M/MV5BODNhN2E5YjQtMTBlOC00NmIzLWI1ZmEtNGE4NjkzODhlM2Q2XkEyXkFqcGc@._V1_.jpg",
-    "?????": "https://cdn.myanimelist.net/images/anime/1935/127974l.jpg",
-    "??????": "https://cdn.myanimelist.net/images/anime/12/88321l.jpg",
-    "???": "https://cdn.myanimelist.net/images/anime/3/20713l.jpg",
-    "???": "https://m.media-amazon.com/images/M/MV5BNDdhYTU2OTUtNjRiOS00MjQxLThlNzctZWEyY2Q3YTA2M2ZmXkEyXkFqcGc@._V1_.jpg",
-})
 
 STATIC_POSTER_IDS_BY_TITLE: dict[str, str] = {
     "社交网络": "tmdb-movie-37799",
@@ -210,19 +221,6 @@ STATIC_POSTER_IDS_BY_TITLE: dict[str, str] = {
     "PSYCHO-PASS 心理测量者": "anilist-13601",
 }
 
-STATIC_POSTER_IDS_BY_TITLE.update({
-    "????": "imdb-tt0209144",
-    "?????": "imdb-tt14039582",
-    "????": "imdb-tt14371900",
-    "?????": "tvmaze-1224",
-    "????????": "tvmaze-40329",
-    "????": "imdb-tt12953630",
-    "????": "imdb-tt26007176",
-    "?????": "mal-9253",
-    "??????": "mal-35838",
-    "???": "mal-2246",
-    "???": "imdb-tt10384610",
-})
 
 POSTER_SEARCH_ALIASES.update({
     "记忆碎片": ["Memento"],
@@ -575,10 +573,26 @@ def _primary_search_title(value: str) -> str:
     return text.split()[0].strip()
 
 
+def _normalized_title_identity_key(value: object) -> str:
+    text = unicodedata.normalize("NFKC", clean_html(str(value or ""))).casefold()
+    normalized = normalize_title(text.replace("\u200e", ""))
+    return "".join(character for character in normalized if character.isalnum())
+
+
 def _title_matches_expected(candidate_title: str, expected_title: str) -> bool:
     if not expected_title:
         return True
-    return normalize_title(_primary_search_title(candidate_title)) == normalize_title(expected_title)
+    candidate = clean_html(candidate_title).replace("\u200e", "").strip()
+    expected = clean_html(expected_title).replace("\u200e", "").strip()
+    candidate = re.sub(r"\s*\((?:19|20)\d{2}\)\s*$", "", candidate).strip()
+    expected = re.sub(r"\s*\((?:19|20)\d{2}\)\s*$", "", expected).strip()
+    candidate_key = _normalized_title_identity_key(candidate)
+    expected_key = _normalized_title_identity_key(expected)
+    if candidate_key and candidate_key == expected_key:
+        return True
+    if re.search(r"[\u3400-\u9fff]", expected):
+        return normalize_title(_primary_search_title(candidate)) == normalize_title(expected)
+    return False
 
 
 def parse_subject_search_html(page_html: str, expected_title: str = "") -> list[MediaItem]:
@@ -663,7 +677,12 @@ def _extract_first_url_from_srcset(srcset: str) -> str:
     return candidates[-1] if candidates else ""
 
 
-def parse_themoviedb_search_html(page_html: str, expected_title: str = "", expected_media_type: str = "") -> list[MediaItem]:
+def parse_themoviedb_search_html(
+    page_html: str,
+    expected_title: str = "",
+    expected_media_type: str = "",
+    expected_year: int | None = None,
+) -> list[MediaItem]:
     """Parse public TMDb search HTML as a poster fallback when Douban image search is blocked.
 
     Only exact normalized title matches are accepted. This gives the UI a real poster source
@@ -693,6 +712,15 @@ def parse_themoviedb_search_html(page_html: str, expected_title: str = "", expec
             continue
         if expected_key and normalize_title(title) != expected_key:
             continue
+        year = None
+        year_match = re.search(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)", clean_html(card))
+        if year_match:
+            try:
+                year = int(year_match.group(1))
+            except ValueError:
+                year = None
+        if expected_year and (year is None or abs(int(expected_year) - year) > 1):
+            continue
         srcset_match = re.search(r'<img[^>]+srcset="([^"]+)"', card, re.S | re.I)
         src_match = re.search(r'<img[^>]+src="([^"]+)"', card, re.S | re.I)
         cover = _tmdb_high_resolution_image_url(
@@ -704,13 +732,6 @@ def parse_themoviedb_search_html(page_html: str, expected_title: str = "", expec
         href_match = re.search(r'href="(/(movie|tv)/(\d+)[^"]*)"', card, re.S | re.I)
         tmdb_id = f"tmdb-{href_match.group(2)}-{href_match.group(3)}" if href_match else ""
         tmdb_url = "https://www.themoviedb.org" + html.unescape(href_match.group(1)) if href_match else ""
-        year = None
-        year_match = re.search(r"\b(19\d{2}|20\d{2})\b", clean_html(card))
-        if year_match:
-            try:
-                year = int(year_match.group(1))
-            except ValueError:
-                year = None
         out.append(MediaItem(
             title=expected_title or title,
             media_type=_tmdb_media_type(raw_media_type, expected_media_type),
@@ -724,7 +745,13 @@ def parse_themoviedb_search_html(page_html: str, expected_title: str = "", expec
     return out
 
 
-def fetch_themoviedb_suggestions(title: str, media_type: str = "", fetcher=None, timeout: int = 6) -> list[MediaItem]:
+def fetch_themoviedb_suggestions(
+    title: str,
+    media_type: str = "",
+    fetcher=None,
+    timeout: int = 6,
+    expected_year: int | None = None,
+) -> list[MediaItem]:
     safe_title = str(title or "").strip()
     if not safe_title:
         return []
@@ -748,12 +775,362 @@ def fetch_themoviedb_suggestions(title: str, media_type: str = "", fetcher=None,
                 payload = fetch(url)
         text = payload.decode("utf-8", errors="ignore") if isinstance(payload, bytes) else str(payload or "")
         expected = query if query != safe_title else safe_title
-        suggestions = parse_themoviedb_search_html(text, expected_title=expected, expected_media_type=media_type)
+        suggestions = parse_themoviedb_search_html(
+            text,
+            expected_title=expected,
+            expected_media_type=media_type,
+            expected_year=expected_year,
+        )
+        if not suggestions and query != safe_title:
+            suggestions = parse_themoviedb_search_html(
+                text,
+                expected_title=safe_title,
+                expected_media_type=media_type,
+                expected_year=expected_year,
+            )
         if suggestions:
             if query != safe_title:
                 for item in suggestions:
                     item.title = safe_title
             return suggestions
+    return []
+
+
+def _tmdb_schema_payloads(page_html: str) -> list[dict]:
+    payloads: list[dict] = []
+    for match in re.finditer(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        str(page_html or ""),
+        flags=re.S | re.I,
+    ):
+        raw = re.sub(r"^\s*/\*\s*<!\[CDATA\[\s*\*/", "", match.group(1).strip())
+        raw = re.sub(r"/\*\s*\]\]>\s*\*/\s*$", "", raw).strip()
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        values = value if isinstance(value, list) else [value]
+        payloads.extend(row for row in values if isinstance(row, dict))
+    return payloads
+
+
+def _tmdb_public_image_url(value: object, size: str = "w1280") -> str:
+    url = html.unescape(str(value or "")).replace("\\/", "/").strip()
+    if url.startswith("//"):
+        url = "https:" + url
+    if url.startswith("/t/p/"):
+        url = "https://media.themoviedb.org" + url
+    match = re.search(
+        r"https://(?:media\.themoviedb\.org|image\.tmdb\.org)/t/p/[^\"'\s,<>]+/([^/\"'\s,<>]+\.(?:jpg|jpeg|png|webp))",
+        url,
+        flags=re.I,
+    )
+    return f"https://media.themoviedb.org/t/p/{size}/{match.group(1)}" if match else ""
+
+
+def parse_themoviedb_backdrop_html(page_html: bytes | str, limit: int = 8) -> list[str]:
+    text = page_html.decode("utf-8", errors="ignore") if isinstance(page_html, bytes) else str(page_html or "")
+    out: list[str] = []
+    for markup in re.findall(r"<img\b[^>]*>", text, flags=re.S | re.I):
+        class_name = first_match(r'\bclass=["\']([^"\']*)["\']', markup).lower()
+        if "backdrop" not in class_name:
+            continue
+        source = (
+            first_match(r'\bsrc=["\']([^"\']+)["\']', markup)
+            or _extract_first_url_from_srcset(first_match(r'\bsrcset=["\']([^"\']+)["\']', markup))
+        )
+        url = _tmdb_public_image_url(source, "w1280")
+        if url and url not in out:
+            out.append(url)
+        if len(out) >= max(0, int(limit)):
+            break
+    return out
+
+
+def _tmdb_duration_minutes(value: object) -> int | None:
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?", str(value or "").strip(), flags=re.I)
+    if not match:
+        return None
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2) or 0)
+    total = hours * 60 + minutes
+    return total or None
+
+
+def _tmdb_directors(page_html: str) -> list[str]:
+    out: list[str] = []
+    for block in re.findall(r'<li[^>]+class=["\'][^"\']*\bprofile\b[^"\']*["\'][^>]*>.*?</li>', page_html, flags=re.S | re.I):
+        role = clean_html(first_match(r'<p[^>]+class=["\'][^"\']*\bcharacter\b[^"\']*["\'][^>]*>(.*?)</p>', block))
+        role_key = role.casefold()
+        if role_key not in {"director", "directing", "导演", "creator", "series creator", "original series creator", "原创作者"}:
+            continue
+        name = clean_html(first_match(r"<a\b[^>]*>(.*?)</a>", block))
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _tmdb_people_cards(block_html: str, limit: int = 16) -> tuple[list[str], dict[str, str]]:
+    names: list[str] = []
+    photos: dict[str, str] = {}
+    for block in re.findall(r"<li\b[^>]*>.*?</li>", str(block_html or ""), flags=re.S | re.I):
+        name = clean_html(
+            first_match(
+                r'<p\b[^>]*>\s*<a\b[^>]+href=["\']/person/[^"\']+["\'][^>]*>(.*?)</a>',
+                block,
+            )
+        )
+        if not name:
+            continue
+        if name not in names:
+            names.append(name)
+        image_markup = first_match(r"(<img\b[^>]*>)", block)
+        source = (
+            _extract_first_url_from_srcset(first_match(r'\bsrcset=["\']([^"\']+)["\']', image_markup))
+            or first_match(r'\bsrc=["\']([^"\']+)["\']', image_markup)
+        )
+        photo = _tmdb_high_resolution_image_url(source)
+        if photo:
+            photos.setdefault(name, photo)
+        if len(names) >= max(1, int(limit)):
+            break
+    return names, photos
+
+
+def _tmdb_top_billed_people(page_html: str, limit: int = 16) -> tuple[list[str], dict[str, str]]:
+    match = re.search(
+        r'id=["\']cast_scroller["\'][^>]*>\s*(<ol\b.*?</ol>)',
+        str(page_html or ""),
+        flags=re.S | re.I,
+    )
+    return _tmdb_people_cards(match.group(1), limit=limit) if match else ([], {})
+
+
+def _tmdb_directing_crew(page_html: str, limit: int = 8) -> tuple[list[str], dict[str, str]]:
+    text = str(page_html or "")
+    names: list[str] = []
+    photos: dict[str, str] = {}
+    accepted_roles = {"director", "directing", "导演"}
+    for heading in re.finditer(r"<h4\b[^>]*>(.*?)</h4>", text, flags=re.S | re.I):
+        if clean_html(heading.group(1)).casefold() not in accepted_roles:
+            continue
+        list_match = re.search(r"<ol\b[^>]*>(.*?)</ol>", text[heading.end():], flags=re.S | re.I)
+        if not list_match:
+            continue
+        for person_block in re.findall(r"<li\b[^>]*>.*?</li>", list_match.group(1), flags=re.S | re.I):
+            role = clean_html(
+                first_match(
+                    r'<p\b[^>]+class=["\'][^"\']*\bepisode_count_crew\b[^"\']*["\'][^>]*>(.*?)</p>',
+                    person_block,
+                )
+            ).strip()
+            if role != "导演" and not re.fullmatch(r"Director(?:\s*\([^)]*\))?", role, flags=re.I):
+                continue
+            rows, row_photos = _tmdb_people_cards(person_block, limit=1)
+            for name in rows:
+                if name not in names:
+                    names.append(name)
+            photos.update({name: url for name, url in row_photos.items() if name not in photos})
+            if len(names) >= max(1, int(limit)):
+                break
+        if names:
+            break
+    return names[: max(1, int(limit))], photos
+
+
+def parse_themoviedb_detail_html(
+    page_html: bytes | str,
+    expected_title: str = "",
+    expected_media_type: str = "",
+    source_url: str = "",
+    expected_year: int | None = None,
+) -> list[MediaItem]:
+    """Parse exact-title public TMDb detail metadata without requiring an API key."""
+    text = page_html.decode("utf-8", errors="ignore") if isinstance(page_html, bytes) else str(page_html or "")
+    schema = next(
+        (
+            row
+            for row in _tmdb_schema_payloads(text)
+            if str(row.get("@type") or "").casefold() in {"movie", "tvseries", "tvshow"}
+        ),
+        {},
+    )
+    title = clean_html(
+        str(schema.get("name") or "")
+        or first_match(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', text)
+    )
+    expected = str(expected_title or "").strip()
+    if not title or (expected and normalize_title(title) != normalize_title(expected)):
+        return []
+
+    raw_type = str(schema.get("@type") or "").casefold()
+    inferred_type = "电视剧" if raw_type in {"tvseries", "tvshow"} else "电影"
+    media_type = str(expected_media_type or inferred_type).strip() or inferred_type
+    if expected_media_type == "电影" and inferred_type != "电影":
+        return []
+    if expected_media_type in {"电视剧", "动漫"} and inferred_type != "电视剧":
+        return []
+
+    summary = clean_html(
+        str(schema.get("description") or "")
+        or first_match(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', text)
+        or first_match(r'<div[^>]+class=["\'][^"\']*\boverview\b[^"\']*["\'][^>]*>.*?<p[^>]*>(.*?)</p>', text)
+    )
+    genres = [str(value).strip() for value in schema.get("genre", []) if str(value).strip()] if isinstance(schema.get("genre"), list) else []
+    countries: list[str] = []
+    country_rows = schema.get("countryOfOrigin") if isinstance(schema.get("countryOfOrigin"), list) else []
+    for row in country_rows:
+        name = str(row.get("name") or "").strip() if isinstance(row, dict) else str(row or "").strip()
+        if name and name not in countries:
+            countries.append(name)
+
+    release_date = ""
+    released = schema.get("releasedEvent") if isinstance(schema.get("releasedEvent"), list) else []
+    for row in released:
+        if isinstance(row, dict) and str(row.get("startDate") or "").strip():
+            release_date = str(row["startDate"]).strip()
+            break
+    if not release_date:
+        release_date = str(schema.get("startDate") or schema.get("dateCreated") or "").strip()
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", release_date or first_match(r'<span[^>]+class=["\'][^"\']*\brelease_date\b[^"\']*["\'][^>]*>(.*?)</span>', text))
+    year = int(year_match.group(1)) if year_match else None
+    if expected_year and (year is None or abs(int(expected_year) - year) > 1):
+        return []
+
+    og_images = [html.unescape(value).strip() for value in re.findall(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', text, flags=re.I)]
+    cover = _tmdb_high_resolution_image_url(og_images[0] if og_images else schema.get("image"))
+    stills: list[str] = []
+    for value in og_images[1:]:
+        url = _tmdb_public_image_url(value, "w1280")
+        if url and url not in stills:
+            stills.append(url)
+
+    duration = _tmdb_duration_minutes(schema.get("duration"))
+    casts, people_photos = _tmdb_top_billed_people(text)
+    raw: dict[str, object] = {}
+    if stills:
+        raw["stills"] = stills
+    if duration:
+        raw["duration"] = duration
+    if release_date:
+        raw["release_date"] = release_date
+    if people_photos:
+        raw["people_photos"] = people_photos
+    aggregate_rating = schema.get("aggregateRating") if isinstance(schema.get("aggregateRating"), dict) else {}
+    rating_value = parse_float(aggregate_rating.get("ratingValue"))
+    if rating_value is not None and rating_value > 0:
+        raw["ratings"] = {"tmdb": rating_value}
+    try:
+        rating_count = int(str(aggregate_rating.get("ratingCount") or "").replace(",", ""))
+    except (TypeError, ValueError):
+        rating_count = 0
+    if rating_count > 0:
+        raw["rating_votes"] = {"tmdb": rating_count}
+    match = re.search(r"/(movie|tv)/(\d+)", str(source_url or ""))
+    provider_id = f"tmdb-{match.group(1)}-{match.group(2)}" if match else ""
+    return [MediaItem(
+        title=expected or title,
+        media_type=media_type,
+        year=year,
+        genres=genres,
+        countries=countries,
+        directors=_tmdb_directors(text),
+        casts=casts,
+        url=str(source_url or "").strip(),
+        douban_id=provider_id,
+        cover=cover,
+        summary=summary,
+        source="themoviedb_detail",
+        raw=raw,
+    )]
+
+
+def fetch_themoviedb_metadata_suggestions(
+    title: str,
+    media_type: str = "",
+    fetcher=None,
+    timeout: int = 8,
+    expected_year: int | None = None,
+) -> list[MediaItem]:
+    safe_title = str(title or "").strip()
+    if not safe_title:
+        return []
+    search_results = fetch_themoviedb_suggestions(
+        safe_title,
+        media_type=media_type,
+        fetcher=fetcher,
+        timeout=timeout,
+        expected_year=expected_year,
+    )
+    if not search_results and expected_year:
+        search_results = fetch_themoviedb_suggestions(
+            safe_title,
+            media_type=media_type,
+            fetcher=fetcher,
+            timeout=timeout,
+            expected_year=None,
+        )
+    fetch = fetcher or http_get
+    for search_result in search_results:
+        detail_url = str(search_result.url or "").strip()
+        if not detail_url:
+            continue
+        localized_url = detail_url + ("&" if "?" in detail_url else "?") + "language=zh-CN"
+        try:
+            try:
+                payload = fetch(localized_url, accept_json=False)
+            except TypeError:
+                payload = fetch(localized_url)
+        except Exception:
+            continue
+        details = parse_themoviedb_detail_html(
+            payload,
+            expected_title=safe_title,
+            expected_media_type=media_type,
+            source_url=detail_url,
+            expected_year=expected_year,
+        )
+        if not details:
+            continue
+        detail = details[0]
+        if not detail.cover:
+            detail.cover = search_result.cover
+        match = re.search(r"/(movie|tv)/(\d+)", detail_url)
+        if match:
+            cast_url = f"https://www.themoviedb.org/{match.group(1)}/{match.group(2)}/cast?language=zh-CN"
+            try:
+                try:
+                    cast_payload = fetch(cast_url, accept_json=False)
+                except TypeError:
+                    cast_payload = fetch(cast_url)
+                cast_text = (
+                    cast_payload.decode("utf-8", errors="ignore")
+                    if isinstance(cast_payload, bytes)
+                    else str(cast_payload or "")
+                )
+                crew_directors, crew_photos = _tmdb_directing_crew(cast_text)
+            except Exception:
+                crew_directors, crew_photos = [], {}
+            if crew_directors:
+                detail.directors = list(dict.fromkeys([*crew_directors, *detail.directors]))
+            if crew_photos:
+                current_photos = detail.raw.get("people_photos") if isinstance(detail.raw.get("people_photos"), dict) else {}
+                detail.raw["people_photos"] = {**current_photos, **crew_photos}
+            media_panel_url = (
+                f"https://www.themoviedb.org/{match.group(1)}/{match.group(2)}"
+                "/remote/media_panel/backdrops?translate=false&language=zh-CN&item_count=8"
+            )
+            try:
+                try:
+                    backdrop_payload = fetch(media_panel_url, accept_json=False)
+                except TypeError:
+                    backdrop_payload = fetch(media_panel_url)
+                extra_stills = parse_themoviedb_backdrop_html(backdrop_payload, limit=8)
+            except Exception:
+                extra_stills = []
+            existing = detail.raw.get("stills") if isinstance(detail.raw.get("stills"), list) else []
+            detail.raw["stills"] = list(dict.fromkeys([*existing, *extra_stills]))[:8]
+        return [detail]
     return []
 
 
@@ -958,8 +1335,358 @@ def fetch_omdb_suggestions(
     return []
 
 
+_IMDB_ID_RE = re.compile(r"^tt\d+$", re.IGNORECASE)
+_IMDB_MOVIE_TYPES = {"feature", "movie", "short", "tvmovie", "tvspecial", "video"}
+_IMDB_SERIES_TYPES = {"tvseries", "tvminiseries"}
+
+
+def _imdb_identifier(value: object) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if _IMDB_ID_RE.fullmatch(candidate) else ""
+
+
+def _imdb_year(value: object) -> int | None:
+    if isinstance(value, dict):
+        value = value.get("year")
+    match = re.search(r"\b(19\d{2}|20\d{2})\b", str(value or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _imdb_media_type(value: object, expected_media_type: str = "") -> str:
+    key = re.sub(r"[^a-z]", "", str(value or "").casefold())
+    kind = "movie" if key in _IMDB_MOVIE_TYPES else "series" if key in _IMDB_SERIES_TYPES else ""
+    expected = str(expected_media_type or "").strip()
+    if expected == "电影":
+        return "电影" if kind == "movie" else ""
+    if expected == "电视剧":
+        return "电视剧" if kind == "series" else ""
+    if expected == "动漫":
+        return "动漫" if kind in {"movie", "series"} else ""
+    return "电视剧" if kind == "series" else "电影" if kind == "movie" else ""
+
+
+def _imdb_cast_values(value: object) -> list[str]:
+    values = value if isinstance(value, (list, tuple, set)) else re.split(r"[,;/|]", str(value or ""))
+    names: list[str] = []
+    for entry in values:
+        if isinstance(entry, dict):
+            entry = entry.get("name") or entry.get("text") or entry.get("l")
+        name = clean_html(str(entry or "")).strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _imdb_cast_matches(candidate_cast: list[str], expected_cast: Iterable[str] | None) -> bool:
+    expected_names = [str(value or "").strip() for value in (expected_cast or []) if str(value or "").strip()]
+    if not expected_names:
+        return True
+    candidate_keys = {_normalized_title_identity_key(value) for value in candidate_cast}
+    expected_keys = {_normalized_title_identity_key(value) for value in expected_names}
+    candidate_keys.discard("")
+    expected_keys.discard("")
+    return bool(candidate_keys & expected_keys)
+
+
+def _imdb_image_url(value: object) -> str:
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("imageUrl")
+    url = html.unescape(str(value or "")).replace("\\/", "/").strip()
+    return url if url.startswith(("http://", "https://")) else ""
+
+
+def parse_imdb_suggestion_results(
+    payload: bytes | str | dict,
+    expected_title: str = "",
+    expected_year: int | None = None,
+    expected_media_type: str = "",
+    expected_cast: Iterable[str] | None = None,
+) -> list[MediaItem]:
+    data = _json_payload(payload)
+    rows = data.get("d") if isinstance(data.get("d"), list) else []
+    matches: list[MediaItem] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        imdb_id = _imdb_identifier(row.get("id"))
+        title = clean_html(str(row.get("l") or row.get("title") or "")).strip()
+        if not imdb_id or not title or not _title_matches_expected(title, expected_title):
+            continue
+        year = _imdb_year(row.get("y") or row.get("year"))
+        if expected_year is not None and (year is None or abs(int(expected_year) - year) > 1):
+            continue
+        media_type = _imdb_media_type(row.get("qid") or row.get("q") or row.get("titleType"), expected_media_type)
+        if expected_media_type and not media_type:
+            continue
+        candidate_cast = _imdb_cast_values(row.get("s") or row.get("stars"))
+        if not _imdb_cast_matches(candidate_cast, expected_cast):
+            continue
+        image = row.get("i") if isinstance(row.get("i"), dict) else {}
+        cover = _imdb_image_url(image)
+        raw: dict[str, object] = {
+            "provider_ids": {"imdb": imdb_id},
+            "aliases": [title] if expected_title and normalize_title(title) != normalize_title(expected_title) else [],
+        }
+        matches.append(MediaItem(
+            title=expected_title or title,
+            media_type=media_type,
+            year=year,
+            casts=candidate_cast,
+            url=f"https://www.imdb.com/title/{imdb_id}/",
+            douban_id=f"imdb-{imdb_id}",
+            cover=cover,
+            source="imdb_suggestion",
+            raw=raw,
+        ))
+    return matches
+
+
+def _imdb_graphql_title_record(payload: bytes | str | dict) -> dict:
+    data = _json_payload(payload)
+    graph = data.get("data") if isinstance(data.get("data"), dict) else {}
+    for key in ("title", "mainColumnData"):
+        value = graph.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _imdb_landscape_url(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    url = _imdb_image_url(value)
+    try:
+        width = float(value.get("width") or 0)
+        height = float(value.get("height") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if not url or width <= 0 or height <= 0 or width / height < 1.15:
+        return ""
+    return url
+
+
+def parse_imdb_graphql_title(
+    payload: bytes | str | dict,
+    expected_id: str = "",
+    expected_title: str = "",
+    expected_year: int | None = None,
+    expected_media_type: str = "",
+) -> list[MediaItem]:
+    record = _imdb_graphql_title_record(payload)
+    if not record:
+        return []
+    imdb_id = _imdb_identifier(record.get("id"))
+    required_id = _imdb_identifier(expected_id)
+    if not imdb_id or (required_id and imdb_id != required_id):
+        return []
+    title_text = record.get("titleText") if isinstance(record.get("titleText"), dict) else {}
+    title = clean_html(str(title_text.get("text") or record.get("title") or "")).strip()
+    if not title or not _title_matches_expected(title, expected_title):
+        return []
+    year = _imdb_year(record.get("releaseYear") or record.get("year"))
+    if expected_year is not None and (year is None or abs(int(expected_year) - year) > 1):
+        return []
+    title_type = record.get("titleType") if isinstance(record.get("titleType"), dict) else {}
+    media_type = _imdb_media_type(title_type.get("id") or title_type.get("text") or record.get("titleType"), expected_media_type)
+    if expected_media_type and not media_type:
+        return []
+
+    primary_image = record.get("primaryImage") if isinstance(record.get("primaryImage"), dict) else {}
+    cover = _imdb_image_url(primary_image)
+    stills: list[str] = []
+
+    def append_landscape(image: object) -> None:
+        url = _imdb_landscape_url(image)
+        if url and url not in stills and len(stills) < 8:
+            stills.append(url)
+
+    images = record.get("images") if isinstance(record.get("images"), dict) else {}
+    for edge in images.get("edges", []) if isinstance(images.get("edges"), list) else []:
+        node = edge.get("node") if isinstance(edge, dict) and isinstance(edge.get("node"), dict) else edge
+        append_landscape(node)
+
+    episodes = record.get("episodes") if isinstance(record.get("episodes"), dict) else {}
+    episode_rows = episodes.get("episodes") if isinstance(episodes.get("episodes"), dict) else episodes
+    for edge in episode_rows.get("edges", []) if isinstance(episode_rows.get("edges"), list) else []:
+        node = edge.get("node") if isinstance(edge, dict) and isinstance(edge.get("node"), dict) else {}
+        append_landscape(node.get("primaryImage") if isinstance(node, dict) else None)
+
+    ratings_summary = record.get("ratingsSummary") if isinstance(record.get("ratingsSummary"), dict) else {}
+    rating = parse_float(ratings_summary.get("aggregateRating"))
+    votes = None
+    try:
+        raw_votes = ratings_summary.get("voteCount")
+        votes = int(raw_votes) if raw_votes is not None else None
+    except (TypeError, ValueError):
+        votes = None
+
+    summary = ""
+    plots = record.get("plots") if isinstance(record.get("plots"), dict) else {}
+    for edge in plots.get("edges", []) if isinstance(plots.get("edges"), list) else []:
+        node = edge.get("node") if isinstance(edge, dict) and isinstance(edge.get("node"), dict) else {}
+        plot_text = node.get("plotText") if isinstance(node.get("plotText"), dict) else {}
+        summary = clean_html(str(plot_text.get("plainText") or plot_text.get("text") or "")).strip()
+        if summary:
+            break
+
+    raw: dict[str, object] = {"provider_ids": {"imdb": imdb_id}}
+    if rating is not None and rating > 0:
+        raw["ratings"] = {"imdb": rating}
+    if votes is not None and votes >= 0:
+        raw["rating_votes"] = {"imdb": votes}
+    if stills:
+        raw["stills"] = stills
+    return [MediaItem(
+        title=expected_title or title,
+        media_type=media_type,
+        year=year,
+        url=f"https://www.imdb.com/title/{imdb_id}/",
+        douban_id=f"imdb-{imdb_id}",
+        cover=cover,
+        source="imdb_graphql",
+        summary=summary,
+        raw=raw,
+    )]
+
+
+_IMDB_TITLE_QUERY = """
+query CineScopeTitle($id: ID!) {
+  title(id: $id) {
+    id
+    titleText { text }
+    releaseYear { year }
+    titleType { id text }
+    ratingsSummary { aggregateRating voteCount }
+    primaryImage { url width height }
+    plots(first: 1) { edges { node { plotText { plainText } } } }
+    images(first: 24) { edges { node { id url width height } } }
+    episodes {
+      episodes(first: 16) {
+        edges { node { id primaryImage { url width height } } }
+      }
+    }
+  }
+}
+"""
+
+
+def _imdb_fetch_payload(url: str, fetcher=None, timeout: int = 6, data: bytes | None = None, headers: dict[str, str] | None = None):
+    request_headers = dict(headers or {})
+    if fetcher is None:
+        request = urllib.request.Request(url, data=data, headers=request_headers, method="POST" if data is not None else "GET")
+        with build_url_opener().open(request, timeout=max(1, int(timeout))) as response:
+            return response.read()
+    try:
+        return fetcher(url, accept_json=True, data=data, headers=request_headers)
+    except TypeError:
+        try:
+            return fetcher(url, accept_json=True)
+        except TypeError:
+            return fetcher(url)
+
+
+def fetch_imdb_metadata_suggestions(
+    title: str,
+    media_type: str = "",
+    expected_year: int | None = None,
+    expected_cast: Iterable[str] | None = None,
+    provider_id: str = "",
+    fetcher=None,
+    timeout: int = 6,
+) -> list[MediaItem]:
+    safe_title = clean_html(str(title or "")).strip()
+    if not safe_title:
+        return []
+    aliases = [str(value).strip() for value in POSTER_SEARCH_ALIASES.get(safe_title, []) if str(value).strip()]
+    title_candidates = [safe_title, *[value for value in aliases if normalize_title(value) != normalize_title(safe_title)]]
+    imdb_id = _imdb_identifier(provider_id)
+    suggestion_match: MediaItem | None = None
+
+    if not imdb_id:
+        for query in title_candidates:
+            first = next((character.casefold() for character in query if character.isalnum()), "_")
+            encoded = urllib.parse.quote(query, safe="")
+            url = f"{IMDB_SUGGESTION_ENDPOINT}/{urllib.parse.quote(first, safe='')}/{encoded}.json"
+            try:
+                payload = _imdb_fetch_payload(
+                    url,
+                    fetcher=fetcher,
+                    timeout=timeout,
+                    headers={"Accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                )
+            except Exception:
+                continue
+            matches = parse_imdb_suggestion_results(
+                payload,
+                expected_title=query,
+                expected_year=expected_year,
+                expected_media_type=media_type,
+                expected_cast=expected_cast,
+            )
+            if matches:
+                suggestion_match = matches[0]
+                provider_ids = suggestion_match.raw.get("provider_ids") if isinstance(suggestion_match.raw.get("provider_ids"), dict) else {}
+                imdb_id = _imdb_identifier(provider_ids.get("imdb"))
+                break
+    if not imdb_id:
+        return []
+
+    body = json.dumps({"query": _IMDB_TITLE_QUERY, "variables": {"id": imdb_id}}, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Origin": "https://www.imdb.com",
+        "Referer": "https://www.imdb.com/",
+        "User-Agent": "Mozilla/5.0",
+    }
+    try:
+        payload = _imdb_fetch_payload(IMDB_GRAPHQL_ENDPOINT, fetcher=fetcher, timeout=timeout, data=body, headers=headers)
+    except Exception:
+        return [suggestion_match] if suggestion_match is not None else []
+    for query in title_candidates:
+        parsed = parse_imdb_graphql_title(
+            payload,
+            expected_id=imdb_id,
+            expected_title=query,
+            expected_year=expected_year,
+            expected_media_type=media_type,
+        )
+        if parsed:
+            for item in parsed:
+                item.title = safe_title
+                if suggestion_match and not item.cover:
+                    item.cover = suggestion_match.cover
+            return parsed
+    return []
+
+
+def _imdb_provider_id(item: MediaItem) -> str:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    provider_ids = raw.get("provider_ids") if isinstance(raw.get("provider_ids"), dict) else {}
+    externals = raw.get("externals") if isinstance(raw.get("externals"), dict) else {}
+    values = [
+        provider_ids.get("imdb"),
+        externals.get("imdb"),
+        raw.get("imdb_id"),
+        raw.get("imdbID"),
+    ]
+    douban_id = str(item.douban_id or "").strip()
+    if douban_id.lower().startswith("imdb-"):
+        values.append(douban_id[5:])
+    for value in values:
+        imdb_id = _imdb_identifier(value)
+        if imdb_id:
+            return imdb_id
+    return ""
+
+
 def parse_tvmaze_result(payload: bytes | str | dict, expected_title: str = "", expected_media_type: str = "") -> list[MediaItem]:
-    if expected_media_type and expected_media_type not in {"\u7535\u89c6\u5267"}:
+    if expected_media_type and expected_media_type not in {"\u7535\u89c6\u5267", "\u52a8\u6f2b"}:
         return []
     data = _json_payload(payload)
     if not isinstance(data, dict):
@@ -980,15 +1707,80 @@ def parse_tvmaze_result(payload: bytes | str | dict, expected_title: str = "", e
         except ValueError:
             year = None
     tvmaze_id = str(data.get("id") or "").strip()
+    embedded = data.get("_embedded") if isinstance(data.get("_embedded"), dict) else {}
+    episodes = embedded.get("episodes") if isinstance(embedded.get("episodes"), list) else []
+    stills: list[str] = []
+    for episode in episodes:
+        image_data = episode.get("image") if isinstance(episode, dict) and isinstance(episode.get("image"), dict) else {}
+        still = str(image_data.get("original") or image_data.get("medium") or "").strip()
+        if still.startswith(("http://", "https://")) and still not in stills:
+            stills.append(still)
+    raw = dict(data)
+    provider_format = str(data.get("type") or "").strip()
+    if provider_format:
+        raw["provider_format"] = provider_format
+    if stills:
+        raw["stills"] = stills[:8]
+    rating = data.get("rating") if isinstance(data.get("rating"), dict) else {}
+    rating_value = parse_float(rating.get("average"))
+    if rating_value is not None and rating_value > 0:
+        raw["ratings"] = {"tvmaze": rating_value}
+    directors: list[str] = []
+    casts: list[str] = []
+    people_photos: dict[str, str] = {}
+    crew = embedded.get("crew") if isinstance(embedded.get("crew"), list) else []
+    for credit in crew:
+        if not isinstance(credit, dict):
+            continue
+        role = str(credit.get("type") or "").strip().casefold()
+        if role not in {"creator", "director", "showrunner"}:
+            continue
+        person = credit.get("person") if isinstance(credit.get("person"), dict) else {}
+        name = str(person.get("name") or "").strip()
+        image_data = person.get("image") if isinstance(person.get("image"), dict) else {}
+        photo = str(image_data.get("original") or image_data.get("medium") or "").strip()
+        if name and name not in directors:
+            directors.append(name)
+        if name and photo.startswith(("http://", "https://")):
+            people_photos.setdefault(name, photo)
+    cast_rows = embedded.get("cast") if isinstance(embedded.get("cast"), list) else []
+    for credit in cast_rows:
+        person = credit.get("person") if isinstance(credit, dict) and isinstance(credit.get("person"), dict) else {}
+        name = str(person.get("name") or "").strip()
+        image_data = person.get("image") if isinstance(person.get("image"), dict) else {}
+        photo = str(image_data.get("original") or image_data.get("medium") or "").strip()
+        if name and name not in casts:
+            casts.append(name)
+        if name and photo.startswith(("http://", "https://")):
+            people_photos.setdefault(name, photo)
+        if len(casts) >= 16:
+            break
+    if people_photos:
+        raw["people_photos"] = people_photos
+    provider_ids: dict[str, str] = {}
+    if tvmaze_id:
+        provider_ids["tvmaze"] = tvmaze_id
+    externals = data.get("externals") if isinstance(data.get("externals"), dict) else {}
+    imdb_id = _imdb_identifier(externals.get("imdb"))
+    if imdb_id:
+        provider_ids["imdb"] = imdb_id
+    raw["provider_ids"] = provider_ids
     return [MediaItem(
         title=expected_title or title,
-        media_type="\u7535\u89c6\u5267",
+        media_type=expected_media_type if expected_media_type in {"\u7535\u89c6\u5267", "\u52a8\u6f2b"} else "\u7535\u89c6\u5267",
         year=year,
+        genres=[
+            *([str(value).strip() for value in data.get("genres", []) if str(value).strip()] if isinstance(data.get("genres"), list) else []),
+            *(["\u7eaa\u5f55\u7247"] if provider_format.casefold() == "documentary" else []),
+        ],
+        directors=directors,
+        casts=casts,
         url=str(data.get("officialSite") or data.get("url") or "").strip(),
         douban_id=f"tvmaze-{tvmaze_id}" if tvmaze_id else "",
         cover=cover,
         source="tvmaze_api",
-        raw=data,
+        summary=clean_html(str(data.get("summary") or "")),
+        raw=raw,
     )]
 
 
@@ -999,13 +1791,18 @@ def fetch_tvmaze_suggestions(
     timeout: int = 6,
 ) -> list[MediaItem]:
     safe_title = str(title or "").strip()
-    if not safe_title or media_type not in {"", "\u7535\u89c6\u5267"}:
+    if not safe_title or media_type not in {"", "\u7535\u89c6\u5267", "\u52a8\u6f2b"}:
         return []
     aliases = POSTER_SEARCH_ALIASES.get(safe_title, [])
     queries = [safe_title] + [alias for alias in aliases if alias and alias != safe_title]
     fetch = fetcher or http_get
     for query_index, query in enumerate(queries):
-        url = TVMAZE_SHOW_SEARCH_ENDPOINT + "?" + urllib.parse.urlencode({"q": query})
+        url = TVMAZE_SHOW_SEARCH_ENDPOINT + "?" + urllib.parse.urlencode([
+            ("q", query),
+            ("embed[]", "episodes"),
+            ("embed[]", "cast"),
+            ("embed[]", "crew"),
+        ])
         if fetcher is None:
             headers = dict(DEFAULT_HEADERS)
             headers["Accept"] = "application/json"
@@ -1024,7 +1821,11 @@ def fetch_tvmaze_suggestions(
                 payload = fetch(url, accept_json=True)
             except TypeError:
                 payload = fetch(url)
-        suggestions = parse_tvmaze_result(payload, expected_title=query, expected_media_type="\u7535\u89c6\u5267")
+        suggestions = parse_tvmaze_result(
+            payload,
+            expected_title=query,
+            expected_media_type=media_type or "\u7535\u89c6\u5267",
+        )
         if suggestions:
             if query != safe_title:
                 for item in suggestions:
@@ -1044,13 +1845,456 @@ def _json_payload(payload: bytes | str | dict) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _rexxar_name_rows(value: object) -> list[str]:
+    rows = value if isinstance(value, list) else []
+    names: list[str] = []
+    for row in rows:
+        name = str(row.get("name") or "").strip() if isinstance(row, dict) else str(row or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _rexxar_image_url(value: object) -> str:
+    url = html.unescape(str(value or "")).replace("\\/", "/").strip()
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ""
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not (host == "doubanio.com" or host.endswith(".doubanio.com")):
+        return ""
+    candidates = douban_image_url_candidates(url)
+    return candidates[0] if candidates else url
+
+
+def is_placeholder_people_image_url(value: object) -> bool:
+    url = str(value or "").strip().casefold()
+    return bool(url) and any(marker in url for marker in PEOPLE_PLACEHOLDER_IMAGE_MARKERS)
+
+
+def douban_image_url_candidates(value: object) -> list[str]:
+    url = html.unescape(str(value or "")).replace("\\/", "/").strip()
+    if not url:
+        return []
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return []
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not (host == "doubanio.com" or host.endswith(".doubanio.com")):
+        return []
+    path = parsed.path
+    if "/view/photo/" in path:
+        path = re.sub(r"/view/photo/(?:large|normal|small|[lms])/", "/view/photo/l/", path, count=1)
+    elif "/view/celebrity/" not in path:
+        return []
+    candidates: list[str] = []
+    for image_host in ("img1.doubanio.com", "img2.doubanio.com", "img3.doubanio.com"):
+        candidate = urllib.parse.urlunsplit(("https", image_host, path, "", ""))
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def parse_douban_rexxar_search(payload: bytes | str | dict) -> list[MediaItem]:
+    """Parse numeric movie/TV subjects from Douban's mobile search response.
+
+    Search results are intentionally not accepted as identity proof on their
+    own. Callers must fetch the subject detail and verify title aliases/year
+    before merging any metadata or visuals.
+    """
+
+    data = _json_payload(payload)
+    subjects = data.get("subjects") if isinstance(data.get("subjects"), dict) else {}
+    rows = subjects.get("items") if isinstance(subjects.get("items"), list) else []
+    out: list[MediaItem] = []
+    seen: set[str] = set()
+    for row in rows:
+        target = row.get("target") if isinstance(row, dict) and isinstance(row.get("target"), dict) else {}
+        subject_id = str(target.get("id") or "").strip()
+        title = str(target.get("title") or "").strip()
+        uri = str(target.get("uri") or "").strip()
+        if not subject_id.isdigit() or not title or subject_id in seen:
+            continue
+        if not re.search(r"/(?:movie|tv)/" + re.escape(subject_id) + r"(?:$|[/?#])", uri):
+            continue
+        seen.add(subject_id)
+        year = None
+        try:
+            year = int(target.get("year")) if target.get("year") else None
+        except (TypeError, ValueError):
+            year = None
+        rating = target.get("rating") if isinstance(target.get("rating"), dict) else {}
+        rating_value = parse_float(rating.get("value"))
+        out.append(MediaItem(
+            title=title,
+            media_type="\u7535\u89c6\u5267" if f"/tv/{subject_id}" in uri else "\u7535\u5f71",
+            year=year,
+            douban_rating=rating_value,
+            vote_count=int(rating.get("count")) if str(rating.get("count") or "").isdigit() else None,
+            url=f"https://movie.douban.com/subject/{subject_id}/",
+            douban_id=subject_id,
+            cover=_rexxar_image_url(target.get("cover_url")),
+            source="douban_rexxar_search",
+            raw={"search_target": dict(target)},
+        ))
+    return out
+
+
+def fetch_douban_rexxar_search_candidates(
+    title: str,
+    fetcher=None,
+    timeout: int = 8,
+    count: int = 10,
+) -> list[MediaItem]:
+    safe_title = str(title or "").strip()
+    if not safe_title:
+        return []
+    url = DOUBAN_REXXAR_SEARCH_ENDPOINT + "?" + urllib.parse.urlencode({
+        "q": safe_title,
+        "type": "movie",
+        "start": 0,
+        "count": max(1, min(20, int(count))),
+    })
+    headers = dict(DEFAULT_HEADERS)
+    headers.update({"Accept": "application/json", "Referer": "https://m.douban.com/movie/"})
+    if fetcher is not None:
+        try:
+            payload = fetcher(url, accept_json=True, headers=headers)
+        except TypeError:
+            try:
+                payload = fetcher(url, accept_json=True)
+            except TypeError:
+                payload = fetcher(url)
+    else:
+        request = urllib.request.Request(url, headers=headers)
+        with build_url_opener().open(request, timeout=max(1, int(timeout))) as response:
+            payload = response.read()
+    return parse_douban_rexxar_search(payload)
+
+
+def _first_rexxar_image(image: object) -> str:
+    payload = image if isinstance(image, dict) else {}
+    for size in ("large", "normal", "small"):
+        value = payload.get(size)
+        if isinstance(value, dict):
+            value = value.get("url")
+        url = _rexxar_image_url(value)
+        if url:
+            return url
+    return ""
+
+
+def parse_douban_rexxar_photos(payload: bytes | str | dict, limit: int = 8) -> list[str]:
+    data = _json_payload(payload)
+    rows = data.get("photos") if isinstance(data.get("photos"), list) else []
+    photos: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = _first_rexxar_image(row.get("image"))
+        if url and url not in photos:
+            photos.append(url)
+        if len(photos) >= max(0, int(limit)):
+            break
+    return photos
+
+
+def parse_douban_rexxar_celebrities(payload: bytes | str | dict) -> dict[str, str]:
+    data = _json_payload(payload)
+    photos: dict[str, str] = {}
+    for field in ("directors", "actors"):
+        rows = data.get(field) if isinstance(data.get(field), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            names = [
+                str(row.get("name") or "").strip(),
+                str(row.get("latin_name") or "").strip(),
+            ]
+            avatar = row.get("avatar") if isinstance(row.get("avatar"), dict) else {}
+            url = _rexxar_image_url(avatar.get("large") or avatar.get("normal") or avatar.get("small"))
+            if not url or is_placeholder_people_image_url(url):
+                continue
+            for name in names:
+                if name and name not in photos:
+                    photos[name] = url
+    return photos
+
+
+def parse_douban_rexxar_credit_names(payload: bytes | str | dict) -> tuple[list[str], list[str]]:
+    data = _json_payload(payload)
+    groups: list[list[str]] = []
+    for field in ("directors", "actors"):
+        names: list[str] = []
+        rows = data.get(field) if isinstance(data.get(field), list) else []
+        for row in rows:
+            name = str(row.get("name") or "").strip() if isinstance(row, dict) else ""
+            if name and name not in names:
+                names.append(name)
+        groups.append(names)
+    return groups[0], groups[1]
+
+
+def _normalized_person_key(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in text if character.isalnum())
+
+
+def _map_rexxar_credit_photo_aliases(detail: MediaItem, photos: dict[str, str]) -> dict[str, str]:
+    expanded = dict(photos)
+    aliases = [
+        (name, _normalized_person_key(name), url)
+        for name, url in photos.items()
+        if _normalized_person_key(name) and str(url or "").startswith(("http://", "https://"))
+    ]
+    for credit_name in [*(detail.directors or []), *(detail.casts or [])]:
+        clean_name = str(credit_name or "").strip()
+        if not clean_name or clean_name in expanded:
+            continue
+        credit_key = _normalized_person_key(clean_name)
+        if not credit_key:
+            continue
+        matching_urls = {
+            url
+            for _alias, alias_key, url in aliases
+            if credit_key == alias_key
+            or (min(len(credit_key), len(alias_key)) >= 5 and (credit_key in alias_key or alias_key in credit_key))
+        }
+        if len(matching_urls) == 1:
+            expanded[clean_name] = next(iter(matching_urls))
+    return expanded
+
+
+def _rexxar_duration_minutes(value: object) -> int | None:
+    rows = value if isinstance(value, list) else [value]
+    for row in rows:
+        match = re.search(r"(\d{1,3})\s*分钟", str(row or ""))
+        if match:
+            minutes = int(match.group(1))
+            if 0 < minutes < 1000:
+                return minutes
+    return None
+
+
+def _rexxar_release_date(value: object) -> str:
+    rows = value if isinstance(value, list) else [value]
+    for row in rows:
+        match = re.search(r"\b((?:19|20)\d{2}-\d{2}-\d{2})\b", str(row or ""))
+        if match:
+            return match.group(1)
+    return ""
+
+
+def parse_douban_rexxar_subject(payload: bytes | str | dict) -> MediaItem:
+    data = _json_payload(payload)
+    title = str(data.get("title") or "").strip()
+    subject_id = str(data.get("id") or "").strip()
+    rating = data.get("rating") if isinstance(data.get("rating"), dict) else {}
+    rating_value = parse_float(rating.get("value"))
+    vote_count = None
+    try:
+        vote_count = int(rating.get("count")) if rating.get("count") is not None else None
+    except (TypeError, ValueError):
+        vote_count = None
+    year = None
+    try:
+        year = int(data.get("year")) if data.get("year") else None
+    except (TypeError, ValueError):
+        year = None
+    genres = [str(value).strip() for value in data.get("genres", []) if str(value).strip()] if isinstance(data.get("genres"), list) else []
+    is_tv = bool(data.get("is_tv")) or str(data.get("subtype") or "").lower() in {"tv", "tvshow"}
+    media_type = "动漫" if is_tv and "动画" in genres else "电视剧" if is_tv else "电影"
+    aliases: list[str] = []
+    for value in [data.get("original_title"), *(data.get("aka") if isinstance(data.get("aka"), list) else [])]:
+        alias = str(value or "").strip()
+        if alias and alias != title and alias not in aliases:
+            aliases.append(alias)
+    raw: dict[str, object] = {
+        "provider_ids": {"douban": subject_id} if subject_id else {},
+        "ratings": {"douban": rating_value} if rating_value is not None else {},
+        "rating_votes": {"douban": vote_count} if vote_count is not None else {},
+    }
+    if aliases:
+        raw["aliases"] = aliases
+    original_title = str(data.get("original_title") or "").strip()
+    if original_title:
+        raw["original_title"] = original_title
+    duration = _rexxar_duration_minutes(data.get("durations"))
+    if duration:
+        raw["duration"] = duration
+    release_date = _rexxar_release_date(data.get("pubdate") or data.get("release_date"))
+    if release_date:
+        raw["release_date"] = release_date
+    for key in ("comment_count", "review_count"):
+        try:
+            value = int(data.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            raw[key] = value
+    cover = _rexxar_image_url(data.get("cover_url"))
+    if not cover:
+        pic = data.get("pic") if isinstance(data.get("pic"), dict) else {}
+        cover = _rexxar_image_url(pic.get("large") or pic.get("normal"))
+    return MediaItem(
+        title=title,
+        douban_rating=rating_value,
+        vote_count=vote_count,
+        year=year,
+        media_type=media_type,
+        genres=genres,
+        countries=[str(value).strip() for value in data.get("countries", []) if str(value).strip()] if isinstance(data.get("countries"), list) else [],
+        languages=[str(value).strip() for value in data.get("languages", []) if str(value).strip()] if isinstance(data.get("languages"), list) else [],
+        directors=_rexxar_name_rows(data.get("directors")),
+        casts=_rexxar_name_rows(data.get("actors")),
+        url=str(data.get("url") or (f"https://movie.douban.com/subject/{subject_id}/" if subject_id else "")).strip(),
+        douban_id=subject_id,
+        cover=cover,
+        summary=str(data.get("intro") or "").strip(),
+        source="douban_rexxar",
+        raw=raw,
+    )
+
+
+def _fetch_douban_rexxar_json(url: str, subject_id: str, fetcher=None, timeout: int = 8) -> dict:
+    headers = dict(DEFAULT_HEADERS)
+    headers.update({
+        "Accept": "application/json",
+        "Referer": f"https://m.douban.com/movie/subject/{subject_id}/",
+    })
+    if fetcher is not None:
+        try:
+            payload = fetcher(url, accept_json=True, headers=headers)
+        except TypeError:
+            try:
+                payload = fetcher(url, accept_json=True)
+            except TypeError:
+                payload = fetcher(url)
+        return _json_payload(payload)
+    request = urllib.request.Request(url, headers=headers)
+    with build_url_opener().open(request, timeout=max(1, int(timeout))) as response:
+        return _json_payload(response.read())
+
+
+def fetch_douban_rexxar_detail(item: MediaItem, fetcher=None, timeout: int = 8) -> MediaItem | None:
+    subject_id = str(item.douban_id or extract_douban_id(item.url) or "").strip()
+    if not subject_id.isdigit():
+        return None
+    detail_base = f"{DOUBAN_REXXAR_SUBJECT_ENDPOINT}/{subject_id}"
+    try:
+        subject_payload = _fetch_douban_rexxar_json(detail_base, subject_id, fetcher, timeout)
+    except Exception:
+        return None
+    detail = parse_douban_rexxar_subject(subject_payload)
+    if not detail.title or detail.douban_id != subject_id:
+        return None
+    expected_titles = _public_metadata_queries(item, limit=12)
+    detail_aliases = detail.raw.get("aliases") if isinstance(detail.raw, dict) else []
+    accepted_titles = [detail.title, *(detail_aliases if isinstance(detail_aliases, list) else [])]
+    if expected_titles and not any(
+        _title_matches_expected(candidate, expected)
+        for candidate in accepted_titles
+        for expected in expected_titles
+    ):
+        return None
+    if item.year and detail.year and abs(int(item.year) - int(detail.year)) > 1:
+        return None
+
+    media_endpoint = (
+        DOUBAN_REXXAR_TV_ENDPOINT
+        if detail.media_type in {"电视剧", "动漫"}
+        else DOUBAN_REXXAR_MOVIE_ENDPOINT
+    )
+    media_base = f"{media_endpoint}/{subject_id}"
+    urls = {
+        "photos": f"{media_base}/photos?type=S&start=0&count=8&sortby=like",
+        "celebrities": f"{media_base}/celebrities",
+    }
+    payloads: dict[str, dict] = {"subject": subject_payload}
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="douban-rexxar") as executor:
+        futures = {
+            executor.submit(_fetch_douban_rexxar_json, url, subject_id, fetcher, timeout): name
+            for name, url in urls.items()
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                payloads[name] = future.result()
+            except Exception:
+                payloads[name] = {}
+    stills = parse_douban_rexxar_photos(payloads.get("photos", {}), limit=8)
+    if stills:
+        detail.raw["stills"] = stills
+    celebrity_payload = payloads.get("celebrities", {})
+    credit_directors, credit_casts = parse_douban_rexxar_credit_names(celebrity_payload)
+    if not detail.directors and credit_directors:
+        detail.directors = credit_directors
+    if not detail.casts and credit_casts:
+        detail.casts = credit_casts
+    people_photos = parse_douban_rexxar_celebrities(celebrity_payload)
+    if people_photos:
+        detail.raw["people_photos"] = _map_rexxar_credit_photo_aliases(detail, people_photos)
+    return detail
+
+
+def fetch_douban_rexxar_search_detail(item: MediaItem, fetcher=None, timeout: int = 8) -> MediaItem | None:
+    """Resolve a non-numeric/stale identity through mobile search, then verify detail.
+
+    The search hit itself is never trusted. Every candidate is fetched through
+    ``fetch_douban_rexxar_detail`` so the subject title/aliases, year and media
+    type are checked before synopsis, stills or people photos are returned.
+    """
+
+    if not item or not str(item.title or "").strip():
+        return None
+    current_id = str(item.douban_id or "").strip()
+    strict_year = item.year if not current_id.startswith("premium-") else None
+    seen_ids: set[str] = set()
+    for query in _public_metadata_queries(item, limit=12):
+        try:
+            candidates = fetch_douban_rexxar_search_candidates(query, fetcher=fetcher, timeout=timeout)
+        except Exception:
+            continue
+        for candidate in candidates[:10]:
+            subject_id = str(candidate.douban_id or "").strip()
+            if not subject_id.isdigit() or subject_id in seen_ids:
+                continue
+            seen_ids.add(subject_id)
+            if strict_year and candidate.year and abs(int(strict_year) - int(candidate.year)) > 1:
+                continue
+            probe = MediaItem(
+                title=item.title,
+                media_type=item.media_type,
+                year=strict_year,
+                douban_id=subject_id,
+                raw=dict(item.raw) if isinstance(item.raw, dict) else {},
+            )
+            detail = fetch_douban_rexxar_detail(probe, fetcher=fetcher, timeout=timeout)
+            if detail is None:
+                continue
+            if item.media_type == "\u52a8\u6f2b" and detail.media_type != "\u52a8\u6f2b":
+                continue
+            if item.media_type == "\u7535\u89c6\u5267" and detail.media_type not in {"\u7535\u89c6\u5267", "\u52a8\u6f2b"}:
+                continue
+            if item.media_type == "\u7535\u5f71" and detail.media_type != "\u7535\u5f71":
+                continue
+            return detail
+    return None
+
+
 def _anime_candidate_titles(row: dict) -> list[str]:
     titles: list[str] = []
     title_data = row.get("title")
     if isinstance(title_data, dict):
         titles.extend(str(title_data.get(key) or "").strip() for key in ("romaji", "english", "native"))
     for key in ("title", "title_english", "title_japanese"):
-        titles.append(str(row.get(key) or "").strip())
+        value = row.get(key)
+        if isinstance(value, str):
+            titles.append(value.strip())
     for value in row.get("title_synonyms") or row.get("synonyms") or []:
         titles.append(str(value or "").strip())
     return [title for title in titles if title]
@@ -1059,6 +2303,19 @@ def _anime_candidate_titles(row: dict) -> list[str]:
 def _is_anime_series_format(value: object) -> bool:
     text = str(value or "").strip().upper()
     return text not in {"MOVIE", "MUSIC"}
+
+
+def _anilist_person_name(value: object) -> str:
+    person = value if isinstance(value, dict) else {}
+    names = person.get("name") if isinstance(person.get("name"), dict) else {}
+    return str(names.get("native") or names.get("full") or "").strip()
+
+
+def _anilist_person_photo(value: object) -> str:
+    person = value if isinstance(value, dict) else {}
+    images = person.get("image") if isinstance(person.get("image"), dict) else {}
+    url = str(images.get("large") or images.get("medium") or "").strip()
+    return url if url.startswith(("http://", "https://")) else ""
 
 
 def parse_anilist_results(payload: bytes | str | dict, expected_title: str = "", expected_media_type: str = "") -> list[MediaItem]:
@@ -1085,15 +2342,73 @@ def parse_anilist_results(payload: bytes | str | dict, expected_title: str = "",
             year = int(row.get("seasonYear")) if row.get("seasonYear") else None
         except (TypeError, ValueError):
             year = None
+        raw = dict(row)
+        aliases: list[str] = []
+        for candidate in title_candidates:
+            clean_candidate = str(candidate or "").strip()
+            if clean_candidate and clean_candidate != expected_title and clean_candidate not in aliases:
+                aliases.append(clean_candidate)
+        if aliases:
+            raw["aliases"] = aliases
+        genres = [str(value).strip() for value in row.get("genres", []) if str(value).strip()] if isinstance(row.get("genres"), list) else []
+        rating_value = parse_float(row.get("averageScore") or row.get("meanScore"))
+        if rating_value is not None and rating_value > 10:
+            rating_value = round(rating_value / 10, 1)
+        if rating_value is not None and rating_value > 0:
+            raw["ratings"] = {"anilist": rating_value}
+        raw["provider_ids"] = {"anilist": anime_id} if anime_id else {}
+        banner = str(row.get("bannerImage") or "").strip()
+        if banner.startswith(("http://", "https://")):
+            raw["backdrop"] = banner
+            raw["stills"] = [banner]
+        directors: list[str] = []
+        casts: list[str] = []
+        people_photos: dict[str, str] = {}
+        staff = row.get("staff") if isinstance(row.get("staff"), dict) else {}
+        staff_edges = staff.get("edges") if isinstance(staff.get("edges"), list) else []
+        for edge in staff_edges:
+            if not isinstance(edge, dict):
+                continue
+            role = str(edge.get("role") or "").strip().casefold()
+            if role not in {"director", "chief director", "series director"}:
+                continue
+            person = edge.get("node") if isinstance(edge.get("node"), dict) else {}
+            name = _anilist_person_name(person)
+            photo = _anilist_person_photo(person)
+            if name and name not in directors:
+                directors.append(name)
+            if name and photo:
+                people_photos.setdefault(name, photo)
+        characters = row.get("characters") if isinstance(row.get("characters"), dict) else {}
+        character_edges = characters.get("edges") if isinstance(characters.get("edges"), list) else []
+        for edge in character_edges:
+            voice_actors = edge.get("voiceActors") if isinstance(edge, dict) and isinstance(edge.get("voiceActors"), list) else []
+            for person in voice_actors:
+                name = _anilist_person_name(person)
+                photo = _anilist_person_photo(person)
+                if name and name not in casts:
+                    casts.append(name)
+                if name and photo:
+                    people_photos.setdefault(name, photo)
+                if len(casts) >= 16:
+                    break
+            if len(casts) >= 16:
+                break
+        if people_photos:
+            raw["people_photos"] = people_photos
         out.append(MediaItem(
             title=expected_title or next((title for title in title_candidates if title), ""),
-            media_type="动漫",
+            media_type="\u52a8\u6f2b",
             year=year,
+            genres=genres,
+            directors=directors,
+            casts=casts,
             url=str(row.get("siteUrl") or (f"https://anilist.co/anime/{anime_id}" if anime_id else "")),
             douban_id=f"anilist-{anime_id}" if anime_id else "",
             cover=cover,
             source="anilist_api",
-            raw=row,
+            summary=clean_html(str(row.get("description") or "")),
+            raw=raw,
         ))
     return out
 
@@ -1118,9 +2433,26 @@ def fetch_anilist_suggestions(
           format
           seasonYear
           coverImage { large extraLarge color }
+          bannerImage
           siteUrl
+          description(asHtml: false)
+          genres
           averageScore
           popularity
+          staff(perPage: 12, sort: RELEVANCE) {
+            edges {
+              role
+              node { name { full native } image { large medium } }
+            }
+          }
+          characters(perPage: 12, sort: [ROLE, RELEVANCE, ID]) {
+            edges {
+              voiceActors(language: JAPANESE, sort: [RELEVANCE, ID]) {
+                name { full native }
+                image { large medium }
+              }
+            }
+          }
         }
       }
     }
@@ -1183,6 +2515,7 @@ def parse_jikan_results(payload: bytes | str | dict, expected_title: str = "", e
             douban_id=f"mal-{anime_id}" if anime_id else "",
             cover=cover,
             source="jikan_myanimelist",
+            summary=clean_html(str(row.get("synopsis") or "")),
             raw=row,
         ))
     return out
@@ -1767,31 +3100,315 @@ def parse_subject_detail_html(page_html: str, url: str = "") -> MediaItem:
     )
 
 
+def _is_generated_catalog_summary(value: object) -> bool:
+    summary = str(value or "").strip()
+    return not summary or any(
+        summary.startswith(prefix)
+        for prefix in (
+            "正在补齐这部",
+            "资料有限：本地片库暂未记录作品简介",
+            "由 CineScope 精选扩展池补入的",
+            "详情：点击卡片查看简介",
+        )
+    )
+
+
+def _is_largely_latin_summary(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    cjk = sum("\u3400" <= char <= "\u9fff" for char in text)
+    latin = sum("a" <= char.lower() <= "z" for char in text)
+    return cjk == 0 and latin >= 24 and latin >= len(text) * 0.45
+
+
+def is_localized_summary(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and not _is_generated_catalog_summary(text) and not _is_largely_latin_summary(text)
+
+
+def _has_usable_chinese_copy(value: object) -> bool:
+    text = clean_html(html.unescape(str(value or ""))).strip()
+    cjk = sum("\u3400" <= char <= "\u9fff" for char in text)
+    latin = sum("a" <= char.lower() <= "z" for char in text)
+    return cjk >= 4 and cjk >= max(4, latin // 3)
+
+
+def _decode_translation_payload(payload: object) -> object:
+    if isinstance(payload, (dict, list)):
+        return payload
+    if isinstance(payload, (bytes, bytearray)):
+        text = bytes(payload).decode("utf-8", errors="ignore")
+    else:
+        text = str(payload or "")
+    text = text.lstrip("\ufeff").strip()
+    if text.startswith(")]}'"):
+        text = text.split("\n", 1)[-1].strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _fetch_translation_payload(url: str, fetcher, timeout: int) -> object:
+    if fetcher is not None:
+        try:
+            return fetcher(url, timeout=timeout)
+        except TypeError:
+            return fetcher(url)
+
+    import requests
+
+    proxy = configured_proxy_url()
+    proxy_candidates: list[str] = []
+    if proxy and configured_proxy_mode() != "fallback":
+        proxy_candidates.append(proxy)
+    proxy_candidates.append("")
+    if proxy and proxy not in proxy_candidates:
+        proxy_candidates.append(proxy)
+    last_error: Exception | None = None
+    for candidate in proxy_candidates:
+        session = requests.Session()
+        session.trust_env = False
+        response = None
+        try:
+            proxies = {"http": candidate, "https": candidate} if candidate else None
+            response = session.get(
+                url,
+                headers={**DEFAULT_HEADERS, "Accept": "application/json,text/plain,*/*"},
+                timeout=max(1, int(timeout)),
+                proxies=proxies,
+            )
+            response.raise_for_status()
+            return bytes(response.content or b"")
+        except Exception as exc:
+            last_error = exc
+        finally:
+            if response is not None:
+                response.close()
+            session.close()
+    if last_error is not None:
+        raise last_error
+    return b""
+
+
+def _split_translation_text(value: str, max_chars: int = 420) -> list[str]:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return []
+    limit = max(120, int(max_chars))
+    units = [part.strip() for part in re.split(r"(?<=[.!?;\u3002\uff01\uff1f\uff1b])\s+", text) if part.strip()]
+    chunks: list[str] = []
+    current = ""
+
+    def append_piece(piece: str) -> None:
+        nonlocal current
+        candidate = f"{current} {piece}".strip() if current else piece
+        if current and len(candidate) > limit:
+            chunks.append(current)
+            current = piece
+        else:
+            current = candidate
+
+    for unit in units:
+        remainder = unit
+        while len(remainder) > limit:
+            cut = remainder.rfind(" ", 0, limit + 1)
+            if cut < limit // 2:
+                cut = limit
+            append_piece(remainder[:cut].strip())
+            if current:
+                chunks.append(current)
+                current = ""
+            remainder = remainder[cut:].strip()
+        if remainder:
+            append_piece(remainder)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def fetch_chinese_summary_translation(
+    text: str,
+    fetcher=None,
+    timeout: int = 5,
+) -> tuple[str, str]:
+    original = str(text or "").strip()
+    if not _is_largely_latin_summary(original):
+        return "", ""
+
+    google_url = "https://translate.googleapis.com/translate_a/single?" + urllib.parse.urlencode({
+        "client": "gtx",
+        "sl": "auto",
+        "tl": "zh-CN",
+        "dt": "t",
+        "q": original,
+    })
+    try:
+        google_data = _decode_translation_payload(
+            _fetch_translation_payload(google_url, fetcher, max(1, int(timeout)))
+        )
+        segments = google_data[0] if isinstance(google_data, list) and google_data else []
+        google_copy = "".join(
+            str(segment[0] or "")
+            for segment in segments
+            if isinstance(segment, (list, tuple)) and segment
+        )
+        google_copy = clean_html(html.unescape(google_copy)).strip()
+        if _has_usable_chinese_copy(google_copy):
+            return google_copy, "machine_translation:google"
+    except Exception:
+        pass
+
+    translated_chunks: list[str] = []
+    for chunk in _split_translation_text(original):
+        mymemory_url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode({
+            "q": chunk,
+            "langpair": "en|zh-CN",
+        })
+        try:
+            mymemory_data = _decode_translation_payload(
+                _fetch_translation_payload(mymemory_url, fetcher, max(1, int(timeout)))
+            )
+            response_data = mymemory_data.get("responseData") if isinstance(mymemory_data, dict) else {}
+            mymemory_copy = response_data.get("translatedText") if isinstance(response_data, dict) else ""
+            mymemory_copy = clean_html(html.unescape(str(mymemory_copy or ""))).strip()
+            if not _has_usable_chinese_copy(mymemory_copy):
+                return "", ""
+            translated_chunks.append(mymemory_copy)
+        except Exception:
+            return "", ""
+    if translated_chunks:
+        return "".join(translated_chunks), "machine_translation:mymemory"
+    return "", ""
+
+
+def summary_translation_needs_refresh(item: MediaItem) -> bool:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    source = str(raw.get("summary_source") or "").strip().casefold()
+    original = str(raw.get("summary_original") or "").strip()
+    try:
+        version = int(raw.get("summary_translation_version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    return bool(
+        source == "machine_translation:mymemory"
+        and version < SUMMARY_TRANSLATION_VERSION
+        and _is_largely_latin_summary(original)
+    )
+
+
+def _localize_summary_if_needed(item: MediaItem) -> bool:
+    if not isinstance(item.raw, dict):
+        item.raw = {}
+    refresh_legacy = summary_translation_needs_refresh(item)
+    original = str(item.raw.get("summary_original") or "").strip() if refresh_legacy else str(item.summary or "").strip()
+    if not _is_largely_latin_summary(original):
+        return False
+    translated, provider = fetch_chinese_summary_translation(original)
+    if not translated or not provider:
+        return False
+    item.raw.setdefault("summary_original", original)
+    item.raw["summary_source"] = provider
+    item.raw["summary_generated"] = True
+    item.raw["summary_translation_version"] = SUMMARY_TRANSLATION_VERSION
+    item.summary = translated
+    return True
+
+
 def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
-    if detail.title and not item.title:
+    expected_titles = _public_metadata_queries(item, limit=12)
+    incoming_title = str(detail.title or "").strip()
+    detail_aliases = detail.raw.get("aliases") if isinstance(detail.raw, dict) else []
+    accepted_titles = [incoming_title, *(detail_aliases if isinstance(detail_aliases, list) else [])]
+    if expected_titles and incoming_title and not any(
+        _title_matches_expected(candidate, expected)
+        for candidate in accepted_titles if str(candidate or "").strip()
+        for expected in expected_titles
+    ):
+        return item
+    if not isinstance(item.raw, dict):
+        item.raw = {}
+    current_id = str(item.douban_id or "").strip()
+    incoming_id = str(detail.douban_id or "").strip()
+    verified_numeric_repair = incoming_id.isdigit() and not current_id.isdigit()
+    external_douban_localization = bool(
+        detail.source.startswith("douban") and str(item.source or "").startswith("global:")
+    )
+    placeholder_people = any(
+        is_curated_placeholder_person(value)
+        for value in [*(item.directors or []), *(item.casts or [])]
+    )
+    synthetic_repair = bool(
+        detail.source.startswith("douban")
+        and (
+            str(item.source or "").startswith("premium")
+            or
+            current_id.startswith("premium-")
+            or (placeholder_people and str(item.source or "").startswith(("recommendation", "title_seed", "premium")))
+        )
+    )
+    if verified_numeric_repair:
+        item.raw["resolved_from_provider"] = current_id
+    if synthetic_repair or (current_id.isdigit() and incoming_id.isdigit() and current_id != incoming_id):
+        item.raw["identity_repaired_from"] = current_id or "synthetic-catalog"
+    if detail.title and (not item.title or verified_numeric_repair or synthetic_repair or external_douban_localization):
+        previous_title = str(item.title or "").strip()
+        if previous_title and previous_title != detail.title:
+            aliases = item.raw.get("aliases") if isinstance(item.raw.get("aliases"), list) else []
+            item.raw["aliases"] = [previous_title, *[value for value in aliases if value != previous_title]]
         item.title = detail.title
-    if detail.year and not item.year:
+    if detail.year and (not item.year or synthetic_repair):
         item.year = detail.year
-    if detail.douban_rating is not None and item.douban_rating is None:
+    if detail.douban_rating is not None and (item.douban_rating is None or synthetic_repair):
         item.douban_rating = detail.douban_rating
-    if detail.vote_count is not None and item.vote_count is None:
+    if detail.vote_count is not None and (item.vote_count is None or synthetic_repair):
         item.vote_count = detail.vote_count
     if detail.media_type and not item.media_type:
         item.media_type = detail.media_type
     if detail.cover and not item.cover:
         item.cover = detail.cover
     if detail.summary:
+        existing_summary = str(item.summary or "").strip()
+        summary_replaced = False
         if str(item.source or "").startswith("douban_user:"):
-            if not isinstance(item.raw, dict):
-                item.raw = {}
-            existing_summary = str(item.summary or "").strip()
             if existing_summary and not item.raw.get("user_comment"):
                 item.raw["user_comment"] = existing_summary
             item.summary = detail.summary
-        elif not item.summary:
+            summary_replaced = True
+        elif (
+            _is_generated_catalog_summary(item.summary)
+            or synthetic_repair
+            or (detail.source.startswith("douban") and _is_largely_latin_summary(item.summary))
+            or (_is_largely_latin_summary(item.summary) and _has_usable_chinese_copy(detail.summary))
+        ):
             item.summary = detail.summary
+            summary_replaced = True
+        if summary_replaced:
+            if existing_summary and existing_summary != item.summary and _is_largely_latin_summary(existing_summary):
+                item.raw.setdefault("summary_original", existing_summary)
+            detail_raw = detail.raw if isinstance(detail.raw, dict) else {}
+            item.raw["summary_source"] = str(detail_raw.get("summary_source") or detail.source or "public_metadata")
+            if detail_raw.get("summary_generated"):
+                item.raw["summary_generated"] = True
+            else:
+                item.raw.pop("summary_generated", None)
+    verified_douban_people = bool(
+        detail.source.startswith("douban")
+        and incoming_id.isdigit()
+        and (not current_id.isdigit() or current_id == incoming_id or synthetic_repair)
+    )
+    if verified_douban_people and (detail.directors or detail.casts):
+        item.raw["people_credit_source"] = f"douban:{incoming_id}"
+
     def should_replace_people_field(current: list[str], incoming: list[str]) -> bool:
-        return bool(incoming) and (not current or any(is_curated_placeholder_person(value) for value in current))
+        return bool(incoming) and (
+            verified_douban_people
+            or not current
+            or any(is_curated_placeholder_person(value) for value in current)
+        )
 
     for field in ["genres", "countries", "languages", "directors", "casts"]:
         current = list(getattr(item, field) or [])
@@ -1813,9 +3430,40 @@ def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
             if clean_alias and clean_alias not in merged_aliases:
                 merged_aliases.append(clean_alias)
         item.raw["aliases"] = merged_aliases
+    detail_stills = detail.raw.get("stills") if isinstance(detail.raw, dict) else None
+    if isinstance(detail_stills, (list, tuple)) and detail_stills:
+        existing_stills = item.raw.get("stills") if isinstance(item.raw, dict) else None
+        merged_stills = list(existing_stills) if isinstance(existing_stills, list) else []
+        for still in detail_stills:
+            clean_still = str(still or "").strip()
+            if clean_still.startswith(("http://", "https://")) and clean_still not in merged_stills:
+                merged_stills.append(clean_still)
+        if merged_stills:
+            item.raw["stills"] = merged_stills[:8]
+    if isinstance(detail.raw, dict):
+        for key in ("ratings", "rating_votes", "provider_ids"):
+            incoming = detail.raw.get(key)
+            if not isinstance(incoming, dict) or not incoming:
+                continue
+            current = item.raw.get(key) if isinstance(item.raw.get(key), dict) else {}
+            item.raw[key] = {**current, **incoming}
+        for key in ("comment_count", "review_count", "original_title", "provider_format"):
+            incoming = detail.raw.get(key)
+            if incoming not in (None, "") and item.raw.get(key) in (None, ""):
+                item.raw[key] = incoming
+        duration = detail.raw.get("duration")
+        if isinstance(duration, int) and 0 < duration < 1000 and not item.raw.get("duration"):
+            item.raw["duration"] = duration
+        release_date = str(detail.raw.get("release_date") or "").strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", release_date) and not item.raw.get("release_date"):
+            item.raw["release_date"] = release_date
     if isinstance(detail_people_photos, dict) and detail_people_photos:
         item_people_photos = item.raw.get("people_photos") if isinstance(item.raw, dict) else None
-        merged_people_photos = dict(item_people_photos) if isinstance(item_people_photos, dict) else {}
+        merged_people_photos = {
+            str(name): str(photo)
+            for name, photo in (item_people_photos.items() if isinstance(item_people_photos, dict) else [])
+            if photo and not is_placeholder_people_image_url(photo)
+        }
         current_people_names = {
             str(value).strip()
             for value in [*(item.directors or []), *(item.casts or [])]
@@ -1825,12 +3473,12 @@ def merge_subject_detail(item: MediaItem, detail: MediaItem) -> MediaItem:
             clean_name = str(name).strip()
             if current_people_names and clean_name not in current_people_names:
                 continue
-            if clean_name and photo and clean_name not in merged_people_photos:
+            if clean_name and photo and not is_placeholder_people_image_url(photo):
                 merged_people_photos[clean_name] = str(photo)
         item.raw["people_photos"] = merged_people_photos
-    if detail.douban_id and not item.douban_id:
+    if incoming_id and (not current_id or verified_numeric_repair):
         item.douban_id = detail.douban_id
-    if detail.url and not item.url:
+    if detail.url and (not item.url or verified_numeric_repair):
         item.url = detail.url
     return item
 
@@ -1841,10 +3489,318 @@ def has_people_photo_coverage(item: MediaItem) -> bool:
     photos = item.raw.get("people_photos")
     if not isinstance(photos, dict) or not photos:
         return False
-    names = [*(item.directors or []), *(item.casts or [])]
-    if not names:
-        return True
-    return all(str(name) in photos for name in names if str(name).strip())
+    directors = [str(name).strip() for name in item.directors or [] if str(name).strip()]
+    casts = [str(name).strip() for name in item.casts or [] if str(name).strip()]
+    if not directors or not casts:
+        return False
+    names = [*directors[:1], *casts[:5]]
+    for name in names:
+        url = str(photos.get(name) or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return False
+        if is_placeholder_people_image_url(url):
+            return False
+    return True
+
+
+def _public_metadata_queries(item: MediaItem, limit: int = 8) -> list[str]:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    values: list[object] = [item.title]
+    for key in ("aliases", "original_titles", "original_title"):
+        value = raw.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(value)
+        elif value:
+            values.append(value)
+    values.extend(POSTER_SEARCH_ALIASES.get(str(item.title or "").strip(), []))
+    queries: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        query = clean_html(str(value or "")).replace("\u200e", "").strip()
+        normalized = normalize_title(query)
+        if len(query) < 2 or len(query) > 160 or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        queries.append(query)
+        if len(queries) >= max(1, int(limit)):
+            break
+    return queries
+
+
+_SEASON_IDENTITY_RE = re.compile(
+    r"(?:\u7b2c\s*[0-9\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e]+\s*\u5b63|\bseason\s*(?:[0-9]+|[ivxlcdm]+)\b|\bs\d{1,2}\b)",
+    flags=re.I,
+)
+
+
+def _has_explicit_season_identity(item: MediaItem) -> bool:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    values: list[object] = [item.title, item.summary]
+    for key in ("aliases", "original_titles", "original_title"):
+        value = raw.get(key)
+        if isinstance(value, (list, tuple, set)):
+            values.extend(value)
+        elif value:
+            values.append(value)
+    return any(_SEASON_IDENTITY_RE.search(str(value or "")) for value in values)
+
+
+def _title_without_season_marker(value: object) -> str:
+    text = clean_html(str(value or "")).replace("\u200e", "").strip()
+    text = re.sub(
+        r"(?:[-:|\u00b7]\s*)?(?:\u7b2c\s*[0-9\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e]+\s*\u5b63|season\s*(?:[0-9]+|[ivxlcdm]+)|s\d{1,2})\s*$",
+        "",
+        text,
+        flags=re.I,
+    ).strip()
+    return normalize_title(text)
+
+
+def _can_borrow_parent_series_people(item: MediaItem, suggestion: MediaItem) -> bool:
+    if item.media_type not in {"\u7535\u89c6\u5267", "\u52a8\u6f2b"} or suggestion.source != "tvmaze_api":
+        return False
+    if not item.year or not suggestion.year or int(item.year) <= int(suggestion.year) + 1:
+        return False
+    if not _has_explicit_season_identity(item):
+        return False
+    suggestion_raw = suggestion.raw if isinstance(suggestion.raw, dict) else {}
+    suggestion_people = suggestion_raw.get("people_photos")
+    if not (suggestion.directors or suggestion.casts) or not isinstance(suggestion_people, dict) or not suggestion_people:
+        return False
+    parent_title = normalize_title(str(suggestion.title or "").strip())
+    if not parent_title:
+        return False
+    return any(
+        parent_title in {normalize_title(query), _title_without_season_marker(query)}
+        for query in _public_metadata_queries(item, limit=12)
+    )
+
+
+def _merge_parent_series_people(item: MediaItem, suggestion: MediaItem) -> bool:
+    if not isinstance(item.raw, dict):
+        item.raw = {}
+    before = (
+        tuple(item.directors or []),
+        tuple(item.casts or []),
+        dict(item.raw.get("people_photos") or {}) if isinstance(item.raw.get("people_photos"), dict) else {},
+    )
+    for field in ("directors", "casts"):
+        current = [
+            str(value).strip()
+            for value in getattr(item, field) or []
+            if str(value).strip() and not is_curated_placeholder_person(value)
+        ]
+        for value in getattr(suggestion, field) or []:
+            clean_value = str(value).strip()
+            if clean_value and clean_value not in current:
+                current.append(clean_value)
+        setattr(item, field, current)
+
+    incoming_photos = suggestion.raw.get("people_photos") if isinstance(suggestion.raw, dict) else {}
+    existing_photos = {
+        str(name): str(photo)
+        for name, photo in (item.raw.get("people_photos") or {}).items()
+        if name and photo and not is_placeholder_people_image_url(photo)
+    } if isinstance(item.raw.get("people_photos"), dict) else {}
+    visible_names = {
+        str(name).strip()
+        for name in [*(item.directors or []), *(item.casts or [])]
+        if str(name).strip()
+    }
+    if isinstance(incoming_photos, dict):
+        for name, photo in incoming_photos.items():
+            clean_name = str(name).strip()
+            clean_photo = str(photo or "").strip()
+            if (
+                clean_name in visible_names
+                and clean_photo.startswith(("http://", "https://"))
+                and not is_placeholder_people_image_url(clean_photo)
+            ):
+                existing_photos.setdefault(clean_name, clean_photo)
+    if existing_photos:
+        item.raw["people_photos"] = existing_photos
+    after = (
+        tuple(item.directors or []),
+        tuple(item.casts or []),
+        dict(item.raw.get("people_photos") or {}) if isinstance(item.raw.get("people_photos"), dict) else {},
+    )
+    return after != before
+
+
+def _public_metadata_state(item: MediaItem) -> tuple[bool, bool, bool, bool, bool, bool, bool]:
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    ratings = raw.get("ratings") if isinstance(raw.get("ratings"), dict) else {}
+    parsed_ratings = [parse_float(value) for value in ratings.values()]
+    return (
+        is_localized_summary(item.summary),
+        bool(item.genres),
+        item.douban_rating is not None or any(value is not None and value > 0 for value in parsed_ratings),
+        bool(item.directors),
+        bool(item.casts),
+        isinstance(raw.get("stills"), list) and bool(raw.get("stills")),
+        has_people_photo_coverage(item),
+    )
+
+
+def enrich_public_metadata(item: MediaItem, max_seconds: float = 10.0) -> bool:
+    """Fill synopsis and visual still candidates from free public providers.
+
+    This is intentionally a best-effort supplement to Douban. It never replaces
+    verified Douban fields and only merges a provider result when its title
+    matcher accepted the requested work.
+    """
+    if not item or not str(item.title or "").strip():
+        return False
+    if all(_public_metadata_state(item)) and not summary_translation_needs_refresh(item):
+        return False
+    started_at = time.monotonic()
+    changed_any = False
+    raw = item.raw if isinstance(item.raw, dict) else {}
+    provider_ids = raw.get("provider_ids") if isinstance(raw.get("provider_ids"), dict) else {}
+    tvmaze_id = str(provider_ids.get("tvmaze") or "").strip()
+    if not tvmaze_id and str(item.douban_id or "").startswith("tvmaze-"):
+        tvmaze_id = str(item.douban_id).removeprefix("tvmaze-").strip()
+    if (
+        item.media_type == "\u7535\u89c6\u5267"
+        and tvmaze_id
+        and not _imdb_provider_id(item)
+        and not str(raw.get("provider_format") or "").strip()
+    ):
+        for query in _public_metadata_queries(item):
+            try:
+                suggestions = fetch_tvmaze_suggestions(query, media_type="\u7535\u89c6\u5267")
+            except Exception:
+                suggestions = []
+            matched = next((
+                suggestion
+                for suggestion in suggestions
+                if isinstance(suggestion, MediaItem)
+                and not (
+                    item.year
+                    and suggestion.year
+                    and abs(int(item.year) - int(suggestion.year)) > 1
+                )
+            ), None)
+            if matched is None:
+                continue
+            before_genres = tuple(item.genres)
+            before_format = str(raw.get("provider_format") or "").strip()
+            merge_subject_detail(item, matched)
+            raw = item.raw if isinstance(item.raw, dict) else {}
+            if tuple(item.genres) != before_genres or str(raw.get("provider_format") or "").strip() != before_format:
+                changed_any = True
+            break
+    changed_any = _localize_summary_if_needed(item) or changed_any
+    if all(_public_metadata_state(item)) and not summary_translation_needs_refresh(item):
+        return changed_any
+    providers = []
+
+    def imdb_provider(query: str) -> list[MediaItem]:
+        provider_id = _imdb_provider_id(item)
+        if not provider_id and not item.casts:
+            return []
+        return fetch_imdb_metadata_suggestions(
+            query,
+            media_type=item.media_type,
+            expected_year=item.year,
+            expected_cast=item.casts,
+            provider_id=provider_id,
+        )
+
+    has_verified_imdb_id = bool(_imdb_provider_id(item))
+    if item.media_type == "电影":
+        tmdb_provider = lambda query: fetch_themoviedb_metadata_suggestions(query, media_type="电影", expected_year=item.year)
+        providers = [imdb_provider, tmdb_provider] if has_verified_imdb_id else [tmdb_provider, imdb_provider]
+    elif item.media_type == "电视剧":
+        tmdb_provider = lambda query: fetch_themoviedb_metadata_suggestions(query, media_type="电视剧", expected_year=item.year)
+        tvmaze_provider = lambda query: fetch_tvmaze_suggestions(query, media_type="电视剧")
+        # TVMaze identities can reveal an IMDb id; once one is verified, IMDb is
+        # the fastest path to a rating and landscape stills and must not sit
+        # behind slower discovery providers.
+        providers = (
+            [imdb_provider, tvmaze_provider, tmdb_provider]
+            if has_verified_imdb_id
+            else [tvmaze_provider, imdb_provider, tmdb_provider]
+        )
+    elif item.media_type == "动漫":
+        providers = [
+            lambda query: fetch_themoviedb_metadata_suggestions(query, media_type="动漫", expected_year=item.year),
+            lambda query: fetch_tvmaze_suggestions(query, media_type="动漫"),
+            lambda query: fetch_anilist_suggestions(query, media_type="动漫"),
+            lambda query: fetch_jikan_suggestions(query, media_type="动漫"),
+            imdb_provider,
+        ]
+    queries = _public_metadata_queries(item)
+    for provider in providers:
+        for query in queries:
+            if max_seconds and time.monotonic() - started_at >= max_seconds:
+                return changed_any
+            try:
+                suggestions = provider(query) or []
+            except Exception:
+                suggestions = []
+            for suggestion in suggestions:
+                if not isinstance(suggestion, MediaItem):
+                    continue
+                suggestion_raw = suggestion.raw if isinstance(suggestion.raw, dict) else {}
+                suggestion_ratings = (
+                    suggestion_raw.get("ratings") if isinstance(suggestion_raw.get("ratings"), dict) else {}
+                )
+                suggestion_people = (
+                    suggestion_raw.get("people_photos")
+                    if isinstance(suggestion_raw.get("people_photos"), dict)
+                    else {}
+                )
+                year_mismatch = bool(
+                    item.year
+                    and suggestion.year
+                    and abs(int(item.year) - int(suggestion.year)) > 1
+                )
+                parent_series_people = bool(
+                    year_mismatch and _can_borrow_parent_series_people(item, suggestion)
+                )
+                if year_mismatch:
+                    if not parent_series_people:
+                        continue
+                    before = _public_metadata_state(item)
+                    merged_people = _merge_parent_series_people(item, suggestion)
+                    after = _public_metadata_state(item)
+                    if merged_people or after != before:
+                        changed_any = True
+                    if all(after) and not summary_translation_needs_refresh(item):
+                        return changed_any
+                    continue
+                if (
+                    not suggestion.summary
+                    and not suggestion_raw.get("stills")
+                    and not suggestion_ratings
+                    and not suggestion.directors
+                    and not suggestion.casts
+                    and not suggestion_people
+                ):
+                    continue
+                source_title = str(suggestion.title or "").strip()
+                if source_title and normalize_title(source_title) != normalize_title(item.title):
+                    aliases = suggestion_raw.get("aliases") if isinstance(suggestion_raw.get("aliases"), list) else []
+                    suggestion.raw = {**suggestion_raw, "aliases": [source_title, *aliases]}
+                    suggestion.title = item.title
+                before = _public_metadata_state(item)
+                merge_subject_detail(item, suggestion)
+                localized = _localize_summary_if_needed(item)
+                after = _public_metadata_state(item)
+                if after != before or localized:
+                    changed_any = True
+                if all(after) and not summary_translation_needs_refresh(item):
+                    return changed_any
+    return changed_any
+
+
+def _needs_verified_douban_localization(item: MediaItem) -> bool:
+    return bool(
+        str(item.source or "").startswith("global:")
+        and str(item.douban_id or "").strip().isdigit()
+        and (_is_largely_latin_summary(item.summary) or not re.search(r"[\u3400-\u9fff]", str(item.title or "")))
+    )
 
 
 def enrich_media_items(
@@ -1859,6 +3815,51 @@ def enrich_media_items(
     for item in items:
         if enriched >= limit:
             break
+        current_raw = item.raw if isinstance(item.raw, dict) else {}
+        current_stills = current_raw.get("stills") if isinstance(current_raw.get("stills"), list) else []
+        if (
+            item.summary
+            and item.directors
+            and item.casts
+            and item.genres
+            and item.cover
+            and item.douban_rating is not None
+            and current_stills
+            and (not force_people_photos or has_people_photo_coverage(item))
+            and not _needs_verified_douban_localization(item)
+        ):
+            continue
+        merged_any_detail = False
+        if fetcher is None:
+            subject_id = str(item.douban_id or extract_douban_id(item.url) or "").strip()
+            try:
+                rexxar_detail = fetch_douban_rexxar_detail(item) if subject_id.isdigit() else None
+            except Exception:
+                rexxar_detail = None
+            if rexxar_detail is None:
+                try:
+                    rexxar_detail = fetch_douban_rexxar_search_detail(item)
+                except Exception:
+                    rexxar_detail = None
+            if rexxar_detail is not None:
+                merge_subject_detail(item, rexxar_detail)
+                merged_any_detail = True
+                raw = item.raw if isinstance(item.raw, dict) else {}
+                has_stills = isinstance(raw.get("stills"), list) and bool(raw.get("stills"))
+                if (
+                    item.summary
+                    and item.directors
+                    and item.casts
+                    and item.genres
+                    and item.cover
+                    and item.douban_rating is not None
+                    and has_stills
+                    and (not force_people_photos or has_people_photo_coverage(item))
+                ):
+                    enriched += 1
+                    if sleep_seconds:
+                        time.sleep(sleep_seconds)
+                    continue
         urls = subject_detail_urls(item)
         if not urls and force_people_photos and item.title:
             try:
@@ -1881,7 +3882,6 @@ def enrich_media_items(
         if item.summary and item.directors and item.casts and item.genres and item.cover:
             if not force_people_photos or has_people_photo_coverage(item):
                 continue
-        merged_any_detail = False
         for url in urls:
             try:
                 payload = fetch(url)
@@ -1924,28 +3924,143 @@ def fetch_douban_detail_html(url: str, cookie: str = "", timeout: int = 10) -> b
     clean_cookie = str(cookie or "").strip()
     if clean_cookie:
         headers["Cookie"] = clean_cookie
-    request = urllib.request.Request(str(url), headers=headers)
-    opener = build_url_opener()
+    request = urllib.request.Request(_validated_douban_subject_url(url), headers=headers)
+    opener = build_douban_detail_opener()
     with opener.open(request, timeout=max(1, int(timeout))) as response:
         return response.read()
 
 
-def configured_proxy_url() -> str:
-    for name in ("DOUBAN_RECOMMENDER_HTTP_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
-        value = os.environ.get(name) or os.environ.get(name.lower())
+def configured_proxy_url(env: dict[str, str] | None = None) -> str:
+    environment = os.environ if env is None else env
+    for name in ("CINESCOPE_OUTBOUND_PROXY", "DOUBAN_RECOMMENDER_HTTP_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"):
+        value = environment.get(name) or environment.get(name.lower())
         if value:
-            return value.strip()
+            return str(value).strip()
     return ""
 
 
-def build_url_opener():
-    proxy = configured_proxy_url()
-    if not proxy:
-        return urllib.request.build_opener()
+def configured_proxy_mode(env: dict[str, str] | None = None) -> str:
+    environment = os.environ if env is None else env
+    return str(environment.get("CINESCOPE_PROXY_MODE") or "").strip().casefold()
+
+
+class _RequestsResponseAdapter:
+    def __init__(self, response, url: str):
+        self._response = response
+        self._url = str(getattr(response, "url", "") or url)
+        self.headers = response.headers
+        self.status = int(response.status_code)
+        self.code = self.status
+
+    def read(self, amount: int | None = None) -> bytes:
+        payload = bytes(self._response.content or b"")
+        return payload if amount is None else payload[: max(0, int(amount))]
+
+    def geturl(self) -> str:
+        return self._url
+
+    def close(self) -> None:
+        self._response.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info):
+        self.close()
+        return False
+
+
+class _RequestsProxyOpener:
+    def __init__(self, proxy_url: str, redirect_validator=None):
+        self.proxy_url = str(proxy_url or "").strip()
+        self.redirect_validator = redirect_validator
+
+    def open(self, request, timeout: int | float = 12):
+        try:
+            import requests
+        except ImportError as exc:
+            raise urllib.error.URLError("SOCKS proxy support requires requests[socks]") from exc
+        req = request if isinstance(request, urllib.request.Request) else urllib.request.Request(str(request))
+        session = requests.Session()
+        session.trust_env = False
+        url = str(req.full_url)
+        method = str(req.get_method() or "GET").upper()
+        data = req.data
+        headers = dict(req.header_items())
+        proxies = {"http": self.proxy_url, "https": self.proxy_url}
+        for _redirect in range(6):
+            try:
+                response = session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    data=data,
+                    timeout=timeout,
+                    proxies=proxies,
+                    allow_redirects=False,
+                )
+            except requests.RequestException as exc:
+                session.close()
+                raise urllib.error.URLError(str(exc)) from exc
+            status = int(response.status_code)
+            location = str(response.headers.get("Location") or "").strip()
+            if status in {301, 302, 303, 307, 308} and location:
+                next_url = urllib.parse.urljoin(url, location)
+                response.close()
+                if self.redirect_validator is not None:
+                    next_url = self.redirect_validator(next_url)
+                if status == 303 or (status in {301, 302} and method not in {"GET", "HEAD"}):
+                    method = "GET"
+                    data = None
+                url = next_url
+                continue
+            session.close()
+            if status >= 400:
+                body = bytes(response.content or b"")
+                response.close()
+                raise urllib.error.HTTPError(url, status, str(response.reason or "HTTP error"), response.headers, io.BytesIO(body))
+            return _RequestsResponseAdapter(response, url)
+        session.close()
+        raise urllib.error.HTTPError(url, 310, "too many redirects", {}, None)
+
+
+def _build_proxy_opener(proxy: str):
+    if urllib.parse.urlsplit(proxy).scheme.lower() in {"socks5", "socks5h"}:
+        return _RequestsProxyOpener(proxy)
     return urllib.request.build_opener(urllib.request.ProxyHandler({
         "http": proxy,
         "https": proxy,
     }))
+
+
+def build_url_opener():
+    proxy = configured_proxy_url()
+    if proxy and configured_proxy_mode() != "fallback":
+        return _build_proxy_opener(proxy)
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def build_retry_url_opener():
+    proxy = configured_proxy_url()
+    if proxy and configured_proxy_mode() == "fallback":
+        return _build_proxy_opener(proxy)
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class _DoubanSubjectRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        safe_url = _validated_douban_subject_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
+
+
+def build_douban_detail_opener():
+    handlers: list[object] = [_DoubanSubjectRedirectHandler()]
+    proxy = configured_proxy_url()
+    if proxy and urllib.parse.urlsplit(proxy).scheme.lower() in {"socks5", "socks5h"}:
+        return _RequestsProxyOpener(proxy, redirect_validator=_validated_douban_subject_url)
+    if proxy:
+        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    return urllib.request.build_opener(*handlers)
 
 
 def subject_detail_urls(item: MediaItem) -> list[str]:
@@ -1957,9 +4072,28 @@ def subject_detail_urls(item: MediaItem) -> list[str]:
         for url in (mobile, desktop):
             if url not in urls:
                 urls.append(url)
-    if item.url and "movie.douban.com/subject/" in item.url and item.url not in urls:
-        urls.append(item.url)
     return urls
+
+
+def _validated_douban_subject_url(url: str) -> str:
+    text = str(url or "").strip()
+    parsed = urllib.parse.urlparse(text)
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Douban subject URL must use a canonical HTTPS endpoint")
+    host = (parsed.hostname or "").lower()
+    pattern = r"/subject/(\d+)/?" if host == "movie.douban.com" else r"/movie/subject/(\d+)/?" if host == "m.douban.com" else ""
+    match = re.fullmatch(pattern, parsed.path) if pattern else None
+    if not match:
+        raise ValueError("Douban subject URL must use a canonical Douban subject host")
+    prefix = "/subject" if host == "movie.douban.com" else "/movie/subject"
+    return f"https://{host}{prefix}/{match.group(1)}/"
 
 
 def _summary_from_og_description(value: str) -> str:

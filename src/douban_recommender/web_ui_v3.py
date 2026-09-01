@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import os
 import re
@@ -11,21 +12,47 @@ from .models import is_safe_route_segment
 
 
 UI_ROOT = Path(__file__).with_name("ui")
-_V3_SPACES = frozenset({"/tonight", "/universe", "/library", "/taste", "/health"})
+_V3_SPACES = frozenset({"/tonight", "/universe", "/observatory", "/library", "/taste", "/health"})
 _TONIGHT_CHANNELS = frozenset({"movie", "series", "anime-series"})
 _SERVICE_ROOTS = frozenset({"api", "assets", "media"})
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_ASSET_ATTRIBUTE = re.compile(r'(?P<prefix>\b(?:href|src)=")(?P<path>/assets/v3/[^"?]+)(?P<suffix>")')
+_VERSIONED_ASSET_PREFIX = re.compile(r"^build-[0-9a-f]{12}/")
+
+
+def _asset_build_revision() -> str:
+    digest = hashlib.sha256()
+    assets = sorted(
+        path for path in UI_ROOT.rglob("*")
+        if path.is_file() and path.name != "index.html"
+    )
+    for path in assets:
+        digest.update(path.relative_to(UI_ROOT).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:12]
 
 
 def load_index_html() -> str:
     """Return the packaged CineScope V3 application shell."""
 
-    return (UI_ROOT / "index.html").read_text(encoding="utf-8")
+    html = (UI_ROOT / "index.html").read_text(encoding="utf-8")
+    revision = f"build-{_asset_build_revision()}"
+    return _ASSET_ATTRIBUTE.sub(
+        lambda match: (
+            f'{match.group("prefix")}'
+            f'{match.group("path").replace("/assets/v3/", f"/assets/v3/{revision}/", 1)}'
+            f'{match.group("suffix")}'
+        ),
+        html,
+    )
 
 
 def asset_response(relative_path: str) -> tuple[bytes, str]:
     """Load a packaged V3 asset without allowing requests to escape ``UI_ROOT``."""
 
+    relative_path = _VERSIONED_ASSET_PREFIX.sub("", str(relative_path or ""), count=1)
     ui_root = UI_ROOT.resolve()
     candidate = (ui_root / relative_path).resolve()
     if ui_root not in candidate.parents or not candidate.is_file():

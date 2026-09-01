@@ -12,7 +12,16 @@ const ARRAY_FIELDS = Object.freeze({
 });
 const NUMBER_FIELDS = new Set(["runtime_max", "episode_runtime_max", "year_min", "year_max", "quality_floor"]);
 
-let dependencies = { root: null, store: null, api: { postV2 }, onSession: null, onBeforeOpen: null };
+let dependencies = {
+  root: null,
+  store: null,
+  api: { postV2 },
+  onSession: null,
+  onBeforeOpen: null,
+  closeOnSuccess: false,
+  setTimer: (callback, delay) => setTimeout(callback, delay),
+  clearTimer: (id) => clearTimeout(id),
+};
 let lens = null;
 let intentInput = null;
 let chipList = null;
@@ -90,8 +99,28 @@ function replacementIntent(chip, replacement) {
 
 async function runIntentRequest(payload, workingMessage, successMessage) {
   const generation = ++intentGeneration;
+  const stages = [
+    workingMessage,
+    "正在读取你的本地片库与长期口味画像…",
+    "正在并行检索豆瓣、TMDb、IMDb、TVMaze 与动画数据源…",
+    "正在排除看过、想看和不感兴趣，并融合多源评分…",
+    "正在进行语义相似度、剧情完成度与多样性重排…",
+  ];
+  let stageIndex = 0;
+  let stageTimer = null;
+  const scheduleStage = () => {
+    if (generation !== intentGeneration || !intentPending || stageIndex >= stages.length - 1) return;
+    stageTimer = dependencies.setTimer(() => {
+      stageTimer = null;
+      if (generation !== intentGeneration || !intentPending) return;
+      stageIndex += 1;
+      updateStatus(stages[stageIndex], "working");
+      scheduleStage();
+    }, 950);
+  };
   setIntentPending(true);
-  updateStatus(workingMessage, "working");
+  updateStatus(stages[0], "working");
+  scheduleStage();
   try {
     const session = await dependencies.api.postV2("/api/v2/recommend/sessions", payload);
     if (generation !== intentGeneration) return null;
@@ -102,6 +131,7 @@ async function runIntentRequest(payload, workingMessage, successMessage) {
     updateStatus("语言理解服务暂不可用；本地结构化筛选仍可继续使用。", "fallback");
     return null;
   } finally {
+    if (stageTimer !== null) dependencies.clearTimer(stageTimer);
     if (generation === intentGeneration) setIntentPending(false);
   }
 }
@@ -110,10 +140,13 @@ function replaceSession(intent) {
   return runIntentRequest(
     {
       intent,
-      batch_size: 9,
-      limit: 160,
-      per_query: 30,
+      batch_size: 10,
+      limit: 240,
+      per_query: 36,
       fetch_douban: true,
+      fetch_global: true,
+      use_local_index: true,
+      global_discovery: { max_total: 240, max_per_source: 36, include_current: true },
       include_movies: true,
       include_series: true,
       include_anime: true,
@@ -182,8 +215,9 @@ function acceptGroundedSession(session, message) {
   renderChips();
   dependencies.store?.dispatch?.({ type: "commandLens/grounded", draft: intentInput?.value || "", chips: currentChips });
   dependencies.store?.dispatch?.({ type: "recommendation/sessionReceived", session });
-  dependencies.onSession?.(session);
   updateStatus(message, "success");
+  dependencies.onSession?.(session);
+  if (dependencies.closeOnSuccess === true) closeCommandLens({ restoreFocus: false });
 }
 
 function canRestoreFocus(trigger) {
@@ -269,7 +303,7 @@ export function openCommandLens(initialText = "") {
   const headingGroup = element("div", "command-lens__heading");
   headingGroup.append(
     element("p", "eyebrow", "COMMAND LENS / Ctrl K"),
-    element("h2", "command-lens__title", "告诉 CineScope，今晚想进入哪种电影。"),
+    element("h2", "command-lens__title", "告诉 CineScope，今晚想进入哪种故事。"),
   );
   headingGroup.children[1].id = "command-lens-title";
   const close = element("button", "command-lens__close", "关闭");
@@ -323,10 +357,13 @@ export async function submitIntent(text) {
   return runIntentRequest(
     {
       intent_text: cleanText,
-      batch_size: 9,
-      limit: 160,
-      per_query: 30,
+      batch_size: 10,
+      limit: 240,
+      per_query: 36,
       fetch_douban: true,
+      fetch_global: true,
+      use_local_index: true,
+      global_discovery: { max_total: 240, max_per_source: 36, include_current: true },
       include_movies: true,
       include_series: true,
       include_anime: true,

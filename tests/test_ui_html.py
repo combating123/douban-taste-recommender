@@ -565,7 +565,7 @@ class UiHtmlTests(unittest.TestCase):
 
     def test_ui_has_no_question_mark_mojibake_in_sync_copy(self):
         sync_slice = INDEX_HTML[INDEX_HTML.index("function renderCrawlerPanel"):INDEX_HTML.index("function tasteDNA")]
-        self.assertNotIn("????", sync_slice)
+        self.assertNotIn("?" * 4, sync_slice)
         self.assertIn("第一步：连接豆瓣", sync_slice)
         self.assertIn("同步诊断", sync_slice)
 
@@ -648,9 +648,10 @@ class UiHtmlTests(unittest.TestCase):
             "rememberCookieSession",
             "clearSessionCookie",
             "defaultDoubanUser",
-            "272042071",
         ]:
             self.assertIn(token, INDEX_HTML)
+        self.assertIn("const defaultDoubanUser = '';", INDEX_HTML)
+        self.assertNotRegex(INDEX_HTML, r"https://www\.douban\.com/people/\d{6,}/")
 
     def test_crawler_controls_bind_prefs_to_visible_inputs(self):
         for token in [
@@ -887,10 +888,9 @@ class UiHtmlTests(unittest.TestCase):
         for token in [
             "isNumberedCuratedPlaceholder",
             "cleanupStalePlaceholderRecommendations",
-            "????",
-            "??????",
-            "???",
-            "????",
+            r"\u7535\u5f71\u7b56\u5c55",
+            r"\u5267\u96c6\u7b56\u5c55",
+            r"\u52a8\u6f2b\u5267\u96c6\u7b56\u5c55",
         ]:
             self.assertIn(token, INDEX_HTML)
 

@@ -45,6 +45,11 @@ class RecommendationIntentParserTests(unittest.TestCase):
 
         self.assertEqual(intent.quality_floor, 8.0)
 
+    def test_natural_high_reputation_phrase_sets_quality_floor(self):
+        intent = parse_recommendation_intent("今晚想看口碑很好的电影、电视剧或动画剧集")
+
+        self.assertEqual(intent.quality_floor, 8.0)
+
     def test_base_intent_is_merged_without_losing_existing_media(self):
         base = RecommendationIntent(media_types=("电影",), exploration_level=0.2)
         intent = parse_recommendation_intent("更轻松一点", base=base)

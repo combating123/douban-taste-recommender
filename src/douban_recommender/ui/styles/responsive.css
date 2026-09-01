@@ -226,7 +226,12 @@ canvas {
   .detail-page,
   .person-page,
   .route-recovery { padding-inline: 0; }
-  .detail-hero__content { width: 96%; grid-template-columns: minmax(6.3rem, 8.5rem) minmax(0, 1fr); }
+  .detail-hero__content {
+    grid-template-columns: 1fr;
+    align-items: start;
+    width: 96%;
+    margin-top: 0;
+  }
   .detail-poster { min-width: 0; }
   .detail-hero__summary,
   .detail-verified-note { grid-column: 1 / -1; }
@@ -250,7 +255,7 @@ canvas {
 
   .space { width: 100%; max-width: 100%; margin-top: 2rem; }
   .space-title { font-size: clamp(2rem, 14vw, 3.4rem); }
-  .library-window { width: 100%; max-width: 100%; height: 66vh; }
+  .library-window { width: 100%; max-width: 100%; height: auto; overflow: visible; }
   .segmented-filter__button { flex: 1 1 calc(50% - 0.5rem); }
 }
 

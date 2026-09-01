@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from douban_recommender.curated_catalog import (
     apply_curated_people_photos,
@@ -13,6 +14,19 @@ from douban_recommender.models import MediaItem
 
 
 class CuratedCatalogTests(unittest.TestCase):
+    def test_production_sources_do_not_contain_question_mark_mojibake_runs(self):
+        package_root = Path(catalog.__file__).resolve().parent
+        marker = "?" * 4
+        offenders = []
+        for path in package_root.rglob("*"):
+            if path.suffix not in {".py", ".js", ".html", ".css"}:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if marker in text:
+                offenders.append(str(path.relative_to(package_root)))
+
+        self.assertEqual([], offenders)
+
     def test_curated_seed_candidates_include_movie_series_and_anime(self):
         items = curated_seed_candidates()
         media_types = {item.media_type for item in items}
@@ -299,6 +313,89 @@ class CuratedCatalogTests(unittest.TestCase):
         self.assertTrue(catalog.is_curated_placeholder_person("\u955c\u5934\u8bed\u8a00\u4e13\u5bb6"))
         self.assertFalse(catalog.is_curated_placeholder_person("\u662f\u679d\u88d5\u548c"))
 
+    def test_curated_metadata_repairs_wrong_numeric_identity_on_seeded_title(self):
+        item = MediaItem(
+            title="机智医生生活",
+            douban_id="34943015",
+            url="https://movie.douban.com/subject/34943015/",
+            year=2020,
+            media_type="电视剧",
+            source="title_seed",
+            douban_rating=6.6,
+            vote_count=10,
+            genres=["剧情", "喜剧", "动画", "冒险"],
+            directors=["错误导演"],
+            casts=["错误演员"],
+            summary="不属于目标剧集的简介。",
+            raw={
+                "aliases": ["精灵宝可梦：可可"],
+                "stills": ["https://img1.doubanio.com/view/photo/l/public/wrong.jpg"],
+                "ratings": {"douban": 6.6},
+                "provider_ids": {"douban": "34943015"},
+                "people_photos": {"错误演员": "https://img.example/wrong.jpg"},
+            },
+        )
+
+        apply_curated_people_photos([item])
+
+        self.assertEqual("33464863", item.douban_id)
+        self.assertEqual("https://movie.douban.com/subject/33464863/", item.url)
+        self.assertIsNone(item.douban_rating)
+        self.assertIsNone(item.vote_count)
+        self.assertEqual(["剧情", "喜剧"], item.genres)
+        self.assertEqual(["申元浩"], item.directors)
+        self.assertIn("曹政奚", item.casts)
+        self.assertEqual("", item.summary)
+        self.assertNotIn("stills", item.raw)
+        self.assertNotIn("ratings", item.raw)
+        self.assertNotIn("provider_ids", item.raw)
+        self.assertNotIn("错误演员", item.raw.get("people_photos", {}))
+
+    def test_curated_metadata_finishes_a_partially_persisted_identity_repair_once(self):
+        item = MediaItem(
+            title="机智医生生活",
+            douban_id="33464863",
+            url="https://movie.douban.com/subject/33464863/",
+            year=2020,
+            media_type="电视剧",
+            source="title_seed",
+            douban_rating=6.6,
+            genres=["剧情", "喜剧", "动画", "冒险"],
+            countries=["韩国", "日本"],
+            languages=["日语"],
+            directors=["申元浩", "错误导演"],
+            casts=["曹政奭", "错误演员"],
+            summary="错误的宝可梦剧情简介",
+            raw={
+                "identity_repaired_from": "34943015",
+                "aliases": ["精灵宝可梦：可可"],
+                "stills": ["https://img.example/pokemon.jpg"],
+                "ratings": {"douban": 6.6},
+            },
+        )
+
+        apply_curated_people_photos([item])
+
+        self.assertIsNone(item.douban_rating)
+        self.assertEqual(["剧情", "喜剧"], item.genres)
+        self.assertEqual(["韩国"], item.countries)
+        self.assertEqual([], item.languages)
+        self.assertNotIn("错误导演", item.directors)
+        self.assertNotIn("错误演员", item.casts)
+        self.assertNotIn("宝可梦", item.summary)
+        self.assertNotIn("aliases", item.raw)
+        self.assertNotIn("stills", item.raw)
+        self.assertTrue(item.raw.get("identity_repair_sanitized"))
+
+        item.summary = "已核验的正确剧情简介"
+        item.raw["stills"] = ["https://img.example/hospital-playlist.jpg"]
+        item.raw["ratings"] = {"douban": 9.5}
+        apply_curated_people_photos([item])
+
+        self.assertEqual("已核验的正确剧情简介", item.summary)
+        self.assertEqual(["https://img.example/hospital-playlist.jpg"], item.raw["stills"])
+        self.assertEqual({"douban": 9.5}, item.raw["ratings"])
+
     def test_better_days_has_curated_people_metadata_and_photos(self):
         from douban_recommender.curated_catalog import apply_curated_people_photos
         from douban_recommender.models import MediaItem
@@ -539,6 +636,27 @@ class CuratedCatalogTests(unittest.TestCase):
                 self.assertTrue(item.url.endswith(f"/subject/{item.douban_id}/"))
                 self.assertTrue(item.cover.startswith("https://"))
                 self.assertFalse(item.cover.startswith("data:image/svg+xml"))
+
+    def test_known_title_metadata_also_restores_genres_after_expansion_sanitization(self):
+        items = [
+            MediaItem(title=title, media_type=media_type, douban_id=f"premium-test-{index}")
+            for index, (title, media_type) in enumerate([
+                ("记忆碎片", "电影"),
+                ("驾驶我的车", "电影"),
+                ("兹山鱼谱", "电影"),
+                ("我们的父辈", "电视剧"),
+                ("爱，死亡和机器人", "动漫"),
+                ("海街日记", "电影"),
+                ("少年的你", "电影"),
+            ])
+        ]
+
+        apply_curated_people_photos(items)
+
+        for item in items:
+            with self.subTest(title=item.title):
+                self.assertTrue(item.genres, f"genres missing for {item.title}")
+                self.assertTrue(all(str(genre).strip() for genre in item.genres))
 
     def test_expansion_title_metadata_replaces_placeholder_people_for_common_titles(self):
         items = [

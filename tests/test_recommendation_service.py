@@ -219,6 +219,77 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         forward = self.service.next_batch(session.id, "电影")
         self.assertEqual(forward.id, second.id)
 
+    def test_permanent_avoid_filters_current_and_historical_batches_until_undo(self):
+        session = self.create()
+        first = self.service.next_batch(session.id, "电影")
+        rejected_key = first.item_keys[0]
+
+        applied = self.service.apply_feedback(session.id, "permanent-avoid", rejected_key)
+
+        current = self.service.current_batch(session.id, "电影")
+        self.assertNotIn(rejected_key, current.item_keys)
+        self.assertEqual(current.visible_size, 2)
+        second = self.service.next_batch(session.id, "电影")
+        previous = self.service.previous_batch(session.id, "电影")
+        self.assertNotIn(rejected_key, previous.item_keys)
+        self.assertEqual(previous.visible_size, 2)
+        self.assertNotIn(rejected_key, second.item_keys)
+
+        self.service.undo_feedback(applied["event_id"])
+
+        restored = self.service.current_batch(session.id, "电影")
+        self.assertIn(rejected_key, restored.item_keys)
+        self.assertEqual(restored.visible_size, 3)
+
+    def test_watched_library_alias_filters_old_session_item_with_different_primary_key(self):
+        ranked = {
+            "电影": {
+                "items": [
+                    {
+                        "title": "同一部电影",
+                        "year": 2024,
+                        "media_type": "电影",
+                        "douban_id": "123456",
+                        "douban_rating": 8.7,
+                        "summary": "完整剧情简介",
+                        "genres": ["剧情"],
+                    }
+                ],
+                "pool_size": 1,
+                "matched_size": 1,
+            }
+        }
+        session = self.service.create_session(
+            "profile-1",
+            RecommendationIntent(media_types=("电影",)),
+            ranked,
+            {"电影": 1},
+        )
+        self.service.next_batch(session.id, "电影")
+        watched_payload = {
+            "title": "同一部电影",
+            "year": 2024,
+            "media_type": "电影",
+            "source": "douban_user:collect",
+            "tags": ["看过"],
+        }
+        watched_key = recommendation_item_key(watched_payload)
+        now = time.time()
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO library_items(
+                    item_key, payload_json, state, source, created_at, updated_at
+                ) VALUES(?, ?, 'watched', 'douban_user:collect', ?, ?)
+                """,
+                (watched_key, json.dumps(watched_payload, ensure_ascii=False), now, now),
+            )
+
+        current = self.service.current_batch(session.id, "电影")
+
+        self.assertEqual(current.item_keys, ())
+        self.assertEqual(current.visible_size, 0)
+
     def test_undo_not_tonight_restores_exclusion_and_reapply_creates_new_event(self):
         session = self.create()
         channel = next(iter(pools()))
@@ -585,6 +656,7 @@ class RecommendationSessionServiceTests(unittest.TestCase):
         self.assertEqual(len(wanted), 1)
         self.assertEqual(wanted[0]["item_key"], key)
         self.assertEqual(wanted[0]["payload"]["title"], batch.items[1]["title"])
+        self.assertIn(key, self.service.restore_session(session.id).channels["电视剧"]["excluded_keys"])
 
     def test_create_session_registers_candidates_without_downgrading_watched(self):
         watched_item = pools()["电影"]["items"][0]

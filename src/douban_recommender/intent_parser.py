@@ -9,9 +9,15 @@ class RecommendationIntent:
     media_types: tuple[str, ...] = ()
     genres: tuple[str, ...] = ()
     moods: tuple[str, ...] = ()
+    reference_titles: tuple[str, ...] = ()
+    similarity_mode: str = "balanced"
     pace: str = ""
     complexity: str = ""
     intensity_max: str = ""
+    pace_axis: float = 0.0
+    atmosphere_axis: float = 0.0
+    cognitive_load_axis: float = 0.0
+    emotional_intensity_axis: float = 0.0
     runtime_max: int | None = None
     episode_runtime_max: int | None = None
     countries: tuple[str, ...] = ()
@@ -36,6 +42,7 @@ class RecommendationIntent:
             "media_types",
             "genres",
             "moods",
+            "reference_titles",
             "countries",
             "languages",
             "avoid",
@@ -119,6 +126,31 @@ def _contains_any(text: str, aliases) -> bool:
     return any(alias in text for alias in aliases)
 
 
+def _axis(value: object, fallback: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = fallback
+    return max(-1.0, min(1.0, number))
+
+
+def _reference_titles(text: str) -> tuple[str, ...]:
+    quoted = [match.strip() for match in re.findall(r"《([^《》]{1,80})》", text)]
+    if quoted:
+        return _ordered_unique(quoted)
+    patterns = (
+        r"(?:喜欢|爱看)\s*([^，。！？、]{1,40}?)(?:的(?:人)?还喜欢(?:什么)?|还会喜欢(?:什么)?)",
+        r"(?:和|像)\s*([^，。！？、]{1,40}?)(?:类似|一样)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            title = re.sub(r"^(?:电影|剧集|电视剧|动画|动漫)", "", match.group(1)).strip(" ‘'\"“”")
+            if title:
+                return (title,)
+    return ()
+
+
 def _is_negated(text: str, alias: str) -> bool:
     start = text.find(alias)
     while start >= 0:
@@ -152,6 +184,11 @@ def parse_recommendation_intent(
 ) -> RecommendationIntent:
     raw = str(text or "").strip()
     current = base or RecommendationIntent()
+
+    reference_titles = list(current.reference_titles)
+    detected_references = _reference_titles(raw)
+    if detected_references:
+        reference_titles = list(detected_references)
 
     media_types = list(current.media_types)
     detected_media: list[str] = []
@@ -192,16 +229,34 @@ def parse_recommendation_intent(
         permanent_avoid.extend(negated_terms)
 
     pace = current.pace
-    if any(marker in raw for marker in ("快节奏", "节奏快", "紧凑")):
+    pace_axis = _axis(current.pace_axis)
+    if any(marker in raw for marker in ("快节奏", "节奏快", "紧凑", "快一点")):
         pace = "fast"
-    elif "慢热" in raw and "慢热" not in negated_terms:
+        pace_axis = max(pace_axis, 0.7)
+    elif any(marker in raw for marker in ("舒缓", "节奏慢一点")) or ("慢热" in raw and "慢热" not in negated_terms):
         pace = "slow"
+        pace_axis = min(pace_axis, -0.7)
 
     complexity = current.complexity
+    cognitive_load_axis = _axis(current.cognitive_load_axis)
     if any(marker in raw for marker in ("烧脑", "复杂", "结构精密")):
         complexity = "high"
-    elif any(marker in raw for marker in ("不费脑", "简单易看")):
+        cognitive_load_axis = max(cognitive_load_axis, 0.7)
+    elif any(marker in raw for marker in ("不费脑", "简单易看", "轻松一点", "放松一点")):
         complexity = "low"
+        cognitive_load_axis = min(cognitive_load_axis, -0.65)
+
+    atmosphere_axis = _axis(current.atmosphere_axis)
+    if any(marker in raw for marker in ("明快", "明亮", "阳光一点")):
+        atmosphere_axis = min(atmosphere_axis, -0.65)
+    elif any(marker in raw for marker in ("阴郁", "暗黑", "黑暗一点")):
+        atmosphere_axis = max(atmosphere_axis, 0.65)
+
+    emotional_intensity_axis = _axis(current.emotional_intensity_axis)
+    if any(marker in raw for marker in ("克制", "平静一点", "情绪淡一点")):
+        emotional_intensity_axis = min(emotional_intensity_axis, -0.65)
+    elif any(marker in raw for marker in ("强烈", "高能", "情绪浓烈", "情绪强一点")):
+        emotional_intensity_axis = max(emotional_intensity_axis, 0.7)
 
     episode_runtime = _extract_runtime(raw, episode=True) or current.episode_runtime_max
     runtime = _extract_runtime(raw, episode=False) or current.runtime_max
@@ -219,25 +274,38 @@ def parse_recommendation_intent(
     quality_match = re.search(r"评分\s*(?:至少|不低于|要有)?\s*(\d(?:\.\d+)?)", raw)
     if quality_match:
         quality_floor = float(quality_match.group(1))
-    elif any(marker in raw for marker in ("高分", "评分高", "高口碑", "口碑好", "口碑稳")):
+    elif any(marker in raw for marker in ("高分", "评分高", "高口碑", "口碑好", "口碑很好", "口碑很棒", "口碑佳", "口碑稳")):
         quality_floor = max(float(quality_floor or 0), 8.0)
 
+    similarity_mode = current.similarity_mode if current.similarity_mode in {"faithful", "balanced", "surprise"} else "balanced"
     exploration_level = current.exploration_level
     surprise_level = current.surprise_level
     if any(marker in raw for marker in ("给我惊喜", "意外一点", "冷门惊喜")):
+        similarity_mode = "surprise"
         exploration_level = max(exploration_level, 0.72)
         surprise_level = max(surprise_level, 0.80)
-    elif any(marker in raw for marker in ("稳妥", "别冒险", "最保险")):
+    elif any(marker in raw for marker in ("更像原作", "尽量相似", "最像它", "稳妥", "别冒险", "最保险")):
+        similarity_mode = "faithful"
         exploration_level = min(exploration_level, 0.15)
         surprise_level = min(surprise_level, 0.10)
+    elif any(marker in raw for marker in ("平衡发现", "平衡一点")):
+        similarity_mode = "balanced"
+        exploration_level = 0.35
+        surprise_level = 0.20
 
     return RecommendationIntent(
         media_types=_ordered_unique(media_types),
         genres=_ordered_unique(genres),
         moods=_ordered_unique(moods),
+        reference_titles=_ordered_unique(reference_titles),
+        similarity_mode=similarity_mode,
         pace=pace,
         complexity=complexity,
         intensity_max=current.intensity_max,
+        pace_axis=pace_axis,
+        atmosphere_axis=atmosphere_axis,
+        cognitive_load_axis=cognitive_load_axis,
+        emotional_intensity_axis=emotional_intensity_axis,
         runtime_max=runtime,
         episode_runtime_max=episode_runtime,
         countries=_ordered_unique(countries),
@@ -257,6 +325,7 @@ def parse_recommendation_intent(
 def intent_to_chips(intent: RecommendationIntent) -> list[IntentChip]:
     chips: list[IntentChip] = []
     media_labels = {"电影": "电影", "电视剧": "电视剧", "动漫": "动画剧集"}
+    chips.extend(IntentChip("reference_title", f"参考：《{title}》", title) for title in intent.reference_titles)
     for media_type in intent.media_types:
         chips.append(IntentChip("media_type", media_labels.get(media_type, media_type), media_type))
     chips.extend(IntentChip("genre", genre, genre) for genre in intent.genres)
@@ -264,6 +333,22 @@ def intent_to_chips(intent: RecommendationIntent) -> list[IntentChip]:
     chips.extend(IntentChip("country", country, country) for country in intent.countries)
     if intent.pace:
         chips.append(IntentChip("pace", "快节奏" if intent.pace == "fast" else "慢热", intent.pace))
+    if intent.pace_axis >= 0.2:
+        chips.append(IntentChip("pace_axis", "节奏：更紧凑", intent.pace_axis))
+    elif intent.pace_axis <= -0.2:
+        chips.append(IntentChip("pace_axis", "节奏：更舒缓", intent.pace_axis))
+    if intent.atmosphere_axis <= -0.2:
+        chips.append(IntentChip("atmosphere_axis", "氛围：更明快", intent.atmosphere_axis))
+    elif intent.atmosphere_axis >= 0.2:
+        chips.append(IntentChip("atmosphere_axis", "氛围：更阴郁", intent.atmosphere_axis))
+    if intent.cognitive_load_axis <= -0.2:
+        chips.append(IntentChip("cognitive_load_axis", "脑力：更放松", intent.cognitive_load_axis))
+    elif intent.cognitive_load_axis >= 0.2:
+        chips.append(IntentChip("cognitive_load_axis", "脑力：更烧脑", intent.cognitive_load_axis))
+    if intent.emotional_intensity_axis <= -0.2:
+        chips.append(IntentChip("emotional_intensity_axis", "情绪：更克制", intent.emotional_intensity_axis))
+    elif intent.emotional_intensity_axis >= 0.2:
+        chips.append(IntentChip("emotional_intensity_axis", "情绪：更强烈", intent.emotional_intensity_axis))
     if intent.runtime_max:
         chips.append(IntentChip("runtime_max", f"片长 ≤ {intent.runtime_max} 分钟", intent.runtime_max))
     if intent.episode_runtime_max:

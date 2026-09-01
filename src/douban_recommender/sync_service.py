@@ -167,7 +167,7 @@ class SyncService:
         selected = [item for _, item in indexed[: self.enrich_limit]]
         before = [copy.deepcopy(media_item_to_dict(item)) for item in selected]
         fetcher = None
-        if self.detail_fetcher is not None:
+        if self.detail_fetcher is not None and str(cookie or "").strip():
             fetcher = lambda url: self.detail_fetcher(url, cookie=cookie)
         try:
             self.detail_enricher(
@@ -272,6 +272,17 @@ class SyncService:
                     registration_items,
                     registration_now,
                 )
+                completeness = result.completeness if isinstance(result.completeness, dict) else {}
+                full_snapshot = state == "complete" and bool(
+                    completeness.get("is_complete", int(result.pages_failed or 0) == 0)
+                )
+                if full_snapshot:
+                    public["reconciliation"] = CatalogRegistry.reconcile_sync_snapshot(
+                        connection,
+                        str(request["user_id"]),
+                        registration_items,
+                        registration_now,
+                    )
         except Exception as exc:
             safe_error = redact_cookie_from_message(str(exc), cookie)
             prior_errors = public.get("errors") if isinstance(public, dict) else []
@@ -287,7 +298,6 @@ class SyncService:
 
     def _finish(self, job_id: str, public: dict[str, object], error: str) -> None:
         now = time.time()
-        self._set_job(job_id, **public, updated_at=now)
         with self.database.connection() as connection:
             connection.execute(
                 """
@@ -303,6 +313,28 @@ class SyncService:
                     job_id,
                 ),
             )
+            self._prune_history(connection, str(public.get("user_id") or ""), keep=12)
+        # Publish a terminal in-memory state only after the database transaction
+        # has committed. Otherwise callers can observe "complete" and immediately
+        # query/clear a row that is still marked "running" on disk.
+        self._set_job(job_id, **public, updated_at=now)
+
+    @staticmethod
+    def _prune_history(connection, user_id: str, keep: int = 12) -> int:
+        rows = connection.execute(
+            """
+            SELECT id FROM sync_jobs
+            WHERE user_id=? AND state NOT IN ('queued', 'running')
+            ORDER BY created_at DESC, id DESC
+            """,
+            (str(user_id or ""),),
+        ).fetchall()
+        stale = [str(row["id"]) for row in rows[max(1, int(keep)):]]
+        if not stale:
+            return 0
+        placeholders = ",".join("?" for _ in stale)
+        connection.execute(f"DELETE FROM sync_jobs WHERE id IN ({placeholders})", stale)
+        return len(stale)
 
     def status(self, job_id: str) -> dict[str, object]:
         with self._lock:
@@ -317,6 +349,29 @@ class SyncService:
         if payload:
             return payload
         return {"schema_version": 2, "id": str(job_id), "state": str(row["state"]), "user_id": str(row["user_id"])}
+
+    def active_job_id(self, user_id: str) -> str:
+        clean_user_id = str(user_id or "").strip()
+        with self._lock:
+            active = [
+                job
+                for job in self._jobs.values()
+                if str(job.get("user_id") or "") == clean_user_id
+                and str(job.get("state") or "") in {"queued", "running"}
+            ]
+            if active:
+                active.sort(key=lambda job: (float(job.get("created_at") or 0), str(job.get("id") or "")), reverse=True)
+                return str(active[0].get("id") or "")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM sync_jobs
+                WHERE user_id=? AND state IN ('queued', 'running')
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (clean_user_id,),
+            ).fetchone()
+        return str(row["id"] or "") if row else ""
 
     def _items_for_job(self, job_id: str):
         with self.database.connection() as connection:
@@ -352,6 +407,36 @@ class SyncService:
             resume_starts=failed_starts,
             seed_items=self._items_for_job(job_id),
         )
+
+    def clear_history(self) -> dict[str, int]:
+        """Remove completed sync task records while preserving imported library data."""
+
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM sync_jobs
+                WHERE state NOT IN ('queued', 'running')
+                ORDER BY created_at
+                """
+            ).fetchall()
+            job_ids = [str(row["id"]) for row in rows]
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                connection.execute(
+                    f"DELETE FROM sync_items WHERE job_id IN ({placeholders})",
+                    job_ids,
+                )
+                connection.execute(
+                    f"DELETE FROM sync_jobs WHERE id IN ({placeholders})",
+                    job_ids,
+                )
+            active_row = connection.execute(
+                "SELECT COUNT(*) AS count FROM sync_jobs WHERE state IN ('queued', 'running')"
+            ).fetchone()
+        with self._lock:
+            for job_id in job_ids:
+                self._jobs.pop(job_id, None)
+        return {"removed": len(job_ids), "active": int(active_row["count"] if active_row else 0)}
 
     def close(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=False)

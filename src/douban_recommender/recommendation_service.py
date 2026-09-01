@@ -4,17 +4,18 @@ import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .catalog_registry import CatalogRegistry
 from .database import AppDatabase
 from .intent_parser import RecommendationIntent
-from .models import recommendation_item_key
+from .eligibility import catalog_quality_reasons
+from .models import recommendation_identity_tokens, recommendation_item_key
 from .privacy import scrub_sensitive
 from .serialization import media_item_from_dict
 
 _FEEDBACK_LIBRARY_STATES = {"watched": "watched", "want": "wanted"}
-_FEEDBACK_EXCLUSION_EVENTS = {"not-tonight", "watched"}
+_FEEDBACK_EXCLUSION_EVENTS = {"not-tonight", "want", "watched", "permanent-avoid"}
 _ALLOWED_FEEDBACK_EVENTS = set(_FEEDBACK_LIBRARY_STATES) | _FEEDBACK_EXCLUSION_EVENTS
 _UNDO_METADATA_KEY = "_recommendation_undo"
 _STATE_EFFECT_KEY = "state_effect"
@@ -106,6 +107,20 @@ def _catalog_item(item: dict[str, object]):
     people_photos = payload.get("people_photos")
     if isinstance(people_photos, dict) and people_photos:
         raw["people_photos"] = dict(people_photos)
+    for field_name in (
+        "source_ratings",
+        "provider_ids",
+        "backdrop",
+        "stills",
+        "episodes",
+        "episode_runtime",
+        "runtime",
+        "aliases",
+        "discovery_sources",
+    ):
+        value = payload.get(field_name)
+        if value not in (None, "", [], {}):
+            raw["ratings" if field_name == "source_ratings" else field_name] = value
     payload["raw"] = raw
     payload["source"] = str(payload.get("source") or "recommendation")
     return media_item_from_dict(payload)
@@ -351,17 +366,20 @@ class RecommendationSessionService:
                 pool_size = int(value.get("pool_size") or len(raw_items))
                 matched_size = int(value.get("matched_size") or len(raw_items))
                 candidate_counts = _scrub_dict(value.get("candidate_counts"))
+                discovery = _scrub_dict(value.get("discovery"))
             else:
                 raw_items = value or []
                 pool_size = len(raw_items)
                 matched_size = len(raw_items)
                 candidate_counts = {}
+                discovery = {}
             items = [item for raw in raw_items for item in [_scrub_dict(_serialize_item(raw))] if item]
             channels[str(channel)] = {
                 "items": items,
                 "pool_size": max(pool_size, len(items)),
                 "matched_size": max(matched_size, len(items)),
                 "candidate_counts": candidate_counts,
+                "discovery": discovery,
                 "batch_size": max(1, int(batch_size_by_channel.get(channel) or 9)),
                 "cursor": 0,
                 "active_batch": 0,
@@ -611,6 +629,86 @@ class RecommendationSessionService:
                 changed = True
         return changed
 
+    def _active_profile_exclusion_tokens(self, connection, profile_key: str) -> set[str]:
+        rows = connection.execute(
+            """
+            SELECT id, event_type, item_key, payload_json
+            FROM feedback_events
+            WHERE profile_key = ? AND event_type IN ('permanent-avoid', 'undo')
+            ORDER BY created_at, id
+            """,
+            (str(profile_key or "default"),),
+        ).fetchall()
+        undone_ids = {
+            str(_json_object(row["payload_json"]).get("target_event_id") or "")
+            for row in rows
+            if str(row["event_type"] or "") == "undo"
+        }
+        tokens: set[str] = set()
+        for row in rows:
+            if str(row["event_type"] or "") != "permanent-avoid" or str(row["id"]) in undone_ids:
+                continue
+            item_key = str(row["item_key"] or "").strip()
+            if item_key:
+                tokens.add(item_key)
+            payload = _json_object(row["payload_json"])
+            identity_tokens = payload.get("identity_aliases", payload.get("identity_tokens"))
+            if isinstance(identity_tokens, (list, tuple, set)):
+                tokens.update(str(token).strip() for token in identity_tokens if str(token).strip())
+            item = payload.get("item")
+            if isinstance(item, dict):
+                tokens.update(recommendation_identity_tokens(item))
+        return tokens
+
+    def _watched_identity_tokens(self, connection) -> set[str]:
+        rows = connection.execute(
+            "SELECT item_key, payload_json FROM library_items WHERE state = 'watched'"
+        ).fetchall()
+        tokens: set[str] = set()
+        for row in rows:
+            item_key = str(row["item_key"] or "").strip()
+            if item_key:
+                tokens.add(item_key)
+            payload = _json_object(row["payload_json"])
+            if payload:
+                tokens.update(recommendation_identity_tokens(payload))
+        return tokens
+
+    def _effective_exclusion_tokens(self, connection, session: RecommendationSession, channel: str) -> set[str]:
+        state = session.channels.get(channel) or {}
+        tokens = {str(key).strip() for key in state.get("excluded_keys", []) if str(key).strip()}
+        tokens.update(self._watched_identity_tokens(connection))
+        tokens.update(self._active_profile_exclusion_tokens(connection, session.profile_key))
+        return tokens
+
+    def _filtered_batch(
+        self,
+        connection,
+        session: RecommendationSession,
+        channel: str,
+        batch: RecommendationBatch,
+    ) -> RecommendationBatch:
+        excluded_tokens = self._effective_exclusion_tokens(connection, session, channel)
+        visible_items: list[dict[str, object]] = []
+        visible_keys: list[str] = []
+        for raw in batch.items:
+            item = dict(raw)
+            catalog_item = _catalog_item(item)
+            if catalog_quality_reasons(catalog_item):
+                continue
+            if set(recommendation_identity_tokens(item)) & excluded_tokens:
+                continue
+            visible_items.append(item)
+            visible_keys.append(_item_key(item))
+        if tuple(visible_keys) == batch.item_keys and len(visible_items) == batch.visible_size:
+            return batch
+        return replace(
+            batch,
+            items=tuple(visible_items),
+            item_keys=tuple(visible_keys),
+            visible_size=len(visible_items),
+        )
+
     def library_items(self, states: list[str] | tuple[str, ...] | set[str] | None = None) -> list[dict[str, object]]:
         state_values = [str(state) for state in (states or []) if str(state)]
         params: list[str] = []
@@ -764,6 +862,7 @@ class RecommendationSessionService:
                         self._save_channels(connection, session.id, channels)
 
                     event_payload = _scrub_dict(dict(payload or {}))
+                    event_payload["identity_aliases"] = list(recommendation_identity_tokens(item_payload))
                     event_payload["item"] = item_payload
                     event_payload[_UNDO_METADATA_KEY] = {
                         _STATE_EFFECT_KEY: {
@@ -985,7 +1084,8 @@ class RecommendationSessionService:
                     active_batch += 1
                     state["active_batch"] = active_batch
                     self._save_channels(connection, session_id, channels)
-                    return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active_batch))
+                    batch = self._batch_from_row(self._load_batch_row(connection, session_id, channel, active_batch))
+                    return self._filtered_batch(connection, session, channel, batch)
 
                 items = [dict(item) for item in state.get("items", []) if isinstance(item, dict)]
                 cursor = int(state.get("cursor") or 0)
@@ -996,7 +1096,7 @@ class RecommendationSessionService:
                     if active_batch > 0:
                         current = self._batch_from_row(self._load_batch_row(connection, session_id, channel, active_batch))
                         if current.exhausted and current.visible_size == 0:
-                            return current
+                            return self._filtered_batch(connection, session, channel, current)
                     index = last_batch + 1
                     batch = self._store_batch(
                         connection,
@@ -1018,7 +1118,7 @@ class RecommendationSessionService:
                     self._save_channels(connection, session_id, channels)
                     return batch
 
-                excluded_keys = {str(key) for key in state.get("excluded_keys", []) if str(key)}
+                excluded_tokens = self._effective_exclusion_tokens(connection, session, channel)
                 index = last_batch + 1
                 current_items: list[dict[str, object]] = []
                 if active_batch > 0:
@@ -1034,7 +1134,10 @@ class RecommendationSessionService:
                 while next_cursor < len(items) and len(selected) < batch_size:
                     item = items[next_cursor]
                     next_cursor += 1
-                    if _item_key(item) in excluded_keys:
+                    catalog_item = _catalog_item(item)
+                    if catalog_quality_reasons(catalog_item):
+                        continue
+                    if set(recommendation_identity_tokens(item)) & excluded_tokens:
                         continue
                     selected.append(item)
 
@@ -1063,7 +1166,8 @@ class RecommendationSessionService:
                     raise ValueError("recommendation channel not found")
                 active = int(state.get("active_batch") or 0)
                 if active > 0:
-                    return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                    batch = self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                    return self._filtered_batch(connection, session, channel, batch)
         return self.next_batch(session_id, channel)
 
     def previous_batch(self, session_id: str, channel: str) -> RecommendationBatch:
@@ -1081,11 +1185,13 @@ class RecommendationSessionService:
                     if active <= 0:
                         needs_first_batch = True
                     else:
-                        return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                        batch = self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                        return self._filtered_batch(connection, session, channel, batch)
                 else:
                     active -= 1
                     state["active_batch"] = active
                     self._save_channels(connection, session_id, channels)
-                    return self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                    batch = self._batch_from_row(self._load_batch_row(connection, session_id, channel, active))
+                    return self._filtered_batch(connection, session, channel, batch)
             if needs_first_batch:
                 return self.next_batch(session_id, channel)

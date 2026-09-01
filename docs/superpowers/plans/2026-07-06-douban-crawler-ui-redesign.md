@@ -1,4 +1,4 @@
-# Douban Crawler and Humanized UI Implementation Plan
+﻿# Douban Crawler and Humanized UI Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -27,18 +27,18 @@
 ### Feasibility Findings
 
 1. **Public Douban user collection pages are feasible to parse.** The pages contain repeated item blocks with title links, rating CSS classes such as `rating5-t`, dates, intro text, and comments. The parser should be tolerant: if directors/casts/genres are incomplete, still return a useful `MediaItem`.
-2. **Cookie mode is feasible and should be optional.** Cookie copying is realistic for desktop users, but it is intimidating. The UI should present it as “如果公开数据不够，再粘贴 Cookie,” not as a required first step.
+2. **Cookie mode is feasible and should be optional.** Cookie copying is realistic for desktop users, but it is intimidating. The UI should present it as 鈥滃鏋滃叕寮€鏁版嵁涓嶅锛屽啀绮樿创 Cookie,鈥?not as a required first step.
 3. **A full browser automation crawler is not worth the complexity.** It would add dependencies, login fragility, and UI confusion. The best product is a simple local HTTP crawler with clear limits and clear failure messages.
-4. **The current UI overload is the biggest usability issue.** The most human-friendly version is a wizard: connect Douban → confirm taste → read recommendations. Advanced inputs belong behind collapsible panels.
-5. **The recommendation engine already works well enough.** The useful upgrade is not a new algorithm; it is better data ingestion, automatic “already watched” exclusion, and better explanations.
+4. **The current UI overload is the biggest usability issue.** The most human-friendly version is a wizard: connect Douban 鈫?confirm taste 鈫?read recommendations. Advanced inputs belong behind collapsible panels.
+5. **The recommendation engine already works well enough.** The useful upgrade is not a new algorithm; it is better data ingestion, automatic 鈥渁lready watched鈥?exclusion, and better explanations.
 
 ### Product Decision
 
 Build a **three-step local assistant**:
 
-1. **连接豆瓣**: user enters profile URL/ID, optionally expands Cookie tutorial.
-2. **确认口味**: user edits short “喜欢/不喜欢” chips and chooses movie/series scope.
-3. **查看推荐**: user sees compact cards first, opens details only when needed.
+1. **杩炴帴璞嗙摚**: user enters profile URL/ID, optionally expands Cookie tutorial.
+2. **纭鍙ｅ懗**: user edits short 鈥滃枩娆?涓嶅枩娆⑩€?chips and chooses movie/series scope.
+3. **鏌ョ湅鎺ㄨ崘**: user sees compact cards first, opens details only when needed.
 
 This is the most usable version because it gives the user one decision at a time, avoids demanding Cookie upfront, keeps privacy promises visible, and keeps recommendation explanations short by default.
 
@@ -46,36 +46,36 @@ This is the most usable version because it gives the user one decision at a time
 
 ## File Structure
 
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\serialization.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\serialization.py`
   - Converts `MediaItem` to/from safe JSON dictionaries.
   - Redacts Cookie-like text for error/log safety.
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`
   - Normalizes Douban user input.
   - Builds collection URLs.
   - Fetches collection pages with optional Cookie.
   - Parses collection HTML into `MediaItem` objects.
   - Crawls `collect` and optional `wish` pagination.
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py`
   - Owns the new three-step HTML/CSS/JS UI.
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`
   - Imports `INDEX_HTML` from `web_ui.py`.
   - Adds `POST /api/crawl-douban`.
   - Lets `POST /api/recommend` accept `rated_items` JSON.
-- Modify: `C:\Users\11616\douban-taste-recommender\README.md`
+- Modify: `C:\path\to\douban-taste-recommender\README.md`
   - Adds direct crawler usage and Cookie tutorial.
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_serialization.py`
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_web_api.py`
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_ui_html.py`
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_readme.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_serialization.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_crawler.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_web_api.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_ui_html.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_readme.py`
 
 ---
 
 ### Task 1: Safe MediaItem JSON Serialization
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_serialization.py`
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\serialization.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_serialization.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\serialization.py`
 
 **Interfaces:**
 - Consumes: `douban_recommender.models.MediaItem`
@@ -86,7 +86,7 @@ This is the most usable version because it gives the user one decision at a time
 
 - [ ] **Step 1: Write the failing serialization tests**
 
-Create `C:\Users\11616\douban-taste-recommender\tests\test_serialization.py`:
+Create `C:\path\to\douban-taste-recommender\tests\test_serialization.py`:
 
 ```python
 import unittest
@@ -98,31 +98,31 @@ from douban_recommender.serialization import media_item_from_dict, media_item_to
 class SerializationTests(unittest.TestCase):
     def test_media_item_round_trips_through_json_dict(self):
         item = MediaItem(
-            title="隐秘的角落",
+            title="闅愮鐨勮钀?,
             my_rating=5,
             douban_rating=8.8,
             year=2020,
-            media_type="电视剧",
-            genres=["剧情", "悬疑", "犯罪"],
-            countries=["中国大陆"],
-            directors=["辛爽"],
-            casts=["秦昊", "王景春"],
-            tags=["看过", "现实主义"],
+            media_type="鐢佃鍓?,
+            genres=["鍓ф儏", "鎮枒", "鐘姜"],
+            countries=["涓浗澶ч檰"],
+            directors=["杈涚埥"],
+            casts=["绉︽槉", "鐜嬫櫙鏄?],
+            tags=["鐪嬭繃", "鐜板疄涓讳箟"],
             url="https://movie.douban.com/subject/33404425/",
             douban_id="33404425",
             cover="https://img.example/poster.jpg",
-            summary="孩子、家庭与犯罪的阴影",
+            summary="瀛╁瓙銆佸搴笌鐘姜鐨勯槾褰?,
             source="douban_user:collect",
         )
 
         payload = media_item_to_dict(item)
         restored = media_item_from_dict(payload)
 
-        self.assertEqual(restored.title, "隐秘的角落")
+        self.assertEqual(restored.title, "闅愮鐨勮钀?)
         self.assertEqual(restored.my_rating, 5)
         self.assertEqual(restored.douban_rating, 8.8)
-        self.assertEqual(restored.genres, ["剧情", "悬疑", "犯罪"])
-        self.assertEqual(restored.tags, ["看过", "现实主义"])
+        self.assertEqual(restored.genres, ["鍓ф儏", "鎮枒", "鐘姜"])
+        self.assertEqual(restored.tags, ["鐪嬭繃", "鐜板疄涓讳箟"])
         self.assertEqual(restored.douban_id, "33404425")
 
     def test_redact_cookie_removes_sensitive_values(self):
@@ -145,7 +145,7 @@ if __name__ == "__main__":
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_serialization -v
 ```
 
@@ -153,7 +153,7 @@ Expected: FAIL or ERROR because `douban_recommender.serialization` does not exis
 
 - [ ] **Step 3: Create the minimal serialization implementation**
 
-Create `C:\Users\11616\douban-taste-recommender\src\douban_recommender\serialization.py`:
+Create `C:\path\to\douban-taste-recommender\src\douban_recommender\serialization.py`:
 
 ```python
 from __future__ import annotations
@@ -220,7 +220,7 @@ def redact_cookie(value: str) -> str:
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_serialization -v
 ```
 
@@ -240,8 +240,8 @@ git commit -m "feat: add safe media item serialization"
 ### Task 2: Douban User Collection URL and HTML Parser
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_crawler.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`
 
 **Interfaces:**
 - Consumes:
@@ -254,7 +254,7 @@ git commit -m "feat: add safe media item serialization"
 
 - [ ] **Step 1: Write the failing crawler parser tests**
 
-Create `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py` with the initial parser tests:
+Create `C:\path\to\douban-taste-recommender\tests\test_crawler.py` with the initial parser tests:
 
 ```python
 import unittest
@@ -271,35 +271,35 @@ COLLECT_HTML = """
   <div class="item">
     <div class="pic">
       <a href="https://movie.douban.com/subject/33404425/">
-        <img alt="隐秘的角落" src="https://img.example/cover.jpg">
+        <img alt="闅愮鐨勮钀? src="https://img.example/cover.jpg">
       </a>
     </div>
     <div class="info">
       <ul>
         <li class="title">
-          <a href="https://movie.douban.com/subject/33404425/"><em>隐秘的角落</em></a>
+          <a href="https://movie.douban.com/subject/33404425/"><em>闅愮鐨勮钀?/em></a>
         </li>
-        <li class="intro">2020 / 中国大陆 / 剧情 悬疑 犯罪 / 辛爽 / 秦昊 王景春</li>
+        <li class="intro">2020 / 涓浗澶ч檰 / 鍓ф儏 鎮枒 鐘姜 / 杈涚埥 / 绉︽槉 鐜嬫櫙鏄?/li>
         <li>
           <span class="rating5-t"></span>
           <span class="date">2024-01-01</span>
         </li>
-        <li><span class="comment">孩子、家庭与犯罪的阴影</span></li>
+        <li><span class="comment">瀛╁瓙銆佸搴笌鐘姜鐨勯槾褰?/span></li>
       </ul>
     </div>
   </div>
   <div class="item">
     <div class="pic">
       <a href="https://movie.douban.com/subject/30468961/">
-        <img alt="想见你" src="https://img.example/want.jpg">
+        <img alt="鎯宠浣? src="https://img.example/want.jpg">
       </a>
     </div>
     <div class="info">
       <ul>
         <li class="title">
-          <a href="https://movie.douban.com/subject/30468961/"><em>想见你</em></a>
+          <a href="https://movie.douban.com/subject/30468961/"><em>鎯宠浣?/em></a>
         </li>
-        <li class="intro">2019 / 中国台湾 / 爱情 悬疑 奇幻 / 黄天仁 / 柯佳嬿 许光汉</li>
+        <li class="intro">2019 / 涓浗鍙版咕 / 鐖辨儏 鎮枒 濂囧够 / 榛勫ぉ浠?/ 鏌匠瀣?璁稿厜姹?/li>
         <li><span class="date">2024-02-02</span></li>
       </ul>
     </div>
@@ -325,26 +325,26 @@ class CrawlerParserTests(unittest.TestCase):
 
         self.assertEqual(len(items), 2)
         first = items[0]
-        self.assertEqual(first.title, "隐秘的角落")
+        self.assertEqual(first.title, "闅愮鐨勮钀?)
         self.assertEqual(first.my_rating, 5)
         self.assertEqual(first.year, 2020)
-        self.assertEqual(first.media_type, "电影")
-        self.assertIn("剧情", first.genres)
-        self.assertIn("悬疑", first.genres)
-        self.assertIn("犯罪", first.genres)
-        self.assertIn("中国大陆", first.countries)
-        self.assertIn("看过", first.tags)
+        self.assertEqual(first.media_type, "鐢靛奖")
+        self.assertIn("鍓ф儏", first.genres)
+        self.assertIn("鎮枒", first.genres)
+        self.assertIn("鐘姜", first.genres)
+        self.assertIn("涓浗澶ч檰", first.countries)
+        self.assertIn("鐪嬭繃", first.tags)
         self.assertEqual(first.douban_id, "33404425")
         self.assertEqual(first.cover, "https://img.example/cover.jpg")
-        self.assertEqual(first.summary, "孩子、家庭与犯罪的阴影")
+        self.assertEqual(first.summary, "瀛╁瓙銆佸搴笌鐘姜鐨勯槾褰?)
 
     def test_parse_user_collection_html_handles_no_rating(self):
         items = parse_user_collection_html(COLLECT_HTML, status="wish")
 
         second = items[1]
-        self.assertEqual(second.title, "想见你")
+        self.assertEqual(second.title, "鎯宠浣?)
         self.assertIsNone(second.my_rating)
-        self.assertIn("想看", second.tags)
+        self.assertIn("鎯崇湅", second.tags)
 
 
 if __name__ == "__main__":
@@ -356,7 +356,7 @@ if __name__ == "__main__":
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_crawler -v
 ```
 
@@ -364,7 +364,7 @@ Expected: FAIL or ERROR because `douban_recommender.crawler` does not exist.
 
 - [ ] **Step 3: Create parser implementation**
 
-Create `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py` with URL and parser functions:
+Create `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py` with URL and parser functions:
 
 ```python
 from __future__ import annotations
@@ -390,21 +390,21 @@ DEFAULT_HEADERS = {
 }
 
 COUNTRY_WORDS = [
-    "中国大陆",
-    "中国香港",
-    "中国台湾",
-    "美国",
-    "英国",
-    "日本",
-    "韩国",
-    "法国",
-    "德国",
-    "意大利",
-    "西班牙",
-    "印度",
-    "加拿大",
-    "澳大利亚",
-    "泰国",
+    "涓浗澶ч檰",
+    "涓浗棣欐腐",
+    "涓浗鍙版咕",
+    "缇庡浗",
+    "鑻卞浗",
+    "鏃ユ湰",
+    "闊╁浗",
+    "娉曞浗",
+    "寰峰浗",
+    "鎰忓ぇ鍒?,
+    "瑗跨彮鐗?,
+    "鍗板害",
+    "鍔犳嬁澶?,
+    "婢冲ぇ鍒╀簹",
+    "娉板浗",
 ]
 
 
@@ -420,19 +420,19 @@ class CrawlResult:
 def normalize_douban_user_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
-        raise ValueError("请输入豆瓣用户 ID 或主页链接")
+        raise ValueError("璇疯緭鍏ヨ眴鐡ｇ敤鎴?ID 鎴栦富椤甸摼鎺?)
     match = re.search(r"douban\.com/people/([^/?#]+)/?", text)
     if match:
         return urllib.parse.unquote(match.group(1)).strip()
     text = text.strip("/")
     if "/" in text or "?" in text or "#" in text:
-        raise ValueError("豆瓣用户 ID 或主页链接格式不正确")
+        raise ValueError("璞嗙摚鐢ㄦ埛 ID 鎴栦富椤甸摼鎺ユ牸寮忎笉姝ｇ‘")
     return text
 
 
 def build_user_collection_url(user_id: str, status: str, start: int) -> str:
     if status not in {"collect", "wish"}:
-        raise ValueError("status 只能是 collect 或 wish")
+        raise ValueError("status 鍙兘鏄?collect 鎴?wish")
     safe_user_id = urllib.parse.quote(normalize_douban_user_id(user_id), safe="")
     return f"https://movie.douban.com/people/{safe_user_id}/{status}?start={int(start)}&sort=time&rating=all&filter=all&mode=grid"
 
@@ -457,12 +457,12 @@ def parse_user_collection_html(page_html: str, status: str) -> list[MediaItem]:
         countries = [country for country in COUNTRY_WORDS if country in intro]
         people_parts = [part.strip() for part in re.split(r"\s*/\s*", intro) if part.strip()]
         directors, casts = split_people_from_intro(people_parts)
-        tag = "想看" if status == "wish" else "看过"
+        tag = "鎯崇湅" if status == "wish" else "鐪嬭繃"
         items.append(MediaItem(
             title=title,
             my_rating=my_rating,
             year=parse_year(intro),
-            media_type="电影",
+            media_type="鐢靛奖",
             genres=genres,
             countries=countries,
             directors=directors,
@@ -501,7 +501,7 @@ def clean_html(value: str) -> str:
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_crawler -v
 ```
 
@@ -521,8 +521,8 @@ git commit -m "feat: parse Douban user collection pages"
 ### Task 3: Douban Crawl Orchestration with Optional Cookie
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\tests\test_crawler.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`
 
 **Interfaces:**
 - Consumes:
@@ -535,7 +535,7 @@ git commit -m "feat: parse Douban user collection pages"
 
 - [ ] **Step 1: Add failing crawl orchestration tests**
 
-Append to `CrawlerParserTests` in `C:\Users\11616\douban-taste-recommender\tests\test_crawler.py`:
+Append to `CrawlerParserTests` in `C:\path\to\douban-taste-recommender\tests\test_crawler.py`:
 
 ```python
     def test_crawl_user_collections_uses_collect_and_wish_until_empty_page(self):
@@ -563,7 +563,7 @@ Append to `CrawlerParserTests` in `C:\Users\11616\douban-taste-recommender\tests
         self.assertGreaterEqual(len(result.items), 4)
         self.assertEqual(calls[0], ("moviefan123", "collect", 0, "bid=secret"))
         self.assertEqual(calls[2], ("moviefan123", "wish", 0, "bid=secret"))
-        self.assertEqual(result.stopped_reason, "已到达空白分页")
+        self.assertEqual(result.stopped_reason, "宸插埌杈剧┖鐧藉垎椤?)
 
     def test_crawl_user_collections_redacts_cookie_from_errors(self):
         from douban_recommender.crawler import crawl_user_collections
@@ -592,7 +592,7 @@ Append to `CrawlerParserTests` in `C:\Users\11616\douban-taste-recommender\tests
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_crawler -v
 ```
 
@@ -600,7 +600,7 @@ Expected: FAIL or ERROR because `crawl_user_collections` is not defined.
 
 - [ ] **Step 3: Add fetch and crawl functions**
 
-Append these functions to `C:\Users\11616\douban-taste-recommender\src\douban_recommender\crawler.py`:
+Append these functions to `C:\path\to\douban-taste-recommender\src\douban_recommender\crawler.py`:
 
 ```python
 
@@ -656,11 +656,11 @@ def crawl_user_collections(
             if sleep_seconds:
                 time.sleep(sleep_seconds)
     if empty_page_seen:
-        result.stopped_reason = "已到达空白分页"
+        result.stopped_reason = "宸插埌杈剧┖鐧藉垎椤?
     elif result.pages_failed:
-        result.stopped_reason = "部分分页抓取失败"
+        result.stopped_reason = "閮ㄥ垎鍒嗛〉鎶撳彇澶辫触"
     else:
-        result.stopped_reason = "已达到页数上限"
+        result.stopped_reason = "宸茶揪鍒伴〉鏁颁笂闄?
     return result
 ```
 
@@ -669,7 +669,7 @@ def crawl_user_collections(
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_crawler -v
 ```
 
@@ -689,8 +689,8 @@ git commit -m "feat: crawl Douban collections with optional cookie"
 ### Task 4: Web API for Crawling and JSON-Based Recommendations
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_web_api.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_web_api.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`
 
 **Interfaces:**
 - Consumes:
@@ -703,7 +703,7 @@ git commit -m "feat: crawl Douban collections with optional cookie"
 
 - [ ] **Step 1: Write failing web API tests**
 
-Create `C:\Users\11616\douban-taste-recommender\tests\test_web_api.py`:
+Create `C:\path\to\douban-taste-recommender\tests\test_web_api.py`:
 
 ```python
 import json
@@ -747,10 +747,10 @@ class WebApiTests(unittest.TestCase):
             return CrawlResult(
                 items=[
                     MediaItem(
-                        title="隐秘的角落",
+                        title="闅愮鐨勮钀?,
                         my_rating=5,
-                        media_type="电视剧",
-                        genres=["剧情", "悬疑", "犯罪"],
+                        media_type="鐢佃鍓?,
+                        genres=["鍓ф儏", "鎮枒", "鐘姜"],
                         url="https://movie.douban.com/subject/33404425/",
                         douban_id="33404425",
                         source="douban_user:collect",
@@ -758,7 +758,7 @@ class WebApiTests(unittest.TestCase):
                 ],
                 pages_ok=1,
                 pages_failed=0,
-                stopped_reason="已到达空白分页",
+                stopped_reason="宸插埌杈剧┖鐧藉垎椤?,
             )
 
         web_module.crawl_user_collections = fake_crawl
@@ -774,7 +774,7 @@ class WebApiTests(unittest.TestCase):
 
         serialized = json.dumps(response, ensure_ascii=False)
         self.assertEqual(response["counts"]["items"], 1)
-        self.assertEqual(response["items"][0]["title"], "隐秘的角落")
+        self.assertEqual(response["items"][0]["title"], "闅愮鐨勮钀?)
         self.assertNotIn("secret-cookie-value", serialized)
         self.assertNotIn("hidden", serialized)
 
@@ -782,26 +782,26 @@ class WebApiTests(unittest.TestCase):
         response = self.post_json("/api/recommend", {
             "rated_items": [
                 {
-                    "title": "隐秘的角落",
+                    "title": "闅愮鐨勮钀?,
                     "my_rating": 5,
-                    "media_type": "电视剧",
-                    "genres": ["剧情", "悬疑", "犯罪"],
-                    "tags": ["看过"],
+                    "media_type": "鐢佃鍓?,
+                    "genres": ["鍓ф儏", "鎮枒", "鐘姜"],
+                    "tags": ["鐪嬭繃"],
                     "douban_id": "33404425",
                 }
             ],
-            "candidates_csv": "title,media_type,douban_rating,genres,tags\\n新片,电影,8.1,剧情 / 犯罪,现实主义\\n",
+            "candidates_csv": "title,media_type,douban_rating,genres,tags\\n鏂扮墖,鐢靛奖,8.1,鍓ф儏 / 鐘姜,鐜板疄涓讳箟\\n",
             "fetch_douban": False,
             "use_sample_candidates": False,
             "include_movies": True,
             "include_series": True,
-            "like_terms": "犯罪,现实主义",
-            "dislike_terms": "甜宠",
+            "like_terms": "鐘姜,鐜板疄涓讳箟",
+            "dislike_terms": "鐢滃疇",
             "limit": 5,
         })
 
         self.assertEqual(response["counts"]["rated"], 1)
-        self.assertEqual(response["results"][0]["title"], "新片")
+        self.assertEqual(response["results"][0]["title"], "鏂扮墖")
 
 
 if __name__ == "__main__":
@@ -813,7 +813,7 @@ if __name__ == "__main__":
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_web_api -v
 ```
 
@@ -821,7 +821,7 @@ Expected: FAIL because `/api/crawl-douban` is not routed and `rated_items` JSON 
 
 - [ ] **Step 3: Modify imports in web.py**
 
-In `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`, add:
+In `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`, add:
 
 ```python
 from .crawler import crawl_user_collections
@@ -890,7 +890,7 @@ In `Handler.handle_recommend`, replace the current `rated = ...` assignment with
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_web_api -v
 ```
 
@@ -901,11 +901,11 @@ Expected: `OK`.
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m douban_recommender.cli --ratings sample_data\ratings_sample.csv --candidates sample_data\candidates_sample.csv --limit 3 --output output\api_regression.html
 ```
 
-Expected: exit code `0` and output includes `已生成`.
+Expected: exit code `0` and output includes `宸茬敓鎴恅.
 
 - [ ] **Step 9: Commit**
 
@@ -921,9 +921,9 @@ git commit -m "feat: add Douban crawl and JSON recommendation APIs"
 ### Task 5: Three-Step Humanized UI
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_ui_html.py`
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_ui_html.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`
 
 **Interfaces:**
 - Consumes:
@@ -935,7 +935,7 @@ git commit -m "feat: add Douban crawl and JSON recommendation APIs"
 
 - [ ] **Step 1: Write failing UI structure tests**
 
-Create `C:\Users\11616\douban-taste-recommender\tests\test_ui_html.py`:
+Create `C:\path\to\douban-taste-recommender\tests\test_ui_html.py`:
 
 ```python
 import unittest
@@ -945,14 +945,14 @@ from douban_recommender.web_ui import INDEX_HTML
 
 class UiHtmlTests(unittest.TestCase):
     def test_ui_uses_three_clear_steps(self):
-        self.assertIn("第一步：连接豆瓣", INDEX_HTML)
-        self.assertIn("第二步：确认口味", INDEX_HTML)
-        self.assertIn("第三步：查看推荐", INDEX_HTML)
+        self.assertIn("绗竴姝ワ細杩炴帴璞嗙摚", INDEX_HTML)
+        self.assertIn("绗簩姝ワ細纭鍙ｅ懗", INDEX_HTML)
+        self.assertIn("绗笁姝ワ細鏌ョ湅鎺ㄨ崘", INDEX_HTML)
 
     def test_ui_contains_cookie_tutorial_and_privacy_copy(self):
-        self.assertIn("Cookie 教程", INDEX_HTML)
-        self.assertIn("Cookie 只用于本机请求豆瓣页面", INDEX_HTML)
-        self.assertIn("不会保存到磁盘", INDEX_HTML)
+        self.assertIn("Cookie 鏁欑▼", INDEX_HTML)
+        self.assertIn("Cookie 鍙敤浜庢湰鏈鸿姹傝眴鐡ｉ〉闈?, INDEX_HTML)
+        self.assertIn("涓嶄細淇濆瓨鍒扮鐩?, INDEX_HTML)
 
     def test_ui_contains_required_render_functions(self):
         for name in [
@@ -966,7 +966,7 @@ class UiHtmlTests(unittest.TestCase):
 
     def test_recommendation_cards_are_expandable(self):
         self.assertIn("<details", INDEX_HTML)
-        self.assertIn("展开详情", INDEX_HTML)
+        self.assertIn("灞曞紑璇︽儏", INDEX_HTML)
 
 
 if __name__ == "__main__":
@@ -978,7 +978,7 @@ if __name__ == "__main__":
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_ui_html -v
 ```
 
@@ -986,7 +986,7 @@ Expected: FAIL or ERROR because `douban_recommender.web_ui` does not exist.
 
 - [ ] **Step 3: Create the UI module**
 
-Create `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py` with this complete minimal UI. It intentionally favors clarity over dense controls:
+Create `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py` with this complete minimal UI. It intentionally favors clarity over dense controls:
 
 ```python
 from __future__ import annotations
@@ -996,7 +996,7 @@ INDEX_HTML = r'''<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>豆瓣口味影视推荐器</title>
+  <title>璞嗙摚鍙ｅ懗褰辫鎺ㄨ崘鍣?/title>
   <style>
     :root { --bg:#f6f7fb; --panel:#ffffff; --text:#172033; --muted:#667085; --line:#e5e7eb; --green:#16a34a; --green-bg:#ecfdf3; --blue:#2563eb; --orange:#ea580c; }
     * { box-sizing:border-box; }
@@ -1047,10 +1047,10 @@ INDEX_HTML = r'''<!doctype html>
   <main class="shell">
     <section class="hero">
       <div>
-        <h1>豆瓣口味影视推荐器</h1>
-        <p class="lead">先连接豆瓣，再确认口味，最后看推荐。Cookie 是可选项：公开数据够用就不用填。</p>
+        <h1>璞嗙摚鍙ｅ懗褰辫鎺ㄨ崘鍣?/h1>
+        <p class="lead">鍏堣繛鎺ヨ眴鐡ｏ紝鍐嶇‘璁ゅ彛鍛筹紝鏈€鍚庣湅鎺ㄨ崘銆侰ookie 鏄彲閫夐」锛氬叕寮€鏁版嵁澶熺敤灏变笉鐢ㄥ～銆?/p>
       </div>
-      <div class="privacy">本地运行，不保存 Cookie</div>
+      <div class="privacy">鏈湴杩愯锛屼笉淇濆瓨 Cookie</div>
     </section>
     <nav id="stepNav" class="steps"></nav>
     <section class="grid">
@@ -1065,66 +1065,66 @@ function esc(value) { return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&
 function setStatus(text) { const el = document.getElementById("status"); if (el) el.textContent = text || ""; }
 function renderStepNav() {
   const steps = [
-    ["第一步：连接豆瓣", "输入 ID，公开抓取；需要时再填 Cookie"],
-    ["第二步：确认口味", "用短句告诉我喜欢和不喜欢什么"],
-    ["第三步：查看推荐", "先看摘要，想深挖再展开详情"]
+    ["绗竴姝ワ細杩炴帴璞嗙摚", "杈撳叆 ID锛屽叕寮€鎶撳彇锛涢渶瑕佹椂鍐嶅～ Cookie"],
+    ["绗簩姝ワ細纭鍙ｅ懗", "鐢ㄧ煭鍙ュ憡璇夋垜鍠滄鍜屼笉鍠滄浠€涔?],
+    ["绗笁姝ワ細鏌ョ湅鎺ㄨ崘", "鍏堢湅鎽樿锛屾兂娣辨寲鍐嶅睍寮€璇︽儏"]
   ];
   $("stepNav").innerHTML = steps.map((s, i) => `<div class="step ${state.step === i + 1 ? "active" : ""}"><b>${s[0]}</b>${s[1]}</div>`).join("");
 }
 function renderCookieGuide() {
-  return `<details><summary>Cookie 教程</summary>
+  return `<details><summary>Cookie 鏁欑▼</summary>
     <ol class="mini-list">
-      <li>打开浏览器并登录豆瓣。</li>
-      <li>进入 https://movie.douban.com/。</li>
-      <li>按 F12 打开开发者工具，进入 Network / 网络。</li>
-      <li>刷新页面，点击任意 movie.douban.com 或 www.douban.com 请求。</li>
-      <li>在 Headers / 标头里找到 Request Headers。</li>
-      <li>复制 Cookie: 后面的整段内容，粘贴到这里。</li>
+      <li>鎵撳紑娴忚鍣ㄥ苟鐧诲綍璞嗙摚銆?/li>
+      <li>杩涘叆 https://movie.douban.com/銆?/li>
+      <li>鎸?F12 鎵撳紑寮€鍙戣€呭伐鍏凤紝杩涘叆 Network / 缃戠粶銆?/li>
+      <li>鍒锋柊椤甸潰锛岀偣鍑讳换鎰?movie.douban.com 鎴?www.douban.com 璇锋眰銆?/li>
+      <li>鍦?Headers / 鏍囧ご閲屾壘鍒?Request Headers銆?/li>
+      <li>澶嶅埗 Cookie: 鍚庨潰鐨勬暣娈靛唴瀹癸紝绮樿创鍒拌繖閲屻€?/li>
     </ol>
-    <p class="hint">Cookie 只用于本机请求豆瓣页面，不会保存到磁盘，也不会出现在推荐报告里。</p>
+    <p class="hint">Cookie 鍙敤浜庢湰鏈鸿姹傝眴鐡ｉ〉闈紝涓嶄細淇濆瓨鍒扮鐩橈紝涔熶笉浼氬嚭鐜板湪鎺ㄨ崘鎶ュ憡閲屻€?/p>
   </details>`;
 }
 function renderCrawlerPanel() {
-  $("leftPanel").innerHTML = `<h2>第一步：连接豆瓣</h2>
-    <p class="hint">填豆瓣用户 ID 或主页链接。Cookie 可不填；如果抓不到完整评分，再按教程复制 Cookie。</p>
-    <label>豆瓣用户 ID 或主页链接</label>
-    <input id="doubanUser" type="text" placeholder="例如：https://www.douban.com/people/你的ID/" />
-    <label>Cookie（可选）</label>
-    <textarea id="doubanCookie" placeholder="公开数据够用就不用填"></textarea>
-    <div class="row"><div><label>最多抓取页数</label><input id="maxPages" type="number" min="1" max="60" value="8" /></div><div><label>想看列表</label><label><input id="includeWish" type="checkbox" checked /> 同时抓取想看</label></div></div>
+  $("leftPanel").innerHTML = `<h2>绗竴姝ワ細杩炴帴璞嗙摚</h2>
+    <p class="hint">濉眴鐡ｇ敤鎴?ID 鎴栦富椤甸摼鎺ャ€侰ookie 鍙笉濉紱濡傛灉鎶撲笉鍒板畬鏁磋瘎鍒嗭紝鍐嶆寜鏁欑▼澶嶅埗 Cookie銆?/p>
+    <label>璞嗙摚鐢ㄦ埛 ID 鎴栦富椤甸摼鎺?/label>
+    <input id="doubanUser" type="text" placeholder="渚嬪锛歨ttps://www.douban.com/people/浣犵殑ID/" />
+    <label>Cookie锛堝彲閫夛級</label>
+    <textarea id="doubanCookie" placeholder="鍏紑鏁版嵁澶熺敤灏变笉鐢ㄥ～"></textarea>
+    <div class="row"><div><label>鏈€澶氭姄鍙栭〉鏁?/label><input id="maxPages" type="number" min="1" max="60" value="8" /></div><div><label>鎯崇湅鍒楄〃</label><label><input id="includeWish" type="checkbox" checked /> 鍚屾椂鎶撳彇鎯崇湅</label></div></div>
     ${renderCookieGuide()}
-    <div class="actions"><button onclick="crawlDouban()">开始抓取</button><button class="secondary" onclick="loadSample()">使用示例数据</button></div>
+    <div class="actions"><button onclick="crawlDouban()">寮€濮嬫姄鍙?/button><button class="secondary" onclick="loadSample()">浣跨敤绀轰緥鏁版嵁</button></div>
     <div id="status" class="status"></div>`;
   renderCrawlSummary();
 }
 function renderCrawlSummary() {
-  $("rightPanel").innerHTML = `<h2>抓取结果</h2>` + (state.ratedItems.length ? `<div class="statbar"><div class="stat"><b>${state.ratedItems.length}</b>条数据</div><div class="stat"><b>${state.counts?.pages_ok ?? "-"}</b>成功页</div><div class="stat"><b>${state.counts?.pages_failed ?? "-"}</b>失败页</div></div><h3>最近抓到</h3><ul class="mini-list">${state.ratedItems.slice(0,5).map(x => `<li>${esc(x.title)} ${x.my_rating ? "· 我的评分 " + x.my_rating : ""}</li>`).join("")}</ul><div class="actions"><button onclick="goStep(2)">下一步：确认口味</button></div>` : `<div class="empty">还没有数据。你可以抓取豆瓣，也可以使用示例数据先试跑。</div>`);
+  $("rightPanel").innerHTML = `<h2>鎶撳彇缁撴灉</h2>` + (state.ratedItems.length ? `<div class="statbar"><div class="stat"><b>${state.ratedItems.length}</b>鏉℃暟鎹?/div><div class="stat"><b>${state.counts?.pages_ok ?? "-"}</b>鎴愬姛椤?/div><div class="stat"><b>${state.counts?.pages_failed ?? "-"}</b>澶辫触椤?/div></div><h3>鏈€杩戞姄鍒?/h3><ul class="mini-list">${state.ratedItems.slice(0,5).map(x => `<li>${esc(x.title)} ${x.my_rating ? "路 鎴戠殑璇勫垎 " + x.my_rating : ""}</li>`).join("")}</ul><div class="actions"><button onclick="goStep(2)">涓嬩竴姝ワ細纭鍙ｅ懗</button></div>` : `<div class="empty">杩樻病鏈夋暟鎹€備綘鍙互鎶撳彇璞嗙摚锛屼篃鍙互浣跨敤绀轰緥鏁版嵁鍏堣瘯璺戙€?/div>`);
 }
 function renderTastePanel() {
-  $("leftPanel").innerHTML = `<h2>第二步：确认口味</h2>
-    <p class="hint">评分会自动分析；这里补充你最近想看的方向和明确避雷点。</p>
-    <label>喜欢的口味</label><textarea id="likeTerms">悬疑, 犯罪, 现实主义, 黑色幽默, 群像</textarea>
-    <label>不喜欢的口味</label><textarea id="dislikeTerms">甜宠, 狗血, 低幼, 恐怖血腥</textarea>
-    <label>推荐范围</label>
-    <label><input id="includeMovies" type="checkbox" checked /> 电影</label>
-    <label><input id="includeSeries" type="checkbox" checked /> 电视剧</label>
-    <details><summary>高级候选来源</summary>
-      <label><input id="fetchDouban" type="checkbox" checked /> 从豆瓣探索候选池补充</label>
-      <label><input id="useSampleCandidates" type="checkbox" checked /> 加入本地示例候选</label>
-      <label>推荐数量</label><input id="limit" type="number" min="5" max="100" value="30" />
+  $("leftPanel").innerHTML = `<h2>绗簩姝ワ細纭鍙ｅ懗</h2>
+    <p class="hint">璇勫垎浼氳嚜鍔ㄥ垎鏋愶紱杩欓噷琛ュ厖浣犳渶杩戞兂鐪嬬殑鏂瑰悜鍜屾槑纭伩闆风偣銆?/p>
+    <label>鍠滄鐨勫彛鍛?/label><textarea id="likeTerms">鎮枒, 鐘姜, 鐜板疄涓讳箟, 榛戣壊骞介粯, 缇ゅ儚</textarea>
+    <label>涓嶅枩娆㈢殑鍙ｅ懗</label><textarea id="dislikeTerms">鐢滃疇, 鐙楄, 浣庡辜, 鎭愭€栬鑵?/textarea>
+    <label>鎺ㄨ崘鑼冨洿</label>
+    <label><input id="includeMovies" type="checkbox" checked /> 鐢靛奖</label>
+    <label><input id="includeSeries" type="checkbox" checked /> 鐢佃鍓?/label>
+    <details><summary>楂樼骇鍊欓€夋潵婧?/summary>
+      <label><input id="fetchDouban" type="checkbox" checked /> 浠庤眴鐡ｆ帰绱㈠€欓€夋睜琛ュ厖</label>
+      <label><input id="useSampleCandidates" type="checkbox" checked /> 鍔犲叆鏈湴绀轰緥鍊欓€?/label>
+      <label>鎺ㄨ崘鏁伴噺</label><input id="limit" type="number" min="5" max="100" value="30" />
     </details>
-    <div class="actions"><button onclick="recommend()">生成推荐</button><button class="ghost" onclick="goStep(1)">返回上一步</button></div>
+    <div class="actions"><button onclick="recommend()">鐢熸垚鎺ㄨ崘</button><button class="ghost" onclick="goStep(1)">杩斿洖涓婁竴姝?/button></div>
     <div id="status" class="status"></div>`;
-  $("rightPanel").innerHTML = `<h2>你的数据</h2><div class="statbar"><div class="stat"><b>${state.ratedItems.length}</b>条评分/想看</div></div><p class="hint">系统会用高分条目学习偏好，用低分条目学习避雷，并自动排除已经看过的条目。</p>`;
+  $("rightPanel").innerHTML = `<h2>浣犵殑鏁版嵁</h2><div class="statbar"><div class="stat"><b>${state.ratedItems.length}</b>鏉¤瘎鍒?鎯崇湅</div></div><p class="hint">绯荤粺浼氱敤楂樺垎鏉＄洰瀛︿範鍋忓ソ锛岀敤浣庡垎鏉＄洰瀛︿範閬块浄锛屽苟鑷姩鎺掗櫎宸茬粡鐪嬭繃鐨勬潯鐩€?/p>`;
 }
 function renderRecommendations() {
   const cards = state.recommendations.map((r, i) => `<article class="card">
-    <div class="card-top"><div><h2>${i + 1}. ${r.url ? `<a class="link" href="${esc(r.url)}" target="_blank">${esc(r.title)}</a>` : esc(r.title)}</h2><div class="meta"><span>${esc(r.media_type)}</span><span>豆瓣 ${r.douban_rating || "-"}</span><span>${esc((r.genres || []).slice(0,3).join(" / "))}</span></div></div><div class="score">${Number(r.score).toFixed(1)}</div></div>
+    <div class="card-top"><div><h2>${i + 1}. ${r.url ? `<a class="link" href="${esc(r.url)}" target="_blank">${esc(r.title)}</a>` : esc(r.title)}</h2><div class="meta"><span>${esc(r.media_type)}</span><span>璞嗙摚 ${r.douban_rating || "-"}</span><span>${esc((r.genres || []).slice(0,3).join(" / "))}</span></div></div><div class="score">${Number(r.score).toFixed(1)}</div></div>
     <ul class="reasons">${(r.reasons || []).slice(0,3).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
-    <details><summary>展开详情</summary><ul class="mini-list">${(r.reasons || []).slice(3).map(x => `<li>${esc(x)}</li>`).join("")}${(r.warnings || []).map(x => `<li class="warn">${esc(x)}</li>`).join("")}</ul><p class="hint">导演：${esc((r.directors || []).join(" / ") || "-")}<br>主演：${esc((r.casts || []).slice(0,6).join(" / ") || "-")}<br>来源：${esc(r.source || "-")}</p></details>
+    <details><summary>灞曞紑璇︽儏</summary><ul class="mini-list">${(r.reasons || []).slice(3).map(x => `<li>${esc(x)}</li>`).join("")}${(r.warnings || []).map(x => `<li class="warn">${esc(x)}</li>`).join("")}</ul><p class="hint">瀵兼紨锛?{esc((r.directors || []).join(" / ") || "-")}<br>涓绘紨锛?{esc((r.casts || []).slice(0,6).join(" / ") || "-")}<br>鏉ユ簮锛?{esc(r.source || "-")}</p></details>
   </article>`).join("");
-  $("leftPanel").innerHTML = `<h2>第三步：查看推荐</h2><p class="hint">默认只展示最有用的理由；想看匹配细节再展开。</p><div class="actions"><button class="ghost" onclick="goStep(2)">调整口味</button><button class="secondary" onclick="goStep(1)">重新抓取</button></div>`;
-  $("rightPanel").innerHTML = cards || `<div class="empty">还没有推荐结果。</div>`;
+  $("leftPanel").innerHTML = `<h2>绗笁姝ワ細鏌ョ湅鎺ㄨ崘</h2><p class="hint">榛樿鍙睍绀烘渶鏈夌敤鐨勭悊鐢憋紱鎯崇湅鍖归厤缁嗚妭鍐嶅睍寮€銆?/p><div class="actions"><button class="ghost" onclick="goStep(2)">璋冩暣鍙ｅ懗</button><button class="secondary" onclick="goStep(1)">閲嶆柊鎶撳彇</button></div>`;
+  $("rightPanel").innerHTML = cards || `<div class="empty">杩樻病鏈夋帹鑽愮粨鏋溿€?/div>`;
 }
 function goStep(step) {
   state.step = step;
@@ -1134,11 +1134,11 @@ function goStep(step) {
   if (step === 3) renderRecommendations();
 }
 async function crawlDouban() {
-  setStatus("正在抓取豆瓣页面，通常需要几十秒以内。");
+  setStatus("姝ｅ湪鎶撳彇璞嗙摚椤甸潰锛岄€氬父闇€瑕佸嚑鍗佺浠ュ唴銆?);
   const payload = { user_id_or_url: $("doubanUser").value, cookie: $("doubanCookie").value, max_pages: Number($("maxPages").value || 8), include_wish: $("includeWish").checked };
   const res = await fetch("/api/crawl-douban", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
   const data = await res.json();
-  if (!res.ok || data.error) { setStatus("抓取失败：" + (data.error || "请求失败")); return; }
+  if (!res.ok || data.error) { setStatus("鎶撳彇澶辫触锛? + (data.error || "璇锋眰澶辫触")); return; }
   state.ratedItems = data.items || [];
   state.counts = data.counts || {};
   renderCrawlerPanel();
@@ -1149,15 +1149,15 @@ async function loadSample() {
   const data = await res.json();
   state.ratedItems = [];
   state.counts = { pages_ok: "-", pages_failed: "-" };
-  setStatus("示例数据已加载。请进入第二步生成完整推荐。");
+  setStatus("绀轰緥鏁版嵁宸插姞杞姐€傝杩涘叆绗簩姝ョ敓鎴愬畬鏁存帹鑽愩€?);
   goStep(2);
 }
 async function recommend() {
-  setStatus("正在生成推荐。");
+  setStatus("姝ｅ湪鐢熸垚鎺ㄨ崘銆?);
   const payload = { rated_items:state.ratedItems, like_terms:$("likeTerms").value, dislike_terms:$("dislikeTerms").value, include_movies:$("includeMovies").checked, include_series:$("includeSeries").checked, fetch_douban:$("fetchDouban").checked, use_sample_candidates:$("useSampleCandidates").checked, limit:Number($("limit").value || 30) };
   const res = await fetch("/api/recommend", { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(payload) });
   const data = await res.json();
-  if (!res.ok || data.error) { setStatus("推荐失败：" + (data.error || "请求失败")); return; }
+  if (!res.ok || data.error) { setStatus("鎺ㄨ崘澶辫触锛? + (data.error || "璇锋眰澶辫触")); return; }
   state.recommendations = data.results || [];
   state.profile = data.profile || null;
   goStep(3);
@@ -1170,7 +1170,7 @@ goStep(1);
 
 - [ ] **Step 4: Modify web.py to import INDEX_HTML from web_ui**
 
-In `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`:
+In `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`:
 
 1. Add this import:
 
@@ -1185,7 +1185,7 @@ from .web_ui import INDEX_HTML
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_ui_html -v
 ```
 
@@ -1196,7 +1196,7 @@ Expected: `OK`.
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest tests.test_web_api -v
 ```
 
@@ -1216,8 +1216,8 @@ git commit -m "feat: redesign UI as three-step assistant"
 ### Task 6: README Cookie Tutorial and User Instructions
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\tests\test_readme.py`
-- Modify: `C:\Users\11616\douban-taste-recommender\README.md`
+- Create: `C:\path\to\douban-taste-recommender\tests\test_readme.py`
+- Modify: `C:\path\to\douban-taste-recommender\README.md`
 
 **Interfaces:**
 - Consumes: current `README.md`
@@ -1225,7 +1225,7 @@ git commit -m "feat: redesign UI as three-step assistant"
 
 - [ ] **Step 1: Write failing README tests**
 
-Create `C:\Users\11616\douban-taste-recommender\tests\test_readme.py`:
+Create `C:\path\to\douban-taste-recommender\tests\test_readme.py`:
 
 ```python
 import unittest
@@ -1238,17 +1238,17 @@ ROOT = Path(__file__).resolve().parents[1]
 class ReadmeTests(unittest.TestCase):
     def test_readme_explains_direct_douban_crawler(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("直接抓取豆瓣数据", text)
-        self.assertIn("豆瓣用户 ID 或主页链接", text)
-        self.assertIn("Cookie 是可选项", text)
+        self.assertIn("鐩存帴鎶撳彇璞嗙摚鏁版嵁", text)
+        self.assertIn("璞嗙摚鐢ㄦ埛 ID 鎴栦富椤甸摼鎺?, text)
+        self.assertIn("Cookie 鏄彲閫夐」", text)
 
     def test_readme_contains_cookie_tutorial_and_privacy_copy(self):
         text = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertIn("Cookie 获取教程", text)
+        self.assertIn("Cookie 鑾峰彇鏁欑▼", text)
         self.assertIn("F12", text)
-        self.assertIn("Network / 网络", text)
-        self.assertIn("Cookie 只用于本机请求豆瓣页面", text)
-        self.assertIn("不会保存到磁盘", text)
+        self.assertIn("Network / 缃戠粶", text)
+        self.assertIn("Cookie 鍙敤浜庢湰鏈鸿姹傝眴鐡ｉ〉闈?, text)
+        self.assertIn("涓嶄細淇濆瓨鍒扮鐩?, text)
 
 
 if __name__ == "__main__":
@@ -1267,36 +1267,22 @@ Expected: FAIL because README lacks the new crawler and Cookie tutorial copy.
 
 - [ ] **Step 3: Add README sections**
 
-Append this section to `C:\Users\11616\douban-taste-recommender\README.md`:
+Append this section to `C:\path\to\douban-taste-recommender\README.md`:
 
 ```markdown
 
-## 直接抓取豆瓣数据
+## 鐩存帴鎶撳彇璞嗙摚鏁版嵁
 
-现在可以不借助外部导出工具，直接在本地网页里抓取豆瓣数据：
+鐜板湪鍙互涓嶅€熷姪澶栭儴瀵煎嚭宸ュ叿锛岀洿鎺ュ湪鏈湴缃戦〉閲屾姄鍙栬眴鐡ｆ暟鎹細
 
-1. 启动应用：`.\run_app.ps1`
-2. 打开 <http://127.0.0.1:7861>
-3. 在“第一步：连接豆瓣”里输入豆瓣用户 ID 或主页链接。
-4. 如果公开数据够用，Cookie 可以留空。
-5. 如果抓不到完整评分，再粘贴 Cookie 后重试。
+1. 鍚姩搴旂敤锛歚.\run_app.ps1`
+2. 鎵撳紑 <http://127.0.0.1:7861>
+3. 鍦ㄢ€滅涓€姝ワ細杩炴帴璞嗙摚鈥濋噷杈撳叆璞嗙摚鐢ㄦ埛 ID 鎴栦富椤甸摼鎺ャ€?4. 濡傛灉鍏紑鏁版嵁澶熺敤锛孋ookie 鍙互鐣欑┖銆?5. 濡傛灉鎶撲笉鍒板畬鏁磋瘎鍒嗭紝鍐嶇矘璐?Cookie 鍚庨噸璇曘€?
+Cookie 鏄彲閫夐」銆傚畠鍙敤浜庢湰鏈鸿姹傝眴鐡ｉ〉闈紝涓嶄細淇濆瓨鍒扮鐩橈紝涓嶄細鍐欏叆鎶ュ憡锛屼篃涓嶄細涓婁紶鍒板閮ㄦ湇鍔°€?
+## Cookie 鑾峰彇鏁欑▼
 
-Cookie 是可选项。它只用于本机请求豆瓣页面，不会保存到磁盘，不会写入报告，也不会上传到外部服务。
-
-## Cookie 获取教程
-
-1. 打开浏览器并登录豆瓣。
-2. 进入任意豆瓣页面，例如 `https://movie.douban.com/`。
-3. 按 `F12` 打开开发者工具。
-4. 选择 `Network / 网络`。
-5. 刷新页面。
-6. 点击任意 `movie.douban.com` 或 `www.douban.com` 请求。
-7. 在右侧 `Headers / 标头` 中找到 `Request Headers`。
-8. 复制其中 `Cookie: ` 后面的整段内容。
-9. 粘贴到本应用的 Cookie 输入框。
-
-如果抓取失败，先确认豆瓣网页本身能正常打开，再把最多抓取页数调小后重试。
-```
+1. 鎵撳紑娴忚鍣ㄥ苟鐧诲綍璞嗙摚銆?2. 杩涘叆浠绘剰璞嗙摚椤甸潰锛屼緥濡?`https://movie.douban.com/`銆?3. 鎸?`F12` 鎵撳紑寮€鍙戣€呭伐鍏枫€?4. 閫夋嫨 `Network / 缃戠粶`銆?5. 鍒锋柊椤甸潰銆?6. 鐐瑰嚮浠绘剰 `movie.douban.com` 鎴?`www.douban.com` 璇锋眰銆?7. 鍦ㄥ彸渚?`Headers / 鏍囧ご` 涓壘鍒?`Request Headers`銆?8. 澶嶅埗鍏朵腑 `Cookie: ` 鍚庨潰鐨勬暣娈靛唴瀹广€?9. 绮樿创鍒版湰搴旂敤鐨?Cookie 杈撳叆妗嗐€?
+濡傛灉鎶撳彇澶辫触锛屽厛纭璞嗙摚缃戦〉鏈韩鑳芥甯告墦寮€锛屽啀鎶婃渶澶氭姄鍙栭〉鏁拌皟灏忓悗閲嶈瘯銆?```
 
 - [ ] **Step 4: Run README tests and verify pass**
 
@@ -1323,8 +1309,8 @@ git commit -m "docs: add Douban crawler and cookie guide"
 
 **Files:**
 - Modify only if verification reveals a defect:
-  - `C:\Users\11616\douban-taste-recommender\src\douban_recommender\*.py`
-  - `C:\Users\11616\douban-taste-recommender\tests\*.py`
+  - `C:\path\to\douban-taste-recommender\src\douban_recommender\*.py`
+  - `C:\path\to\douban-taste-recommender\tests\*.py`
 
 **Interfaces:**
 - Consumes: all features from Tasks 1-6
@@ -1335,7 +1321,7 @@ git commit -m "docs: add Douban crawler and cookie guide"
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 python -m unittest discover -s tests -v
 ```
 
@@ -1346,18 +1332,18 @@ Expected: all tests report `ok` and final output contains `OK`.
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
-python -m douban_recommender.cli --ratings sample_data\ratings_sample.csv --candidates sample_data\candidates_sample.csv --like "悬疑,犯罪,现实主义" --dislike "甜宠,狗血" --limit 5 --output output\final_smoke.html
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
+python -m douban_recommender.cli --ratings sample_data\ratings_sample.csv --candidates sample_data\candidates_sample.csv --like "鎮枒,鐘姜,鐜板疄涓讳箟" --dislike "鐢滃疇,鐙楄" --limit 5 --output output\final_smoke.html
 ```
 
-Expected: exit code `0`, output includes `已生成`, and top results do not include the user's rated titles from `sample_data\ratings_sample.csv`.
+Expected: exit code `0`, output includes `宸茬敓鎴恅, and top results do not include the user's rated titles from `sample_data\ratings_sample.csv`.
 
 - [ ] **Step 3: Run web API smoke test**
 
 Run:
 
 ```powershell
-$env:PYTHONPATH = "C:\Users\11616\douban-taste-recommender\src"
+$env:PYTHONPATH = "C:\path\to\douban-taste-recommender\src"
 @'
 import json
 import threading
@@ -1372,7 +1358,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 try:
     home = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode("utf-8")
-    assert "第一步：连接豆瓣" in home
+    assert "绗竴姝ワ細杩炴帴璞嗙摚" in home
     payload = json.dumps({
         "ratings_csv": "",
         "fetch_douban": False,
@@ -1403,7 +1389,7 @@ Expected: exit code `0`, output starts with `WEB_SMOKE_OK`.
 Run:
 
 ```powershell
-$root = Resolve-Path "C:\Users\11616\douban-taste-recommender"
+$root = Resolve-Path "C:\path\to\douban-taste-recommender"
 Get-ChildItem -Path $root -Recurse -Directory -Filter "__pycache__" | ForEach-Object {
   if ($_.FullName.StartsWith($root.Path)) {
     Remove-Item -LiteralPath $_.FullName -Recurse -Force

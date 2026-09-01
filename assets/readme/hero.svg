@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">CineScope Studio</title>
+  <desc id="desc">本地优先的豆瓣同步、可解释推荐与多焦点影视探索工作台。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#090b12"/>
+      <stop offset="0.56" stop-color="#101727"/>
+      <stop offset="1" stop-color="#17131a"/>
+    </linearGradient>
+    <radialGradient id="gold-glow">
+      <stop offset="0" stop-color="#f3d89b" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#c8a86b" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan-glow">
+      <stop offset="0" stop-color="#70e4dc" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#70e4dc" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="signal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#70e4dc"/>
+      <stop offset=".52" stop-color="#a88cff"/>
+      <stop offset="1" stop-color="#f0c277"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="400" rx="28" fill="url(#bg)"/>
+  <path d="M0 320C168 272 316 338 480 292S818 176 1200 244V400H0Z" fill="#070a11" opacity=".42"/>
+  <circle cx="1000" cy="112" r="250" fill="url(#cyan-glow)"/>
+  <circle cx="760" cy="306" r="230" fill="url(#gold-glow)"/>
+
+  <g transform="translate(62 53)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+    <g transform="translate(0 0)">
+      <rect width="174" height="28" rx="14" fill="#c8a86b"/>
+      <text x="87" y="19" text-anchor="middle" font-size="12" font-weight="800" fill="#111018" letter-spacing="1.1">LOCAL-FIRST CURATION</text>
+    </g>
+    <text x="0" y="105" font-size="58" font-weight="860" fill="#f6f7fb" letter-spacing="-1.8">CineScope Studio</text>
+    <text x="0" y="150" font-size="24" font-weight="700" fill="#dce4f3">把豆瓣记录变成可解释、可融合的私人影视策展</text>
+    <text x="0" y="188" font-size="16" fill="#9ba8bd">同步看过与想看 · 自然语言选片 · 多信号排序 · 本地可信媒体</text>
+
+    <g transform="translate(0 231)" font-size="13" font-weight="700">
+      <g>
+        <rect width="112" height="34" rx="17" fill="#151d2c" stroke="#33415d"/>
+        <circle cx="18" cy="17" r="5" fill="#70e4dc"/>
+        <text x="31" y="22" fill="#dce8f5">豆瓣同步</text>
+      </g>
+      <g transform="translate(122 0)">
+        <rect width="130" height="34" rx="17" fill="#151d2c" stroke="#3b3562"/>
+        <circle cx="18" cy="17" r="5" fill="#a88cff"/>
+        <text x="31" y="22" fill="#e5ddff">可解释推荐</text>
+      </g>
+      <g transform="translate(262 0)">
+        <rect width="130" height="34" rx="17" fill="#151d2c" stroke="#65533a"/>
+        <circle cx="18" cy="17" r="5" fill="#f0c277"/>
+        <text x="31" y="22" fill="#ffe8b8">多焦点融合</text>
+      </g>
+    </g>
+    <text x="0" y="316" font-family="ui-monospace,SFMono-Regular,Consolas,monospace" font-size="13" fill="#74839d">PYTHON 3.10+  /  LOCAL WEB APP  /  SCHEMA V2</text>
+  </g>
+
+  <g transform="translate(664 44)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+    <rect x="0" y="0" width="478" height="312" rx="24" fill="#090e19" fill-opacity=".78" stroke="#2c374e"/>
+    <text x="24" y="34" font-size="11" font-weight="800" fill="#7f8da4" letter-spacing="1.2">FOCUS FUSION / 观影雷达</text>
+    <text x="24" y="61" font-size="16" font-weight="760" fill="#f0f3f9">从多个兴趣焦点寻找共同的类型、气质与主创线索</text>
+
+    <g fill="none" stroke-linecap="round">
+      <path d="M98 139C154 139 172 188 231 188" stroke="#70e4dc" stroke-width="2.2"/>
+      <path d="M98 224C155 224 175 194 231 188" stroke="#a88cff" stroke-width="2.2"/>
+      <path d="M180 276C188 237 203 207 231 188" stroke="#f0c277" stroke-width="2.2"/>
+      <path d="M250 188C293 130 326 118 376 112" stroke="#70e4dc" stroke-opacity=".6"/>
+      <path d="M250 188C306 164 347 167 414 174" stroke="#f0c277" stroke-opacity=".58"/>
+      <path d="M250 188C302 213 338 232 392 252" stroke="#a88cff" stroke-opacity=".6"/>
+      <path d="M250 188C280 244 291 263 322 278" stroke="#70e4dc" stroke-opacity=".5"/>
+      <path d="M250 188C244 130 235 107 235 90" stroke="#f0c277" stroke-opacity=".5"/>
+    </g>
+
+    <g font-size="11" font-weight="700">
+      <g transform="translate(34 117)">
+        <rect width="116" height="44" rx="14" fill="#12232b" stroke="#3a8d8a"/>
+        <circle cx="18" cy="22" r="8" fill="#70e4dc"/>
+        <text x="34" y="26" fill="#e6ffff">星际穿越</text>
+      </g>
+      <g transform="translate(34 202)">
+        <rect width="116" height="44" rx="14" fill="#201a36" stroke="#66559c"/>
+        <circle cx="18" cy="22" r="8" fill="#a88cff"/>
+        <text x="34" y="26" fill="#f0ebff">花样年华</text>
+      </g>
+      <g transform="translate(116 258)">
+        <rect width="106" height="38" rx="13" fill="#2a2116" stroke="#7b623c"/>
+        <circle cx="17" cy="19" r="7" fill="#f0c277"/>
+        <text x="31" y="23" fill="#fff0ce">真探</text>
+      </g>
+    </g>
+
+    <circle cx="240" cy="188" r="42" fill="url(#gold-glow)"/>
+    <circle cx="240" cy="188" r="29" fill="#111725" stroke="url(#signal)" stroke-width="3"/>
+    <circle cx="240" cy="188" r="12" fill="#f4e5bf"/>
+    <text x="240" y="235" text-anchor="middle" font-size="12" font-weight="800" fill="#f2d18d">多焦点交集</text>
+
+    <g font-size="10" font-weight="700" text-anchor="middle">
+      <g transform="translate(376 112)"><circle r="17" fill="#11272b" stroke="#70e4dc"/><text y="4" fill="#ddfffc">降临</text></g>
+      <g transform="translate(414 174)"><circle r="17" fill="#2c2418" stroke="#f0c277"/><text y="4" fill="#fff0ce">她</text></g>
+      <g transform="translate(392 252)"><circle r="21" fill="#211a37" stroke="#a88cff"/><text y="4" fill="#eee7ff">燃烧</text></g>
+      <g transform="translate(322 278)"><circle r="25" fill="#11272b" stroke="#70e4dc"/><text y="4" fill="#ddfffc">银翼2049</text></g>
+      <g transform="translate(235 90)"><circle r="20" fill="#2c2418" stroke="#f0c277"/><text y="4" fill="#fff0ce">记忆碎片</text></g>
+    </g>
+  </g>
+</svg>

@@ -1,10 +1,25 @@
-import { adaptCatalogMedia } from "../core/media.js";
+import { getV2, postV2 } from "../core/api.js";
+import { adaptCatalogMedia, preloadLocalMedia } from "../core/media.js";
 import { renderMediaFrame } from "../components/media-frame.js";
+import { displayTitle } from "../components/title-card.js";
 
 const INITIAL_LIMIT = 9;
 const MAX_NODES = 36;
 const FOCUS_TWEEN_MS = 260;
 const SAFE_NODE_ID = /^[A-Za-z0-9:._~-]{1,256}$/;
+export const LAB_SEARCH_DEBOUNCE_MS = 420;
+const LAB_SEARCH_LIMIT = 4;
+const BLEND_LIMIT = 12;
+const DEFAULT_LEFT_WEIGHT = 0.5;
+const MOOD_AXIS_DEFINITIONS = Object.freeze([
+  { key: "pace_axis", label: "节奏", low: "缓慢", high: "紧凑" },
+  { key: "atmosphere_axis", label: "氛围", low: "明快", high: "阴郁" },
+  { key: "cognitive_load_axis", label: "脑力消耗", low: "放松", high: "极度烧脑" },
+  { key: "emotional_intensity_axis", label: "情绪强度", low: "克制", high: "强烈" },
+]);
+
+let labSearchSequence = 0;
+let blendRequestSequence = 0;
 
 function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -27,6 +42,30 @@ function visualScore(value) {
 function nodeId(value) {
   const clean = textValue(value);
   return SAFE_NODE_ID.test(clean) ? clean : "";
+}
+
+function clampedNumber(value, minimum, maximum, fallback = 0) {
+  const parsed = Number(value);
+  const finite = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.max(minimum, Math.min(maximum, finite));
+}
+
+export function buildBlendPayload({ leftId, rightId, leftWeight = DEFAULT_LEFT_WEIGHT, axes = {}, limit = BLEND_LIMIT } = {}) {
+  const left = nodeId(leftId);
+  const right = nodeId(rightId);
+  if (!left || !right) throw new TypeError("Blend sources require two stable work IDs");
+  if (left === right) throw new RangeError("Blend sources must be different works");
+  const intent = {};
+  for (const axis of MOOD_AXIS_DEFINITIONS) {
+    intent[axis.key] = Number(clampedNumber(axes?.[axis.key], -1, 1, 0).toFixed(2));
+  }
+  return {
+    left,
+    right,
+    left_weight: Number(clampedNumber(leftWeight, 0.05, 0.95, DEFAULT_LEFT_WEIGHT).toFixed(2)),
+    intent,
+    limit: Math.round(clampedNumber(limit, 1, 30, BLEND_LIMIT)),
+  };
 }
 
 function element(tagName, className, text = "") {
@@ -76,30 +115,34 @@ function normalizeEdge(raw) {
   };
 }
 
-async function requestJson(path, { signal } = {}) {
-  const response = await fetch(path, { method: "GET", headers: { Accept: "application/json" }, signal });
-  if (!response.ok) {
-    const error = new Error(`Universe request failed: ${response.status}`);
-    error.status = response.status;
-    throw error;
-  }
-  return response.json();
+function requestJson(path, options = {}) {
+  return getV2(path, options);
 }
 
 let dependencies = {
+  api: { getV2, postV2 },
   fetchJson: requestJson,
+  preloadMedia: preloadLocalMedia,
+  setTimer: (callback, delay) => globalThis.setTimeout?.(callback, delay),
+  clearTimer: (timer) => globalThis.clearTimeout?.(timer),
   onContextChange: () => {},
   onRecommendNode: () => {},
 };
 let activeUniverse = null;
+let activeExplorationLab = null;
 let lifecycleGeneration = 0;
 let universeContainer = null;
 
 export function configureUniverse(options = {}) {
+  const api = { ...dependencies.api, ...(options.api || {}) };
   dependencies = {
     ...dependencies,
     ...options,
-    fetchJson: options.fetchJson || dependencies.fetchJson,
+    api,
+    fetchJson: options.fetchJson || options.api?.getV2 || dependencies.fetchJson,
+    preloadMedia: options.preloadMedia || dependencies.preloadMedia,
+    setTimer: options.setTimer || dependencies.setTimer,
+    clearTimer: options.clearTimer || dependencies.clearTimer,
     onContextChange: options.onContextChange || dependencies.onContextChange,
     onRecommendNode: options.onRecommendNode || dependencies.onRecommendNode,
   };
@@ -141,6 +184,7 @@ function mergeGraph(state, graph, { initial = false } = {}) {
     ? [incomingNodes.find((node) => node.id === focus), ...incomingNodes.filter((node) => node.id !== focus)].filter(Boolean).slice(0, INITIAL_LIMIT)
     : incomingNodes;
   for (const node of boundedNodes) state.nodesById.set(node.id, node);
+  hydrateExplorationSeed(state, boundedNodes);
 
   for (const rawEdge of Array.isArray(graph?.edges) ? graph.edges : []) {
     const edge = normalizeEdge(rawEdge);
@@ -215,17 +259,697 @@ function expandNodeFromUi(id) {
   void expandNode(id).catch(() => {});
 }
 
-function renderEmpty(container) {
-  const empty = element("section", "universe-empty route-view--enter");
-  empty.append(
-    element("p", "eyebrow", "TASTE UNIVERSE / AWAITING A FOCUS"),
-    element("h1", "universe-empty__title", "先选择一部作品，再展开你的口味宇宙"),
-    element("p", "universe-empty__copy", "这里不会凭空绘制关系。请先从片库或今晚推荐打开作品详情，CineScope 会使用稳定作品 ID 作为探索起点。"),
+function discoveryItemId(item = {}) {
+  return nodeId(item?.id) || nodeId(item?.item_key) || nodeId(item?.catalog_id);
+}
+
+function normalizeDiscoveryItem(item = {}) {
+  const id = discoveryItemId(item);
+  if (!id) return null;
+  return {
+    ...item,
+    id,
+    item_key: nodeId(item?.item_key) || id,
+    title: textValue(item?.title, "未命名作品"),
+    media_type: textValue(item?.media_type) || textValue(item?.format) || "作品",
+    year: Number.isFinite(Number(item?.year)) && Number(item.year) > 0 ? Math.floor(Number(item.year)) : null,
+  };
+}
+
+function discoveryBadge(item = {}) {
+  const provided = item?.media_badge && typeof item.media_badge === "object" ? item.media_badge : {};
+  const rawType = `${textValue(item?.media_type)} ${textValue(item?.format)}`.toLowerCase();
+  if (textValue(provided.label)) {
+    return {
+      label: textValue(provided.label),
+      tone: ["amber", "violet", "cyan", "slate"].includes(textValue(provided.tone)) ? textValue(provided.tone) : "slate",
+    };
+  }
+  if (/(动画|动漫|anime)/u.test(rawType)) return { label: "动画", tone: "cyan" };
+  if (/(电视剧|剧集|series|tv)/u.test(rawType)) return { label: "剧集", tone: "violet" };
+  if (/(电影|movie|film)/u.test(rawType)) return { label: "电影", tone: "amber" };
+  return { label: textValue(item?.media_type, "作品"), tone: "slate" };
+}
+
+function discoveryMeta(item = {}) {
+  const parts = [];
+  if (item.year) parts.push(String(item.year));
+  const country = Array.isArray(item?.countries) ? item.countries.map((value) => textValue(value)).find(Boolean) : "";
+  if (country) parts.push(country);
+  const rating = Number(item?.douban_rating);
+  if (Number.isFinite(rating) && rating > 0) parts.push(`豆瓣 ${rating.toFixed(1)}`);
+  return parts.join(" · ") || "年份与地区待补";
+}
+
+function setLabStatus(state, message, tone = "neutral") {
+  if (!state?.status) return;
+  state.status.dataset.tone = tone;
+  state.status.textContent = message;
+}
+
+function setSlotStatus(slot, message = "", tone = "neutral") {
+  slot.status.dataset.tone = tone;
+  slot.status.textContent = message;
+  slot.status.hidden = !message;
+}
+
+function warmPoster(item, owner) {
+  const media = adaptCatalogMedia(item, "poster");
+  if (!media.localUrl || typeof dependencies.preloadMedia !== "function") return;
+  void Promise.resolve(dependencies.preloadMedia(media.localUrl, owner)).catch(() => {});
+}
+
+function axisDescription(definition, value) {
+  const amount = clampedNumber(value, -1, 1, 0);
+  if (Math.abs(amount) < 0.05) return "平衡";
+  const label = amount < 0 ? definition.low : definition.high;
+  return `${label} ${Math.round(Math.abs(amount) * 100)}%`;
+}
+
+function currentAxes(state) {
+  const values = {};
+  for (const definition of MOOD_AXIS_DEFINITIONS) {
+    const control = state.axes.get(definition.key);
+    values[definition.key] = Number((clampedNumber(control?.input?.value, -100, 100, 0) / 100).toFixed(2));
+  }
+  return values;
+}
+
+function clearBlendResults(state) {
+  state.results.hidden = true;
+  state.resultsRail.replaceChildren();
+  state.resultsTitle.textContent = "融合结果";
+}
+
+function cancelBlendRequest(state) {
+  state.blendController?.abort();
+  state.blendController = null;
+  state.loading = false;
+}
+
+function syncBlendAvailability(state) {
+  const ready = Boolean(state.slots.left?.selected && state.slots.right?.selected);
+  state.submit.disabled = !ready || state.loading;
+  state.submit.setAttribute("aria-disabled", state.submit.disabled ? "true" : "false");
+  toggleClass(state.stage, "is-ready", ready);
+  if (!ready && !state.loading) {
+    const missing = !state.slots.left?.selected && !state.slots.right?.selected
+      ? "先为 A 与 B 各选择一部作品，再让两个世界发生碰撞。"
+      : `还需要选择作品 ${state.slots.left?.selected ? "B" : "A"}。`;
+    setLabStatus(state, missing);
+  }
+}
+
+function renderBlendSelection(state, slot) {
+  slot.selection.replaceChildren();
+  const item = slot.selected;
+  if (!item) {
+    const empty = element("div", "blend-source__empty");
+    empty.append(
+      element("span", "blend-source__empty-glyph", slot.label),
+      element("strong", "blend-source__empty-title", `等待作品 ${slot.label}`),
+      element("span", "blend-source__empty-copy", "输入片名，点击或拖入候选作品"),
+    );
+    slot.selection.append(empty);
+    toggleClass(slot.root, "has-selection", false);
+    return;
+  }
+
+  toggleClass(slot.root, "has-selection", true);
+  const card = element("article", "blend-source-card");
+  card.draggable = true;
+  card.dataset.itemId = item.id;
+  card.dataset.side = slot.side;
+  const poster = element("div", "blend-source-card__poster");
+  poster.append(renderMediaFrame(adaptCatalogMedia(item, "poster")));
+  const copy = element("div", "blend-source-card__copy");
+  const badge = discoveryBadge(item);
+  const badgeNode = element("span", "blend-media-badge", badge.label);
+  badgeNode.dataset.tone = badge.tone;
+  copy.append(
+    badgeNode,
+    element("strong", "blend-source-card__title", displayTitle(item)),
+    element("span", "blend-source-card__meta", discoveryMeta(item)),
   );
-  const action = element("a", "universe-empty__action", "前往片库选择作品");
+  const clear = element("button", "blend-source-card__clear", "更换");
+  clear.type = "button";
+  clear.setAttribute("aria-label", `更换作品 ${slot.label}《${displayTitle(item)}》`);
+  clear.addEventListener("click", () => {
+    slot.selected = null;
+    slot.input.value = "";
+    cancelBlendRequest(state);
+    clearBlendResults(state);
+    renderBlendSelection(state, slot);
+    syncBlendAvailability(state);
+    slot.input.focus?.();
+  });
+  card.addEventListener("pointerenter", () => warmPoster(item, card));
+  card.addEventListener("focusin", () => warmPoster(item, card));
+  card.addEventListener("dragstart", (event) => {
+    state.draggedItem = item;
+    state.draggedFrom = slot.side;
+    event?.dataTransfer?.setData?.("text/plain", item.id);
+    if (event?.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
+    toggleClass(state.stage, "is-dragging", true);
+  });
+  card.addEventListener("dragend", () => {
+    state.draggedItem = null;
+    state.draggedFrom = "";
+    toggleClass(state.stage, "is-dragging", false);
+  });
+  card.append(poster, copy, clear);
+  slot.selection.append(card);
+}
+
+function selectBlendSource(state, slot, rawItem, { autoBlend = true } = {}) {
+  const item = normalizeDiscoveryItem(rawItem);
+  if (!item) return false;
+  const other = state.slots[slot.side === "left" ? "right" : "left"];
+  if (other?.selected?.id === item.id) {
+    setSlotStatus(slot, `《${displayTitle(item)}》已经在作品 ${other.label} 中，请选择另一部作品。`, "error");
+    setLabStatus(state, "碰撞需要两个不同的作品世界。", "error");
+    return false;
+  }
+  cancelBlendRequest(state);
+  slot.selected = item;
+  slot.input.value = displayTitle(item);
+  slot.candidates = [];
+  slot.lastQuery = displayTitle(item);
+  renderBlendCandidates(state, slot);
+  renderBlendSelection(state, slot);
+  setSlotStatus(slot, `已选择${discoveryBadge(item).label}《${displayTitle(item)}》`, "success");
+  clearBlendResults(state);
+  syncBlendAvailability(state);
+  warmPoster(item, slot.selection);
+  if (autoBlend && state.slots.left?.selected && state.slots.right?.selected) void requestBlend(state);
+  return true;
+}
+
+function attachCandidateDrag(state, slot, card, item) {
+  card.draggable = true;
+  card.addEventListener("dragstart", (event) => {
+    state.draggedItem = item;
+    state.draggedFrom = slot.side;
+    event?.dataTransfer?.setData?.("text/plain", item.id);
+    if (event?.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+    toggleClass(state.stage, "is-dragging", true);
+  });
+  card.addEventListener("dragend", () => {
+    state.draggedItem = null;
+    state.draggedFrom = "";
+    toggleClass(state.stage, "is-dragging", false);
+  });
+}
+
+function renderBlendCandidates(state, slot) {
+  slot.candidateList.replaceChildren();
+  const candidates = Array.isArray(slot.candidates) ? slot.candidates.slice(0, LAB_SEARCH_LIMIT) : [];
+  slot.candidateTray.hidden = candidates.length === 0;
+  if (!candidates.length) return;
+  const other = state.slots[slot.side === "left" ? "right" : "left"];
+  for (const item of candidates) {
+    const badge = discoveryBadge(item);
+    const duplicate = other?.selected?.id === item.id;
+    const card = element("button", "blend-candidate");
+    card.type = "button";
+    card.dataset.itemId = item.id;
+    card.dataset.tone = badge.tone;
+    card.disabled = duplicate;
+    card.setAttribute("aria-disabled", duplicate ? "true" : "false");
+    card.setAttribute("aria-label", duplicate
+      ? `《${displayTitle(item)}》已用于作品 ${other.label}`
+      : `选为作品 ${slot.label}：${badge.label}《${displayTitle(item)}》`);
+    const poster = element("span", "blend-candidate__poster");
+    poster.append(renderMediaFrame(adaptCatalogMedia(item, "poster")));
+    const copy = element("span", "blend-candidate__copy");
+    copy.append(
+      element("strong", "blend-candidate__title", displayTitle(item)),
+      element("span", "blend-candidate__meta", discoveryMeta(item)),
+    );
+    const badgeNode = element("span", "blend-media-badge", badge.label);
+    badgeNode.dataset.tone = badge.tone;
+    card.append(poster, copy, badgeNode);
+    card.addEventListener("pointerenter", () => warmPoster(item, card));
+    card.addEventListener("focus", () => warmPoster(item, card));
+    card.addEventListener("click", () => selectBlendSource(state, slot, item));
+    attachCandidateDrag(state, slot, card, item);
+    slot.candidateList.append(card);
+  }
+}
+
+async function searchBlendSlot(state, slot) {
+  const query = textValue(slot.input.value);
+  if (!query || state.disposed || typeof dependencies.api?.getV2 !== "function") {
+    slot.candidates = [];
+    renderBlendCandidates(state, slot);
+    setSlotStatus(slot, "");
+    return [];
+  }
+  slot.searchController?.abort();
+  const controller = new AbortController();
+  const sequence = ++labSearchSequence;
+  slot.searchController = controller;
+  slot.searchSequence = sequence;
+  slot.lastQuery = query;
+  setSlotStatus(slot, `正在辨认“${query}”的媒介与版本…`, "busy");
+  try {
+    const response = await dependencies.api.getV2(
+      `/api/v2/titles/search?q=${encodeURIComponent(query)}&limit=${LAB_SEARCH_LIMIT}`,
+      { signal: controller.signal },
+    );
+    if (state.disposed || controller.signal.aborted || slot.searchSequence !== sequence) return slot.candidates;
+    slot.candidates = (Array.isArray(response?.items) ? response.items : []).map(normalizeDiscoveryItem).filter(Boolean).slice(0, LAB_SEARCH_LIMIT);
+    renderBlendCandidates(state, slot);
+    if (slot.candidates.length > 1) setSlotStatus(slot, `找到 ${slot.candidates.length} 个候选，用媒介角标与年份确认版本。`);
+    else if (slot.candidates.length === 1) setSlotStatus(slot, "找到 1 个可用作品，回车或点击即可选中。", "success");
+    else setSlotStatus(slot, "没有找到可碰撞的本地作品，请尝试更完整的片名。", "error");
+    return slot.candidates;
+  } catch (error) {
+    if (error?.name === "AbortError" || state.disposed || slot.searchSequence !== sequence) return slot.candidates;
+    slot.candidates = [];
+    renderBlendCandidates(state, slot);
+    setSlotStatus(slot, "作品检索暂时不可用；当前已选作品不会丢失。", "error");
+    return [];
+  } finally {
+    if (slot.searchController === controller) slot.searchController = null;
+  }
+}
+
+function scheduleBlendSlotSearch(state, slot) {
+  if (slot.searchTimer !== null) dependencies.clearTimer?.(slot.searchTimer);
+  slot.searchTimer = null;
+  if (slot.composing) return;
+  const query = textValue(slot.input.value);
+  if (!query) {
+    slot.candidates = [];
+    slot.lastQuery = "";
+    renderBlendCandidates(state, slot);
+    setSlotStatus(slot, "");
+    return;
+  }
+  slot.searchTimer = dependencies.setTimer?.(() => {
+    slot.searchTimer = null;
+    void searchBlendSlot(state, slot);
+  }, LAB_SEARCH_DEBOUNCE_MS) ?? null;
+}
+
+function createBlendSlot(state, side, label) {
+  const root = element("section", `blend-source blend-source--${side}`);
+  root.dataset.side = side;
+  const heading = element("div", "blend-source__heading");
+  heading.append(
+    element("span", "blend-source__index", label),
+    element("div", "blend-source__heading-copy"),
+  );
+  heading.children?.[1]?.append?.(
+    element("strong", "blend-source__title", `作品 ${label}`),
+    element("span", "blend-source__hint", side === "left" ? "世界观、题材与叙事骨架" : "情绪、关系与审美质感"),
+  );
+  const search = element("div", "blend-source__search");
+  const input = document.createElement("input");
+  input.className = "blend-source__input";
+  input.type = "search";
+  input.autocomplete = "off";
+  input.maxLength = 80;
+  input.placeholder = side === "left" ? "搜索第一部作品" : "搜索第二部作品";
+  input.setAttribute("aria-label", `搜索作品 ${label}`);
+  const searchHint = element("span", "blend-source__search-hint", "停顿 420ms 自动辨认");
+  search.append(input, searchHint);
+  const status = element("p", "blend-source__status");
+  status.setAttribute("aria-live", "polite");
+  status.hidden = true;
+  const selection = element("div", "blend-source__selection");
+  const candidateTray = element("div", "blend-source__candidates");
+  candidateTray.hidden = true;
+  const candidateList = element("div", "blend-source__candidate-list");
+  candidateTray.append(candidateList);
+  root.append(heading, search, status, selection, candidateTray);
+
+  const slot = {
+    side, label, root, input, status, selection, candidateTray, candidateList,
+    selected: null, candidates: [], lastQuery: "", composing: false,
+    searchTimer: null, searchController: null, searchSequence: 0,
+  };
+  renderBlendSelection(state, slot);
+  input.addEventListener("compositionstart", () => { slot.composing = true; });
+  input.addEventListener("compositionend", () => {
+    slot.composing = false;
+    scheduleBlendSlotSearch(state, slot);
+  });
+  input.addEventListener("input", () => {
+    if (slot.selected && textValue(input.value) !== displayTitle(slot.selected)) {
+      cancelBlendRequest(state);
+      slot.selected = null;
+      clearBlendResults(state);
+      renderBlendSelection(state, slot);
+      syncBlendAvailability(state);
+    }
+    if (!slot.composing) scheduleBlendSlotSearch(state, slot);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing || slot.composing) return;
+    event.preventDefault?.();
+    if (slot.candidates[0]) {
+      selectBlendSource(state, slot, slot.candidates[0]);
+      return;
+    }
+    void searchBlendSlot(state, slot).then((items) => {
+      if (items?.[0]) selectBlendSource(state, slot, items[0]);
+    });
+  });
+  root.addEventListener("dragover", (event) => {
+    if (!state.draggedItem) return;
+    event.preventDefault?.();
+    if (event?.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    toggleClass(root, "is-drop-target", true);
+  });
+  root.addEventListener("dragleave", () => toggleClass(root, "is-drop-target", false));
+  root.addEventListener("drop", (event) => {
+    event.preventDefault?.();
+    toggleClass(root, "is-drop-target", false);
+    if (state.draggedItem) selectBlendSource(state, slot, state.draggedItem);
+  });
+  return slot;
+}
+
+function createMoodAxis(state, definition) {
+  const wrapper = element("label", "mood-axis");
+  const heading = element("span", "mood-axis__heading");
+  const name = element("strong", "mood-axis__name", definition.label);
+  const output = element("span", "mood-axis__value", "平衡");
+  heading.append(name, output);
+  const input = document.createElement("input");
+  input.className = "mood-axis__input";
+  input.type = "range";
+  input.min = "-100";
+  input.max = "100";
+  input.step = "5";
+  input.value = "0";
+  input.setAttribute("aria-label", `${definition.label}：${definition.low}到${definition.high}`);
+  const scale = element("span", "mood-axis__scale");
+  scale.append(element("span", "mood-axis__low", definition.low), element("span", "mood-axis__high", definition.high));
+  wrapper.append(heading, input, scale);
+  input.addEventListener("input", () => {
+    output.textContent = axisDescription(definition, Number(input.value) / 100);
+    scheduleBlend(state);
+  });
+  return { wrapper, input, output, definition };
+}
+
+function renderBlendLoading(state) {
+  state.results.hidden = false;
+  state.resultsTitle.textContent = "正在计算两个世界的交集";
+  state.resultsRail.replaceChildren();
+  for (let index = 0; index < 4; index += 1) {
+    const skeleton = element("article", "blend-result-card blend-result-card--loading");
+    skeleton.setAttribute("aria-hidden", "true");
+    skeleton.append(element("span", "blend-result-card__skeleton-poster"), element("span", "blend-result-card__skeleton-copy"));
+    state.resultsRail.append(skeleton);
+  }
+}
+
+function explanationLine(label, value, fallback) {
+  const row = element("p", "blend-result-card__reason");
+  row.append(
+    element("strong", "blend-result-card__reason-label", label),
+    element("span", "blend-result-card__reason-copy", textValue(value, fallback)),
+  );
+  return row;
+}
+
+function renderBlendResults(state, response = {}) {
+  const items = (Array.isArray(response?.items) ? response.items : []).map(normalizeDiscoveryItem).filter(Boolean);
+  state.results.hidden = false;
+  state.resultsRail.replaceChildren();
+  const left = state.slots.left.selected;
+  const right = state.slots.right.selected;
+  const leftWeight = clampedNumber(response?.left_weight, 0.05, 0.95, Number(state.weight.value) / 100);
+  const rightWeight = clampedNumber(response?.right_weight, 0.05, 0.95, 1 - leftWeight);
+  state.resultsTitle.textContent = items.length
+    ? `融合结果 · ${displayTitle(left || {}, "A")} ${Math.round(leftWeight * 100)} / ${displayTitle(right || {}, "B")} ${Math.round(rightWeight * 100)}`
+    : "融合结果 · 暂无可用桥梁作品";
+  if (!items.length) {
+    const empty = element("div", "blend-results__empty");
+    empty.append(
+      element("strong", "blend-results__empty-title", "这组碰撞暂时没有足够稳定的结果"),
+      element("p", "blend-results__empty-copy", "可以减弱某个情绪维度、调整 A/B 比重，或更换其中一部作品。"),
+    );
+    state.resultsRail.append(empty);
+    return;
+  }
+
+  for (const item of items) {
+    const card = element("article", "blend-result-card");
+    const poster = element("a", "blend-result-card__poster");
+    poster.setAttribute("href", titleRoute(item.id));
+    poster.setAttribute("data-route", "");
+    poster.setAttribute("aria-label", `查看《${displayTitle(item)}》详情`);
+    poster.append(renderMediaFrame(adaptCatalogMedia(item, "poster")));
+    const body = element("div", "blend-result-card__body");
+    const kicker = element("div", "blend-result-card__kicker");
+    const badge = discoveryBadge(item);
+    const badgeNode = element("span", "blend-media-badge", badge.label);
+    badgeNode.dataset.tone = badge.tone;
+    kicker.append(badgeNode, element("span", "blend-result-card__meta", discoveryMeta(item)));
+    const title = element("a", "blend-result-card__title", displayTitle(item));
+    title.setAttribute("href", titleRoute(item.id));
+    title.setAttribute("data-route", "");
+    const explanation = item?.explanation && typeof item.explanation === "object" ? item.explanation : {};
+    const reasons = element("div", "blend-result-card__reasons");
+    reasons.append(
+      explanationLine("来自 A", explanation.from_left, `延续《${displayTitle(left || {}, "作品 A")}》的核心气质`),
+      explanationLine("来自 B", explanation.from_right, `保留《${displayTitle(right || {}, "作品 B")}》的观看质感`),
+      explanationLine("融合结果", explanation.fusion, `把两个来源的叙事与情绪线索融合到《${displayTitle(item)}》中`),
+    );
+    body.append(kicker, title, reasons);
+    card.append(poster, body);
+    card.addEventListener("pointerenter", () => {
+      state.root.dataset.activeTone = badge.tone;
+      warmPoster(item, card);
+    });
+    card.addEventListener("focusin", () => {
+      state.root.dataset.activeTone = badge.tone;
+      warmPoster(item, card);
+    });
+    state.resultsRail.append(card);
+  }
+}
+
+async function requestBlend(state) {
+  if (state.disposed || !state.slots.left?.selected || !state.slots.right?.selected || typeof dependencies.api?.postV2 !== "function") {
+    syncBlendAvailability(state);
+    return null;
+  }
+  state.blendController?.abort();
+  const controller = new AbortController();
+  const sequence = ++blendRequestSequence;
+  state.blendController = controller;
+  state.blendSequence = sequence;
+  state.loading = true;
+  syncBlendAvailability(state);
+  renderBlendLoading(state);
+  setLabStatus(state, "正在计算语义中点、共同证据与情绪偏移…", "busy");
+  try {
+    const payload = buildBlendPayload({
+      leftId: state.slots.left.selected.id,
+      rightId: state.slots.right.selected.id,
+      leftWeight: Number(state.weight.value) / 100,
+      axes: currentAxes(state),
+      limit: BLEND_LIMIT,
+    });
+    const response = await dependencies.api.postV2("/api/v2/discovery/blend", payload, { signal: controller.signal });
+    if (state.disposed || controller.signal.aborted || state.blendSequence !== sequence) return null;
+    renderBlendResults(state, response);
+    setLabStatus(state, `已找到 ${Array.isArray(response?.items) ? response.items.length : 0} 部桥梁作品；每张卡片都说明 A、B 与融合依据。`, "success");
+    return response;
+  } catch (error) {
+    if (error?.name === "AbortError" || controller.signal.aborted || state.disposed || state.blendSequence !== sequence) return null;
+    clearBlendResults(state);
+    setLabStatus(state, error?.status === 400
+      ? "这两个来源无法直接碰撞，请确认它们不是同一作品。"
+      : "融合请求暂时失败；已选作品与调色盘参数均已保留。", "error");
+    return null;
+  } finally {
+    if (state.blendSequence === sequence) {
+      state.loading = false;
+      if (state.blendController === controller) state.blendController = null;
+      syncBlendAvailability(state);
+    }
+  }
+}
+
+function scheduleBlend(state, delay = 220) {
+  if (state.blendTimer !== null) dependencies.clearTimer?.(state.blendTimer);
+  state.blendTimer = null;
+  cancelBlendRequest(state);
+  if (!state.slots.left?.selected || !state.slots.right?.selected) {
+    syncBlendAvailability(state);
+    return;
+  }
+  state.blendTimer = dependencies.setTimer?.(() => {
+    state.blendTimer = null;
+    void requestBlend(state);
+  }, delay) ?? null;
+}
+
+function createExplorationLab(container, generation, seed = null) {
+  const root = element("section", "exploration-lab");
+  const header = element("header", "exploration-lab__header");
+  const headerCopy = element("div", "exploration-lab__header-copy");
+  headerCopy.append(
+    element("p", "eyebrow", "向量碰撞实验室"),
+    element("h1", "exploration-lab__title", "探索实验室"),
+    element("p", "exploration-lab__copy", "把两部作品的世界观、叙事和情绪放上碰撞台，再用调色盘决定今晚想靠近哪一边。"),
+  );
+  const features = element("div", "exploration-lab__features");
+  for (const label of ["双片碰撞", "动态情绪", "三段理由"]) features.append(element("span", "exploration-lab__feature", label));
+  header.append(headerCopy, features);
+
+  const stage = element("div", "blend-stage");
+  const state = {
+    generation, container, root, stage, slots: {}, axes: new Map(), status: null, submit: null,
+    results: null, resultsTitle: null, resultsRail: null, weight: null, weightOutput: null,
+    blendTimer: null, blendController: null, blendSequence: 0, loading: false,
+    draggedItem: null, draggedFrom: "", disposed: false,
+  };
+  const leftSlot = createBlendSlot(state, "left", "A");
+  const rightSlot = createBlendSlot(state, "right", "B");
+  state.slots = { left: leftSlot, right: rightSlot };
+
+  const core = element("div", "blend-core");
+  core.setAttribute("aria-label", "双片碰撞核心");
+  const orb = element("div", "blend-core__orb");
+  orb.append(element("span", "blend-core__symbol", "A × B"), element("span", "blend-core__caption", "VECTOR COLLISION"));
+  const submit = element("button", "blend-core__submit", "碰撞生成");
+  submit.type = "button";
+  submit.addEventListener("click", () => void requestBlend(state));
+  core.append(orb, submit);
+  core.addEventListener("dragover", (event) => {
+    if (!state.draggedItem) return;
+    event.preventDefault?.();
+    toggleClass(core, "is-drop-target", true);
+  });
+  core.addEventListener("dragleave", () => toggleClass(core, "is-drop-target", false));
+  core.addEventListener("drop", (event) => {
+    event.preventDefault?.();
+    toggleClass(core, "is-drop-target", false);
+    if (!state.draggedItem) return;
+    const target = !state.slots.left.selected
+      ? state.slots.left
+      : !state.slots.right.selected
+        ? state.slots.right
+        : state.slots[state.draggedFrom === "left" ? "right" : "left"];
+    selectBlendSource(state, target, state.draggedItem);
+  });
+  state.submit = submit;
+  stage.append(leftSlot.root, core, rightSlot.root);
+
+  const controls = element("section", "blend-controls");
+  const weightPanel = element("div", "blend-weight");
+  const weightHeading = element("div", "blend-weight__heading");
+  weightHeading.append(
+    element("strong", "blend-weight__title", "来源配比"),
+    element("span", "blend-weight__value", "A 50 · 50 B"),
+  );
+  const weight = document.createElement("input");
+  weight.className = "blend-weight__input";
+  weight.type = "range";
+  weight.min = "5";
+  weight.max = "95";
+  weight.step = "5";
+  weight.value = "50";
+  weight.setAttribute("aria-label", "作品 A 与作品 B 的融合配比");
+  const weightScale = element("div", "blend-weight__scale");
+  weightScale.append(element("span", "blend-weight__left", "更接近 A"), element("span", "blend-weight__right", "更接近 B"));
+  weightPanel.append(weightHeading, weight, weightScale);
+  state.weight = weight;
+  state.weightOutput = weightHeading.children?.[1];
+  weight.addEventListener("input", () => {
+    const left = Math.round(clampedNumber(weight.value, 5, 95, 50));
+    state.weightOutput.textContent = `A ${left} · ${100 - left} B`;
+    scheduleBlend(state);
+  });
+
+  const mood = element("div", "mood-equalizer");
+  const moodHeading = element("div", "mood-equalizer__heading");
+  const moodCopy = element("div", "mood-equalizer__copy");
+  moodCopy.append(
+    element("strong", "mood-equalizer__title", "动态情绪调色盘"),
+    element("span", "mood-equalizer__hint", "拖动时只更新当前探索，不会永久改变你的口味档案"),
+  );
+  const reset = element("button", "mood-equalizer__reset", "恢复默认");
+  reset.type = "button";
+  moodHeading.append(moodCopy, reset);
+  const axisGrid = element("div", "mood-equalizer__grid");
+  for (const definition of MOOD_AXIS_DEFINITIONS) {
+    const axis = createMoodAxis(state, definition);
+    state.axes.set(definition.key, axis);
+    axisGrid.append(axis.wrapper);
+  }
+  reset.addEventListener("click", () => {
+    weight.value = "50";
+    state.weightOutput.textContent = "A 50 · 50 B";
+    for (const axis of state.axes.values()) {
+      axis.input.value = "0";
+      axis.output.textContent = "平衡";
+    }
+    scheduleBlend(state, 0);
+  });
+  mood.append(moodHeading, axisGrid);
+  controls.append(weightPanel, mood);
+
+  const status = element("p", "exploration-lab__status", "先为 A 与 B 各选择一部作品，再让两个世界发生碰撞。");
+  status.setAttribute("aria-live", "polite");
+  state.status = status;
+  const results = element("section", "blend-results");
+  results.hidden = true;
+  const resultsHeader = element("div", "blend-results__header");
+  const resultsTitle = element("h2", "blend-results__title", "融合结果");
+  const resultsHint = element("p", "blend-results__hint", "横向浏览桥梁作品；解释会分别标明来自 A、来自 B 与最终融合。" );
+  resultsHeader.append(resultsTitle, resultsHint);
+  const resultsRail = element("div", "blend-results__rail");
+  results.setAttribute("aria-live", "polite");
+  results.append(resultsHeader, resultsRail);
+  state.results = results;
+  state.resultsTitle = resultsTitle;
+  state.resultsRail = resultsRail;
+
+  root.append(header, stage, controls, status, results);
+  activeExplorationLab = state;
+  if (seed) selectBlendSource(state, leftSlot, seed, { autoBlend: false });
+  syncBlendAvailability(state);
+  return root;
+}
+
+function explorationSeed(graph) {
+  const focusId = nodeId(graph?.focus_id);
+  if (!focusId) return null;
+  const candidate = (Array.isArray(graph?.nodes) ? graph.nodes : []).map(normalizeDiscoveryItem).find((item) => item?.id === focusId);
+  return candidate || { id: focusId, item_key: focusId, title: "当前关系焦点", media_type: "作品", _labSeed: true };
+}
+
+function hydrateExplorationSeed(graphState, incomingNodes) {
+  const lab = activeExplorationLab;
+  const selected = lab?.slots?.left?.selected;
+  if (!lab || lab.disposed || lab.generation !== graphState.generation || !selected?._labSeed) return;
+  const replacement = incomingNodes.find((item) => item.id === selected.id);
+  if (replacement) selectBlendSource(lab, lab.slots.left, replacement, { autoBlend: false });
+}
+
+function renderEmpty(container, generation) {
+  const empty = element("section", "universe-empty route-view--enter");
+  empty.append(createExplorationLab(container, generation));
+  const guide = element("aside", "universe-empty__guide");
+  guide.append(
+    element("p", "eyebrow", "可选关系图谱"),
+    element("h2", "universe-empty__title", "想继续空间漫游，再从任一详情页带入关系焦点"),
+    element("p", "universe-empty__copy", "双片碰撞无需预先选择焦点即可使用；关系星图则坚持使用稳定作品 ID，避免凭空制造关联。"),
+  );
+  const action = element("a", "universe-empty__action", "前往片库选择关系焦点");
   action.setAttribute("href", "/library");
   action.setAttribute("data-route", "");
-  empty.append(action);
+  guide.append(action);
+  empty.append(guide);
   container.replaceChildren(empty);
   universeContainer = container;
   return empty;
@@ -508,15 +1232,16 @@ function activateCanvas(state) {
 export function renderUniverse(container, graph) {
   destroyUniverse();
   if (!container) return null;
-  if (!nodeId(graph?.focus_id)) return renderEmpty(container);
-
   const generation = ++lifecycleGeneration;
+  if (!nodeId(graph?.focus_id)) return renderEmpty(container, generation);
+
   const view = element("section", "universe-view route-view--enter");
-  const header = element("header", "universe-header");
+  const lab = createExplorationLab(container, generation, explorationSeed(graph));
+  const header = element("header", "universe-header universe-header--graph");
   header.append(
-    element("p", "eyebrow", "TASTE UNIVERSE / LOCAL RELATION GRAPH"),
-    element("h1", "universe-header__title", "沿着作品之间的证据，探索你的口味宇宙"),
-    element("p", "universe-header__copy", "星图用于空间浏览；右侧关系清单始终提供完整、可操作的文字证据。"),
+    element("p", "eyebrow", "空间关系探索"),
+    element("h1", "universe-header__title", "关系图谱：沿着作品之间的证据继续漫游"),
+    element("p", "universe-header__copy", "上方负责双片碰撞；这里保留口味宇宙星图与完整文字证据，支持聚焦、展开、查看详情和带入今晚推荐。"),
   );
   const focusLabel = element("p", "universe-focus", "尚未聚焦作品");
   focusLabel.setAttribute("aria-live", "polite");
@@ -541,7 +1266,7 @@ export function renderUniverse(container, graph) {
   rosterSection.append(element("h2", "universe-roster__title", "可探索节点"));
   const nodeRoster = element("div", "universe-node-roster");
   rosterSection.append(nodeRoster);
-  view.append(header, workspace, rosterSection);
+  view.append(lab, header, workspace, rosterSection);
 
   const state = {
     generation, container, view, canvas, context: canvas.getContext?.("2d") || null,
@@ -636,9 +1361,25 @@ export function expandNode(nodeIdValue) {
 export function destroyUniverse({ preserveDom = false } = {}) {
   lifecycleGeneration += 1;
   const state = activeUniverse;
+  const lab = activeExplorationLab;
   activeUniverse = null;
-  const container = state?.container || universeContainer;
+  activeExplorationLab = null;
+  const container = state?.container || lab?.container || universeContainer;
   universeContainer = preserveDom ? container : null;
+  if (lab) {
+    lab.disposed = true;
+    if (lab.blendTimer !== null) dependencies.clearTimer?.(lab.blendTimer);
+    lab.blendTimer = null;
+    lab.blendController?.abort();
+    lab.blendController = null;
+    for (const slot of Object.values(lab.slots || {})) {
+      if (slot.searchTimer !== null) dependencies.clearTimer?.(slot.searchTimer);
+      slot.searchTimer = null;
+      slot.searchController?.abort();
+      slot.searchController = null;
+      slot.candidates = [];
+    }
+  }
   if (!state) {
     if (!preserveDom) container?.replaceChildren();
     return;

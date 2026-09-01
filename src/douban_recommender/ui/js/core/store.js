@@ -13,6 +13,7 @@ const BEARER_SECRET = /\bbearer\s+[A-Za-z0-9._~+/=-]{6,}/i;
 const PREFIXED_SECRET = /\bsk-[A-Za-z0-9_-]{8,}\b/i;
 const SAFE_JOB_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SAFE_CANDIDATE_ID = /^[A-Za-z0-9:._~-]{1,256}$/;
+const SAFE_DETAIL_RETURN_PATH = /^\/(?:tonight(?:\/(?:movie|series|anime-series))?|library|observatory|taste|universe|health)$/;
 const MAX_CANDIDATE_TRAY_ITEMS = 24;
 
 function emptyChannelState() {
@@ -24,17 +25,19 @@ export function createEmptyUiState() {
     schemaVersion: 3,
     activePath: null,
     activeParams: {},
+    detailReturnPath: "/tonight",
     recommendation: {
       sessionId: null,
       activeChannel: "movie",
       personalization: {},
+      discovery: {},
       channels: Object.fromEntries(CHANNEL_SLUGS.map((slug) => [slug, emptyChannelState()])),
     },
     scrollByRoute: {},
     candidateTray: { itemIds: [], context: {} },
     commandLens: { draft: "", chips: [] },
     rail: { mode: "expanded" },
-    library: { state: "all" },
+    library: { state: "watched", explicit: false, scrollTop: 0 },
     sync: {
       profile: "",
       options: { maxPages: 250, includeWish: true, includeDo: false, expectedCollect: null, expectedWish: null },
@@ -163,6 +166,10 @@ function sanitizeScrollByRoute(scrollByRoute) {
   return Object.fromEntries(safeScrollEntries(scrollByRoute).slice(-100));
 }
 
+function safeScrollPosition(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+}
+
 export function saveScrollByRoute(scrollByRoute, routeKey, y) {
   if (!isSafePath(routeKey)) return null;
   const entries = safeScrollEntries(scrollByRoute).filter(([path]) => path !== routeKey);
@@ -252,10 +259,12 @@ export function normalizeUiState(state = {}) {
       ? source.activePath
       : null,
     activeParams: sanitizeParams(source.activeParams),
+    detailReturnPath: SAFE_DETAIL_RETURN_PATH.test(source.detailReturnPath) ? source.detailReturnPath : "/tonight",
     recommendation: {
       sessionId: safeText(recommendation.sessionId, "", 256) || null,
       activeChannel,
       personalization: sanitizeNonSensitiveValue(recommendation.personalization) || {},
+      discovery: sanitizeNonSensitiveValue(recommendation.discovery) || {},
       channels: sanitizeChannels(recommendation.channels),
     },
     scrollByRoute: sanitizeScrollByRoute(source.scrollByRoute),
@@ -268,7 +277,7 @@ export function normalizeUiState(state = {}) {
       chips: sanitizeCommandLensChips(commandLens.chips),
     },
     rail: { mode: RAIL_MODES.has(rail.mode) ? rail.mode : "expanded" },
-    library: { state: sanitizeLibraryState(library.state) },
+    library: { state: sanitizeLibraryState(library.state), explicit: Boolean(library.explicit), scrollTop: safeScrollPosition(library.scrollTop) },
     sync: {
       profile: sanitizeSyncProfile(sync.profile),
       options: sanitizeSyncOptions(sync.options),

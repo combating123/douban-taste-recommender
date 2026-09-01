@@ -53,10 +53,10 @@ export function designedFallback(asset = {}) {
 
 /**
  * Renders a stable frame immediately. A visible image replaces its fallback
- * only after the same off-DOM Image element has loaded, decoded, and retained
- * non-zero intrinsic width.
+ * only after the same hidden mounted Image element has loaded, decoded, and
+ * retained non-zero intrinsic width.
  */
-export function renderMediaFrame(asset = {}) {
+export function renderMediaFrame(asset = {}, options = {}) {
   const normalized = normalizeMediaAsset(asset);
   const frame = createElement("div", "media-frame media-frame--" + normalized.kind);
   frame.dataset.mediaState = "fallback";
@@ -65,42 +65,76 @@ export function renderMediaFrame(asset = {}) {
   const fallback = designedFallback(normalized);
   frame.append(fallback);
 
+  let generation = 0;
+  let disposed = false;
+  let activePreload = null;
+  const dispose = () => {
+    if (disposed) return false;
+    disposed = true;
+    generation += 1;
+    const hadActivePreload = Boolean(activePreload);
+    activePreload?.cancel?.();
+    activePreload = null;
+    if (hadActivePreload) {
+      frame.replaceChildren(fallback);
+      frame.dataset.mediaState = "fallback";
+      fallback.dataset.mediaState = "fallback";
+    }
+    return true;
+  };
+  frame.disposeMediaFrame = dispose;
+
   if (normalized.status !== "ready" || !isLocalMediaUrl(normalized.localUrl)) return frame;
 
-  let generation = 0;
   const showError = () => {
+    if (disposed) return;
     if (frame.firstElementChild !== fallback) frame.replaceChildren(fallback);
     frame.dataset.mediaState = "error";
     fallback.dataset.mediaState = "error";
     const status = fallback.querySelector?.(".media-fallback__status") || fallback.children?.[2];
-    if (status) status.textContent = STATUS_LABELS.error || "媒体加载失败";
-    const retry = createElement("button", "media-frame__retry", "重试");
+    if (status) status.textContent = STATUS_LABELS.error || "\u5a92\u4f53\u52a0\u8f7d\u5931\u8d25";
+    const retry = createElement("button", "media-frame__retry", "\u91cd\u8bd5");
     retry.type = "button";
     if (typeof retry.addEventListener === "function") retry.addEventListener("click", () => load());
     else retry.onclick = () => load();
     frame.append(retry);
   };
   const load = () => {
+    if (disposed) return;
+    activePreload?.cancel?.();
     const requestGeneration = ++generation;
     frame.dataset.mediaState = "loading";
     fallback.dataset.mediaState = "loading";
     frame.replaceChildren(fallback);
-    preloadLocalMedia(normalized.localUrl).then((image) => {
-      if (requestGeneration !== generation) return;
+    const request = preloadLocalMedia(normalized.localUrl, frame, {
+      priority: options.priority,
+      coordinator: options.coordinator,
+      backgroundOnly: options.backgroundOnly,
+    });
+    activePreload = request;
+    request.then((image) => {
+      if (activePreload === request) activePreload = null;
+      if (disposed || requestGeneration !== generation) return;
       if (!image) {
         showError();
         return;
       }
       image.tagName ||= "IMG";
+      image.hidden = false;
       image.alt = normalized.title + " " + IMAGE_ALT_LABELS[normalized.kind];
       image.className = "media-frame__image";
       frame.replaceChildren(image);
       frame.dataset.mediaState = "ready";
     }).catch(() => {
-      if (requestGeneration === generation) showError();
+      if (activePreload === request) activePreload = null;
+      if (!disposed && requestGeneration === generation) showError();
     });
   };
   load();
 
   return frame;
+}
+
+export function disposeMediaFrame(frame) {
+  return frame?.disposeMediaFrame?.() || false;
 }

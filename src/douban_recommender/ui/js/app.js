@@ -1,5 +1,6 @@
 import { renderRoutePlaceholder, setCurrentNavigation, setText } from "./core/dom.js";
-import { postV2 } from "./core/api.js";
+import { getV2, postV2 } from "./core/api.js";
+import { installDoubanReturnSync } from "./core/douban-return-sync.js";
 import { createRouter } from "./core/router.js";
 import { createStore, persistUiState, restoreUiState, sanitizeCommandLensChips, sanitizeNonSensitiveText, sanitizeNonSensitiveValue, saveScrollByRoute } from "./core/store.js";
 import { migrateLegacyClientState } from "./core/migrate.js";
@@ -9,10 +10,11 @@ import { installAuditHook } from "./core/audit.js";
 import { installAcceptanceHook } from "./core/acceptance.js";
 import { closeCommandLens, configureCommandLens, openCommandLens, syncCommandLensState, unbindCommandLensShortcut } from "./features/command-lens.js";
 import { configureTonight, renderTonight, restoreLatestTonightSession, restoreTonightSession, syncTonightSessionState } from "./features/tonight.js";
-import { configureDetail, renderTitleDetail } from "./features/detail.js";
+import { configureDetail, renderTitleDetail, safeDetailReturnPath } from "./features/detail.js";
 import { closePersonSheet, configurePeople, openPersonSheet, renderPersonPage } from "./features/people.js";
 import { configureUniverse, destroyUniverse, expandNode, renderUniverse } from "./features/universe.js";
 import { renderLibrary } from "./features/library.js";
+import { renderObservatory } from "./features/observatory.js";
 import { renderTasteDna } from "./features/taste.js";
 import { renderHealth } from "./features/health.js";
 
@@ -21,6 +23,7 @@ const APP_ROUTES = [
   { pattern: "/tonight/anime-series", name: "tonight-anime" },
   { pattern: "/tonight/:channel", name: "tonight-channel" },
   { pattern: "/universe", name: "universe" },
+  { pattern: "/observatory", name: "observatory" },
   { pattern: "/library", name: "library" },
   { pattern: "/taste", name: "taste" },
   { pattern: "/health", name: "health" },
@@ -32,7 +35,8 @@ const ROUTE_COPY = {
   tonight: ["今晚", "正在恢复你的本地观影会话。"],
   "tonight-anime": ["今晚 / 动漫", "正在恢复动漫频道的独立批次。"],
   "tonight-channel": ["今晚", "正在恢复此频道的独立批次。"],
-  universe: ["宇宙", "正在恢复你上次浏览的关联路径。"],
+  universe: ["探索实验室", "正在恢复你上次的双片碰撞与关联路径。"],
+  observatory: ["观影雷达", "正在连接最近观看、口味关系与在线新片。"],
   library: ["片库", "正在恢复你的片库视图。"],
   taste: ["口味", "正在恢复你的口味档案。"],
   health: ["健康", "正在恢复本地服务健康状态。"],
@@ -51,6 +55,20 @@ function textValue(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function navigationPath(path) {
+  if (path === "/observatory") return "/library";
+  return path.startsWith("/tonight") ? "/tonight" : path;
+}
+
+export function observatoryIntentForItem(item = {}) {
+  const title = sanitizeNonSensitiveText(textValue(item.display_title) || textValue(item.title), "这部作品", 160) || "这部作品";
+  const genres = Array.isArray(item.genres)
+    ? item.genres.map((genre) => sanitizeNonSensitiveText(textValue(genre), "", 32)).filter(Boolean).slice(0, 2)
+    : [];
+  const genreCopy = genres.length ? `，保留${genres.join("、")}的气质` : "";
+  return `我想看和《${title}》类似的作品${genreCopy}，但希望有新的叙事或视角。`;
+}
+
 function channelSlug(route) {
   if (route.name === "tonight-anime") return "anime-series";
   return Object.hasOwn(ROUTE_CHANNELS, route.params?.channel) ? route.params.channel : "movie";
@@ -59,6 +77,44 @@ function channelSlug(route) {
 function sessionIdForChannel(state, channel) {
   const recommendation = state?.recommendation || {};
   return recommendation.channels?.[channel]?.sessionId || recommendation.sessionId || null;
+}
+
+function recommendationSessionIds(state) {
+  const recommendation = state?.recommendation && typeof state.recommendation === "object"
+    ? state.recommendation
+    : {};
+  return [...new Set([
+    recommendation.sessionId,
+    ...Object.values(recommendation.channels || {}).map((channel) => channel?.sessionId),
+  ].filter((value) => typeof value === "string" && value.trim()).map((value) => value.trim()))];
+}
+
+export async function refreshRecommendationSessionsAfterSync(store, { getJson = getV2 } = {}) {
+  if (!store?.getState || !store?.dispatch || typeof getJson !== "function") return [];
+  const sessionIds = recommendationSessionIds(store.getState());
+  const refreshed = [];
+  for (const sessionId of sessionIds) {
+    try {
+      const session = await getJson(`/api/v2/recommend/sessions/${encodeURIComponent(sessionId)}`);
+      if (!session?.id || !recommendationSessionIds(store.getState()).includes(sessionId)) continue;
+      store.dispatch({
+        type: "recommendation/sessionReceived",
+        session,
+        source: "douban-return-sync",
+        expectedSessionId: sessionId,
+        preserveOtherSessions: true,
+      });
+      refreshed.push(sessionId);
+    } catch {
+      // A stale recommendation session must not block the completed Douban sync.
+    }
+  }
+  return refreshed;
+}
+
+function channelIsHydrated(state, channel) {
+  const items = state?.recommendation?.channels?.[channel]?.batch?.items;
+  return Array.isArray(items) && items.length > 0;
 }
 
 export function createTonightRestoreGate({
@@ -82,8 +138,18 @@ export function createTonightRestoreGate({
     const expectedRoute = route.path;
     const channel = channelSlug(route);
     const expectedSessionId = sessionIdForChannel(store.getState(), channel);
+    if (expectedSessionId && channelIsHydrated(store.getState(), channel)) {
+      setStatus(`CineScope 正在浏览：${heading}`);
+      return null;
+    }
     const requestController = new AbortController();
     controller = requestController;
+    store.dispatch({
+      type: "recommendation/restoreStarted",
+      channel,
+      route: expectedRoute,
+      expectedSessionId,
+    });
     try {
       const session = expectedSessionId
         ? await restoreSession(expectedSessionId, { signal: requestController.signal })
@@ -123,6 +189,9 @@ export function createTonightRestoreGate({
       return null;
     } finally {
       if (controller === requestController) controller = null;
+      if (generation === requestGeneration && store.getState().activePath === expectedRoute) {
+        store.dispatch({ type: "recommendation/restoreFinished", channel, route: expectedRoute });
+      }
     }
   };
 
@@ -194,17 +263,83 @@ function batchChannelState(current, payload) {
   };
 }
 
+function visibleItemKey(item = {}) {
+  if (!item || typeof item !== "object") return "";
+  return [item.item_key, item.itemKey, item.id]
+    .find((value) => typeof value === "string" && value.trim())?.trim() || "";
+}
+
+function suppressChannelItem(channel = {}, itemKey = "") {
+  const batch = channel.batch && typeof channel.batch === "object" ? channel.batch : null;
+  if (!batch || !Array.isArray(batch.items)) return channel;
+  const items = batch.items.filter((item) => visibleItemKey(item) !== itemKey);
+  if (items.length === batch.items.length) return channel;
+  const itemKeys = Array.isArray(batch.item_keys)
+    ? batch.item_keys.filter((key) => key !== itemKey)
+    : items.map(visibleItemKey).filter(Boolean);
+  const nextBatch = { ...batch, items, item_keys: itemKeys, visible_size: items.length };
+  return { ...channel, batch: nextBatch, visible_size: items.length };
+}
+
+function hydrateChannelItem(channel = {}, itemKey = "", patch = {}) {
+  const batch = channel.batch && typeof channel.batch === "object" ? channel.batch : null;
+  if (!batch || !Array.isArray(batch.items) || !patch || typeof patch !== "object") return channel;
+  let changed = false;
+  const items = batch.items.map((item) => {
+    if (visibleItemKey(item) !== itemKey) return item;
+    changed = true;
+    return { ...item, ...patch, item_key: itemKey };
+  });
+  return changed ? { ...channel, batch: { ...batch, items } } : channel;
+}
+
+function recommendationHasSession(recommendation = {}, sessionId = "") {
+  if (!sessionId) return true;
+  if (recommendation.sessionId === sessionId) return true;
+  return Object.values(recommendation.channels || {}).some((channel) => channel?.sessionId === sessionId);
+}
+
+function sanitizeRecommendationDiscovery(discovery) {
+  if (!discovery || typeof discovery !== "object" || Array.isArray(discovery)) return null;
+  const source = discovery;
+  const sanitized = sanitizeNonSensitiveValue(source) || {};
+  const counts = source.recommendation_origin_counts;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return sanitized;
+
+  const channels = Object.entries(counts).slice(0, 12).flatMap(([channel, value]) => {
+    const safeChannel = sanitizeNonSensitiveText(channel, "", 32);
+    if (!safeChannel || !value || typeof value !== "object" || Array.isArray(value)) return [];
+    const safeCount = (count) => Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    return [{
+      channel: safeChannel,
+      online: safeCount(value.online),
+      catalog: safeCount(value.catalog),
+      total: safeCount(value.total),
+    }];
+  });
+  if (channels.length) sanitized.recommendation_origin_channels = channels;
+  return sanitized;
+}
+
 export function reduceUiState(state, action) {
   switch (action.type) {
-    case "route/changed":
+    case "route/changed": {
+      const enteringDetail = action.route.name === "title" || action.route.name === "person";
+      const previousPath = typeof state.activePath === "string" ? state.activePath : "";
+      const previousWasDetail = previousPath.startsWith("/title/") || previousPath.startsWith("/person/");
+      const detailReturnPath = enteringDetail && !previousWasDetail
+        ? safeDetailReturnPath(previousPath)
+        : safeDetailReturnPath(state.detailReturnPath);
       return {
         ...state,
         activePath: action.route.path,
         activeParams: action.route.params,
+        detailReturnPath,
         recommendation: action.route.path.startsWith("/tonight")
           ? { ...state.recommendation, activeChannel: channelSlug(action.route) }
           : state.recommendation,
       };
+    }
     case "recommendation/channelSelected":
       if (!Object.hasOwn(ROUTE_CHANNELS, action.channel)) return state;
       return {
@@ -212,6 +347,26 @@ export function reduceUiState(state, action) {
         activePath: action.path,
         activeParams: { channel: action.channel },
         recommendation: { ...state.recommendation, activeChannel: action.channel },
+      };
+    case "recommendation/restoreStarted":
+      if (state.activePath !== action.route) return state;
+      return {
+        ...state,
+        recommendation: {
+          ...state.recommendation,
+          restoring: true,
+          restoringChannel: action.channel,
+        },
+      };
+    case "recommendation/restoreFinished":
+      if (state.activePath !== action.route) return state;
+      return {
+        ...state,
+        recommendation: {
+          ...state.recommendation,
+          restoring: false,
+          restoringChannel: null,
+        },
       };
     case "route/scrollSaved": {
       const scrollByRoute = saveScrollByRoute(state.scrollByRoute, action.path, action.y);
@@ -221,7 +376,15 @@ export function reduceUiState(state, action) {
     case "rail/changed":
       return { ...state, rail: { mode: action.mode } };
     case "library/filterChanged":
-      return { ...state, library: { state: action.state } };
+      return { ...state, library: { ...state.library, state: action.state, explicit: true, scrollTop: 0 } };
+    case "library/scrollChanged":
+      return {
+        ...state,
+        library: {
+          ...state.library,
+          scrollTop: Number.isFinite(action.scrollTop) && action.scrollTop >= 0 ? Math.floor(action.scrollTop) : 0,
+        },
+      };
     case "sync/stateChanged":
       return {
         ...state,
@@ -245,11 +408,12 @@ export function reduceUiState(state, action) {
           sessionId: channels?.[activeChannel]?.sessionId || null,
           activeChannel,
           personalization: sanitizeNonSensitiveValue(stable.recommendation?.personalization) || {},
+          discovery: sanitizeRecommendationDiscovery(stable.recommendation?.discovery) || {},
           channels,
         },
         candidateTray: { itemIds: [], context: stable.candidateTray?.context || {} },
         commandLens: { draft: "", chips: [] },
-        library: stable.library || { state: "all" },
+        library: stable.library || { state: "watched", explicit: false },
         sync: stable.sync || state.sync,
       };
     }
@@ -296,12 +460,15 @@ export function reduceUiState(state, action) {
         },
         recommendation: {
           ...state.recommendation,
+          restoring: false,
+          restoringChannel: null,
           sessionId: action.session?.id || state.recommendation.sessionId,
           intent: sanitizeNonSensitiveValue(action.session?.intent) || {},
           intentSessionId: action.session?.id || null,
           personalization: sanitizeNonSensitiveValue(action.session?.personalization) || state.recommendation.personalization || {},
+          discovery: sanitizeRecommendationDiscovery(action.session?.discovery) || state.recommendation.discovery || {},
           channels: backendChannelsToState(action.session, state.recommendation.channels, {
-            preserveOtherSessions: action.source === "restore",
+            preserveOtherSessions: action.source === "restore" || action.preserveOtherSessions === true,
           }),
         },
       };
@@ -323,6 +490,35 @@ export function reduceUiState(state, action) {
           },
         },
       };
+    case "recommendation/itemSuppressed": {
+      const itemKey = typeof action.itemKey === "string" ? action.itemKey.trim() : "";
+      if (!itemKey) return state;
+      const channels = Object.fromEntries(
+        Object.entries(state.recommendation.channels || {}).map(([slug, channel]) => [
+          slug,
+          suppressChannelItem(channel, itemKey),
+        ]),
+      );
+      return {
+        ...state,
+        recommendation: { ...state.recommendation, channels },
+      };
+    }
+    case "recommendation/itemHydrated": {
+      const itemKey = typeof action.itemKey === "string" ? action.itemKey.trim() : "";
+      const patch = action.item && typeof action.item === "object" && !Array.isArray(action.item) ? action.item : null;
+      if (!itemKey || !patch || !recommendationHasSession(state.recommendation, action.expectedSessionId)) return state;
+      const channels = Object.fromEntries(
+        Object.entries(state.recommendation.channels || {}).map(([slug, channel]) => [
+          slug,
+          hydrateChannelItem(channel, itemKey, patch),
+        ]),
+      );
+      return {
+        ...state,
+        recommendation: { ...state.recommendation, channels },
+      };
+    }
     case "commandLens/grounded":
       return {
         ...state,
@@ -391,16 +587,16 @@ export function createUniverseRouteGate({
     const focusId = stableUniverseId(getContext()?.universeFocusId);
     if (!focusId) {
       render(root, null);
-      setStatus("CineScope 口味宇宙正在等待一个作品焦点");
+      setStatus("CineScope 探索实验室已就绪，可直接选择两部作品开始碰撞");
       return null;
     }
     render(root, { focus_id: focusId, nodes: [], edges: [] });
     try {
       const graph = await expand(focusId);
-      if (generation === requestGeneration) setStatus("CineScope 正在浏览：口味宇宙");
+      if (generation === requestGeneration) setStatus("CineScope 正在浏览：探索实验室");
       return generation === requestGeneration ? graph : null;
     } catch {
-      if (generation === requestGeneration) setStatus("口味宇宙暂时无法展开；已保留恢复入口");
+      if (generation === requestGeneration) setStatus("探索实验室暂时无法展开；已保留恢复入口");
       return null;
     }
   };
@@ -450,7 +646,7 @@ function explorationRecovery(route, retry) {
   panel.className = "route-recovery route-recovery--exploration";
   const eyebrow = document.createElement("p");
   eyebrow.className = "eyebrow";
-  eyebrow.textContent = route.name === "person" ? "PERSON / RECOVERY" : "TITLE / RECOVERY";
+  eyebrow.textContent = route.name === "person" ? "人物页恢复" : "详情页恢复";
   const title = document.createElement("h1");
   title.className = "route-recovery__title";
   title.textContent = route.name === "person" ? "人物资料暂时无法打开" : "作品详情暂时无法打开";
@@ -565,12 +761,16 @@ export function createAppRouteHandler({
   renderTonightView = renderTonight,
   renderPlaceholder = renderRoutePlaceholder,
   renderLibraryView = renderLibrary,
+  renderObservatoryView = renderObservatory,
   renderTasteView = renderTasteDna,
   renderHealthView = renderHealth,
+  navigate = () => {},
+  openLens = openCommandLens,
   setStatus = () => {},
   announceRoute = announce,
 } = {}) {
   let activeSpace = null;
+  let suspendedLibrary = null;
   configureRecoveryBoundary({
     root: appView,
     getCurrentPath: () => store.getState?.().activePath || "",
@@ -581,6 +781,44 @@ export function createAppRouteHandler({
     activeSpace = null;
     space?.dispose?.();
   };
+  const disposeSuspendedLibrary = () => {
+    const suspended = suspendedLibrary;
+    suspendedLibrary = null;
+    suspended?.space?.dispose?.();
+  };
+  const suspendLibrary = () => {
+    const libraryNode = appView.querySelector?.('[data-space="library"]')
+      || appView.querySelector?.(".space--library");
+    const nodes = Array.from(appView.childNodes || appView.children || []);
+    if (!activeSpace || !libraryNode || !nodes.length) return false;
+    activeSpace.suspend?.();
+    const controllerScrollTop = activeSpace.snapshot?.().scrollTop;
+    const viewportScrollTop = libraryNode.querySelector?.(".library-window")?.scrollTop;
+    const scrollTop = Number.isFinite(controllerScrollTop) && controllerScrollTop >= 0
+      ? controllerScrollTop
+      : Number.isFinite(viewportScrollTop) && viewportScrollTop >= 0
+        ? viewportScrollTop
+        : 0;
+    disposeSuspendedLibrary();
+    suspendedLibrary = { space: activeSpace, nodes, libraryNode, scrollTop };
+    activeSpace = null;
+    return true;
+  };
+  const restoreSuspendedLibrary = () => {
+    const suspended = suspendedLibrary;
+    if (!suspended) return false;
+    suspendedLibrary = null;
+    appView.replaceChildren?.(...suspended.nodes);
+    const viewport = suspended.libraryNode?.querySelector?.(".library-window")
+      || appView.querySelector?.(".library-window");
+    if (typeof suspended.space?.resume === "function") {
+      suspended.space.resume({ scrollTop: suspended.scrollTop });
+    } else if (viewport && Number.isFinite(suspended.scrollTop) && suspended.scrollTop >= 0) {
+      viewport.scrollTop = suspended.scrollTop;
+    }
+    activeSpace = suspended.space;
+    return true;
+  };
   const handler = async (route) => {
     const [heading, description] = ROUTE_COPY[route.name] ?? ROUTE_COPY["not-found"];
     const renderResult = await renderSafely(route, async () => {
@@ -588,24 +826,42 @@ export function createAppRouteHandler({
       const keepTonightMounted = previousPath.startsWith("/tonight")
         && route.path.startsWith("/tonight")
         && Boolean(appView.querySelector?.(".tonight-page"));
+      const enteringDetail = route.name === "title" || route.name === "person";
+      const returningToSuspendedLibrary = route.name === "library" && Boolean(suspendedLibrary);
       store.dispatch({ type: "route/changed", route });
       if (keepTonightMounted) {
         appView.dataset.route = route.path;
         setNavigation("/tonight");
+        const pendingRestore = restoreGate.restore(route, heading);
         await renderTonightView(store.getState());
-        await restoreGate.restore(route, heading);
+        await pendingRestore;
         setStatus(`CineScope 正在浏览：${heading}`);
         return;
       }
+      if (returningToSuspendedLibrary) {
+        disposeActiveSpace();
+        prepare();
+        appView.dataset.route = route.path;
+        setNavigation(navigationPath(route.path));
+        universeGate.invalidate();
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        restoreSuspendedLibrary();
+        setStatus("CineScope 正在浏览：片库");
+        return;
+      }
+      if (previousPath === "/library" && enteringDetail) suspendLibrary();
+      if (!enteringDetail && suspendedLibrary) disposeSuspendedLibrary();
       disposeActiveSpace();
       prepare();
       appView.dataset.route = route.path;
-      setNavigation(route.path.startsWith("/tonight") ? "/tonight" : route.path);
+      setNavigation(navigationPath(route.path));
       if (route.path.startsWith("/tonight")) {
         universeGate.invalidate();
         explorationGate.invalidate();
+        const pendingRestore = restoreGate.restore(route, heading);
         await renderTonightView(store.getState());
-        await restoreGate.restore(route, heading);
+        await pendingRestore;
       } else if (route.name === "title" || route.name === "person") {
         universeGate.invalidate({ preserveDom: true });
         restoreGate.invalidate();
@@ -618,11 +874,24 @@ export function createAppRouteHandler({
         universeGate.invalidate();
         restoreGate.invalidate();
         explorationGate.invalidate();
+        const libraryState = store.getState().library || { state: "watched", explicit: false };
         activeSpace = await renderLibraryView(appView, {
-          filters: store.getState().library || { state: "all" },
+          filters: libraryState.state === "all" && libraryState.explicit !== true
+            ? { ...libraryState, state: "watched", explicit: false }
+            : libraryState,
           onFilterChange: (state) => store.dispatch({ type: "library/filterChanged", state }),
+          onScrollChange: (scrollTop) => store.dispatch({ type: "library/scrollChanged", scrollTop }),
         });
         setStatus("CineScope 正在浏览：片库");
+      } else if (route.name === "observatory") {
+        universeGate.invalidate();
+        restoreGate.invalidate();
+        explorationGate.invalidate();
+        activeSpace = renderObservatoryView(appView, {
+          onNavigate: (path) => navigate(path),
+          onExplore: (item) => openLens(observatoryIntentForItem(item)),
+        });
+        setStatus("CineScope 正在浏览：观影雷达与在线发现");
       } else if (route.name === "taste") {
         universeGate.invalidate();
         restoreGate.invalidate();
@@ -635,7 +904,10 @@ export function createAppRouteHandler({
         explorationGate.invalidate();
         activeSpace = await renderHealthView(appView, {
           syncState: store.getState().sync || {},
+          personalization: store.getState().recommendation?.personalization || {},
+          discovery: store.getState().recommendation?.discovery || {},
           onSyncStateChange: (sync) => store.dispatch({ type: "sync/stateChanged", sync }),
+          autoSyncSettings: true,
         });
         setStatus("CineScope 正在浏览：健康与同步");
       } else {
@@ -653,12 +925,13 @@ export function createAppRouteHandler({
     if (renderResult.stale || store.getState?.().activePath !== route.path) return false;
     if (renderResult.recovered) {
       const stableState = renderResult.previousStable;
+      if (stableState?.activePath === "/library" && suspendedLibrary) restoreSuspendedLibrary();
       if (stableState?.activePath) {
         store.dispatch({ type: "recovery/restored", state: stableState });
         persistUiState(store.getState());
         applyRailMode(store.getState().rail.mode);
         appView.dataset.route = stableState.activePath;
-        setNavigation(stableState.activePath.startsWith("/tonight") ? "/tonight" : stableState.activePath);
+        setNavigation(navigationPath(stableState.activePath));
         const browser = globalThis.window;
         if (browser?.history?.replaceState) {
           browser.history.replaceState({}, "", stableState.activePath);
@@ -679,6 +952,7 @@ export function createAppRouteHandler({
   handler.dispose = () => {
     invalidateRecoveryRender(appView);
     disposeActiveSpace();
+    disposeSuspendedLibrary();
     restoreGate.invalidate();
     explorationGate.invalidate();
     universeGate.invalidate();
@@ -707,23 +981,25 @@ export function bootstrapCineScopeShell() {
     if (action.type === "recommendation/sessionReceived") {
       syncTonightSessionState(state);
     }
-    if (state.activePath?.startsWith("/tonight") && ["recommendation/sessionReceived", "recommendation/batchReceived", "recommendation/channelSelected"].includes(action.type)) {
+    if (state.activePath?.startsWith("/tonight") && ["recommendation/sessionReceived", "recommendation/batchReceived", "recommendation/channelSelected", "recommendation/restoreStarted", "recommendation/restoreFinished", "recommendation/itemSuppressed", "recommendation/itemHydrated"].includes(action.type)) {
       renderTonight(state);
     }
   });
+  let router = null;
   configureCommandLens({
     root: document.getElementById("command-lens-root"),
     store,
     api: { postV2 },
     onBeforeOpen: () => closePersonSheet(),
+    closeOnSuccess: true,
+    onSession: () => { void router?.navigate("/tonight"); },
   });
-  configureTonight({ store, api: { postV2 }, root: appView, openCommandLens });
+  configureTonight({ store, api: { getV2, postV2 }, root: appView, openCommandLens });
   configurePeople({
     root: appView,
     overlayRoot: document.getElementById("overlay-root"),
     onBeforeOpen: () => closeCommandLens(),
   });
-  let router = null;
   configureRecoveryBoundary({
     root: appView,
     getCurrentPath: () => store.getState().activePath || "",
@@ -742,6 +1018,7 @@ export function bootstrapCineScopeShell() {
     openLens: openCommandLens,
   });
   configureUniverse({
+    api: { getV2, postV2 },
     onContextChange: (context) => {
       const previous = store.getState().candidateTray?.context || {};
       const expandedIds = [...new Set([
@@ -755,9 +1032,13 @@ export function bootstrapCineScopeShell() {
   const exploreUniverse = createUniverseExplorer({ store, navigate: (path) => router?.navigate(path) });
   configureDetail({
     root: appView,
-    api: { postV2 },
+    api: { getV2, postV2 },
     openPersonSheet,
     onExploreUniverse: exploreUniverse,
+    getDetailReturnPath: () => safeDetailReturnPath(
+      store.getState().detailReturnPath || globalThis.window?.history?.state?.from,
+    ),
+    onExitDetail: (path) => router?.navigate(safeDetailReturnPath(path)),
   });
   const explorationGate = createExplorationRouteGate({
     root: appView,
@@ -792,6 +1073,8 @@ export function bootstrapCineScopeShell() {
     restoreGate,
     explorationGate,
     universeGate,
+    navigate: (path) => router?.navigate(path),
+    openLens: openCommandLens,
     setStatus: (message) => setText(status, message),
   });
   router = createRouter(APP_ROUTES, {
@@ -799,6 +1082,14 @@ export function bootstrapCineScopeShell() {
     onScrollSaved: (path, y) => store.dispatch({ type: "route/scrollSaved", path, y }),
   });
   configureTonight({ navigate: (path, state) => router.navigate(path, state) });
+  const doubanReturnSync = installDoubanReturnSync({
+    api: { getV2, postV2 },
+    onSettled: (job) => (
+      ["complete", "partial", "needs_cookie"].includes(textValue(job?.state).toLowerCase())
+        ? refreshRecommendationSessionsAfterSync(store)
+        : null
+    ),
+  });
   if (globalThis.window?.location?.pathname === "/" && globalThis.window.history?.replaceState) {
     globalThis.window.history.replaceState({}, "", "/tonight");
   }
@@ -816,6 +1107,7 @@ export function bootstrapCineScopeShell() {
     store,
     destroy() {
       uninstallBrowserHooks();
+      doubanReturnSync.dispose();
       closeCommandLens({ restoreFocus: false });
       unbindCommandLensShortcut();
       routeHandler.dispose();

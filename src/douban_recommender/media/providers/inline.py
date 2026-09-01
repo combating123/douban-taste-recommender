@@ -3,6 +3,7 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from ...identity_service import PersonIdentity, WorkIdentity
+from ..url_candidates import is_placeholder_image_url
 from .base import AssetCandidate, AssetQuery
 
 
@@ -69,6 +70,8 @@ def _source_urls(values: tuple[str, ...]) -> tuple[str, ...]:
         except ValueError:
             continue
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or text in urls:
+            continue
+        if is_placeholder_image_url(text):
             continue
         urls.append(text)
     return tuple(urls)

@@ -5,6 +5,86 @@ from urllib.parse import quote
 from .models import MediaItem, normalize_title
 
 
+CURATED_PROVIDER_DISPLAY_TITLES: dict[tuple[str, str], str] = {
+    ("tvmaze", "61855"): "\u795e\u79d8\u516c\u53f8",
+    ("tvmaze", "53397"): "\u795e\u79d8\u5c9b",
+    ("tvmaze", "1602"): "\u79d1\u5e7b\u5148\u77e5",
+    ("tvmaze", "28400"): "\u795e\u79d8\u5730\u56fe",
+    # Apple 的台湾区榜单会返回地区化片名。以下条目均按稳定的
+    # provider id 绑定大陆常用译名，避免仅靠中文模糊匹配串片。
+    ("apple_movies", "6781935910"): "小黄人与大怪兽",
+    ("apple_movies", "6792250839"): "玩具总动员5",
+    ("apple_movies", "1896826363"): "揭秘日",
+    ("apple_movies", "1896801524"): "穿普拉达的女王2",
+    ("apple_movies", "1886872394"): "超级马力欧银河大电影",
+    ("apple_movies", "1880810604"): "挽救计划",
+    ("apple_movies", "1826903427"): "诅咒",
+    ("apple_movies", "1820539079"): "惊变28年",
+    ("apple_movies", "1826752692"): "处女之死",
+    ("apple_movies", "1828885477"): "巴黎大饭店",
+    ("apple_movies", "1827909241"): "乐一通大电影：地球爆炸之日",
+    ("apple_movies", "1825314990"): "僧侣和枪",
+    ("apple_movies", "1828106003"): "秘密会议",
+    ("apple_movies", "1757750602"): "盟军敢死队",
+    ("apple_movies", "1699042077"): "穆赫兰道（4K数字修复版）",
+    ("apple_movies", "1697271295"): "疾速追杀4",
+    ("apple_movies", "1687094414"): "鲸",
+    ("apple_movies", "1594936778"): "超能敢死队",
+    ("apple_movies", "1598961641"): "蜘蛛侠：英雄无归",
+    ("apple_movies", "965491522"): "星际穿越",
+    ("apple_movies", "699048965"): "惊天危机",
+    ("apple_movies", "1825543675"): "门徒",
+    ("apple_movies", "271469503"): "哈利·波特与魔法石",
+    ("apple_movies", "1691691445"): "猎杀U-571",
+    ("apple_movies", "1234183228"): "牯岭街少年杀人事件",
+}
+
+
+CURATED_PROVIDER_SUMMARIES: dict[tuple[str, str], str] = {
+    ("apple_movies", "6781935910"): "小黄人在好莱坞成名后意外释放怪兽，只能重新集结，在混乱吞没世界前挽回局面。",
+    ("apple_movies", "6792250839"): "胡迪、巴斯光年等玩具伙伴迎来智能平板“莉莉板”的挑战，玩具与科技将围绕陪伴的意义正面交锋。",
+    ("apple_movies", "1896826363"): "当外星生命存在的证据即将向全世界公开，人类必须在恐惧、怀疑与真相之间作出选择。",
+    ("apple_movies", "1896801524"): "安迪已成为《伸展台》的专题编辑，并在媒体转型与时尚权力重组中再次面对米兰达。原班核心演员回归。",
+    ("apple_movies", "1886872394"): "马力欧与路易吉为援助新伙伴踏上银河冒险，在陌生星球迎战新的威胁，并与耀西、罗莎塔等角色相遇。",
+    ("apple_movies", "1880810604"): "宇航员莱兰·格雷斯在远离地球的太空中醒来，必须独自查明太阳衰竭的原因；一次意外相遇改变了任务。",
+    ("apple_movies", "1826903427"): "海难幸存者的求救迫使一支团队在救人和自保之间作出抉择，阴森海域中的道德困境逐渐演变成生存危机。",
+    ("apple_movies", "1820539079"): "病毒灾难多年后，一名幸存者深入英国大陆，发现感染者与人类社会都已发生可怕变化。",
+    ("apple_movies", "1826752692"): "郊区少年们多年后回望里斯本五姐妹的悲剧，在迷恋、压抑与死亡的记忆中拼凑她们无法逃离的青春。",
+    ("apple_movies", "1828885477"): "尾花夏树与早见伦子在巴黎开设新餐厅，向米其林三星发起挑战，也必须直面失误、竞争与团队裂痕。",
+    ("apple_movies", "1828106003"): "教皇去世后，劳伦斯枢机主教主持秘密选举，却在多轮投票与派系角力中发现一项可能动摇教会的秘密。",
+    ("apple_movies", "1827909241"): "达菲鸭与猪小弟发现一款让人变成僵尸的泡泡糖，并与猪小妹联手阻止外星人的地球毁灭计划。",
+    ("apple_movies", "1825314990"): "不丹准备举行首次民主选举时，一名年轻僧人奉师命寻找枪支，与前来收购古董步枪的美国人意外交会。",
+    ("apple_movies", "1757750602"): "二战期间，一支非官方特战队潜入西非港口，试图摧毁德军补给线，以一场不被承认的行动改变战局。",
+    ("apple_movies", "1699042077"): "失忆女子丽塔与初到洛杉矶的贝蒂一同追查身份线索，现实、梦境与欲望逐渐交错成一场迷局。",
+    ("apple_movies", "1697271295"): "约翰·威克找到对抗高桌会的新路径，却必须在全球杀手的围追堵截中迎战更强大的敌人。",
+    ("apple_movies", "1687094414"): "隐居且重度肥胖的英语教师查理试图在生命最后阶段修复与女儿艾莉的关系。",
+    ("apple_movies", "1594936778"): "一位单亲母亲带着两个孩子搬到小镇，并从祖父留下的装备中发现家族与超能敢死队的关联。",
+    ("apple_movies", "1598961641"): "彼得·帕克的身份曝光后求助奇异博士，却意外撕裂多元宇宙，只能直面来自不同世界的敌人。",
+    ("apple_movies", "965491522"): "地球环境濒临崩溃，一支探险队穿越虫洞寻找人类新家园；时间、亲情与生存成为任务的真正代价。",
+    ("apple_movies", "699048965"): "白宫遭武装力量占领后，未能入选特勤局的约翰·凯尔必须同时营救总统、女儿与陷入混乱的国家。",
+    ("apple_movies", "1825543675"): "卧底警察阿力在毒枭昆哥身边潜伏多年，越接近制毒网络核心，越难分清任务、情感与真实身份。",
+    ("apple_movies", "271469503"): "11岁的哈利·波特得知自己是巫师，并进入霍格沃茨学习魔法；一块神秘魔法石将他卷入危险。",
+    ("apple_movies", "1691691445"): "二战期间，一支盟军小队伪装成德军登上受损潜艇U-571，目标是夺取能破解德军密码的恩尼格玛机。",
+    ("apple_movies", "1234183228"): "20世纪60年代的台北，一群少年在家庭、校园与帮派冲突中寻找归属，最终走向无法挽回的悲剧。",
+}
+
+
+def curated_display_title_for_provider(provider: object, provider_id: object) -> str:
+    clean_provider = str(provider or "").strip().casefold()
+    clean_provider_id = str(provider_id or "").strip()
+    if not clean_provider or not clean_provider_id:
+        return ""
+    return CURATED_PROVIDER_DISPLAY_TITLES.get((clean_provider, clean_provider_id), "")
+
+
+def curated_summary_for_provider(provider: object, provider_id: object) -> str:
+    clean_provider = str(provider or "").strip().casefold()
+    clean_provider_id = str(provider_id or "").strip()
+    if not clean_provider or not clean_provider_id:
+        return ""
+    return CURATED_PROVIDER_SUMMARIES.get((clean_provider, clean_provider_id), "")
+
+
 POSTER_URLS_BY_DOUBAN_ID: dict[str, str] = {
     "27010768": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2561439800.webp",  # 寄生虫
     "26842702": "https://img1.doubanio.com/view/photo/s_ratio_poster/public/p2520095279.webp",  # 燃烧
@@ -59,7 +139,7 @@ POSTER_URLS_BY_DOUBAN_ID.update({
     "35235502": "https://m.media-amazon.com/images/M/MV5BOGE5ZWRhYjYtNzVkMS00ZGU3LTg2MTMtODYyMmJlMDMyZjU0XkEyXkFqcGc@._V1_.jpg",
     "35052676": "https://m.media-amazon.com/images/M/MV5BNWYyMDkxY2ItNmRmMC00Y2ZmLTkwZGYtNDJiYmZhOGUzOGY0XkEyXkFqcGc@._V1_.jpg",
     "10539853": "https://static.tvmaze.com/uploads/images/original_untouched/7/17646.jpg",
-    "30238385": "https://static.tvmaze.com/uploads/images/original_untouched/501/1253559.jpg",
+    "30424374": "https://static.tvmaze.com/uploads/images/original_untouched/501/1253559.jpg",
 })
 
 
@@ -158,73 +238,13 @@ PEOPLE_PHOTOS_BY_DOUBAN_ID.update({
 })
 
 
-PEOPLE_PHOTOS_BY_DOUBAN_ID.update({
-    "1304447": {
-        "????????": "https://m.media-amazon.com/images/M/MV5BNjE3NDQyOTYyMV5BMl5BanBnXkFtZTcwODcyODU2Mw@@._V1_.jpg",
-        "?????": "https://m.media-amazon.com/images/M/MV5BMTgyNzc2NzY3Nl5BMl5BanBnXkFtZTgwNTMzMzAwMjE@._V1_.jpg",
-        "??-????": "https://m.media-amazon.com/images/M/MV5BMTYxMjgwNzEwOF5BMl5BanBnXkFtZTcwNTQ0NzI5Ng@@._V1_.jpg",
-    },
-    "35235502": {
-        "????": "https://m.media-amazon.com/images/M/MV5BNWI5MmVkYjUtYzNjMC00NGMyLWIyMjctOGJiY2YwZDRkYjc5XkEyXkFqcGc@._V1_.jpg",
-        "????": "https://m.media-amazon.com/images/M/MV5BMjVhNjM4NTAtMjY4My00NzFiLWFjOTItMjUxOWVkYjBhMGVlXkEyXkFqcGc@._V1_.jpg",
-        "????": "https://m.media-amazon.com/images/M/MV5BYTRiODJkMmQtZGYwNC00OWY5LWIxZGMtMGJlYTdjOTNlOWQ0XkEyXkFqcGc@._V1_.jpg",
-    },
-    "35052676": {
-        "???": "https://m.media-amazon.com/images/M/MV5BMmI3Y2YwODAtMTliZi00NTlmLTk5ODQtMmUyYjQwNGE1MWQzXkEyXkFqcGc@._V1_.jpg",
-        "???": "https://m.media-amazon.com/images/M/MV5BMTcxMjE0MDI3NV5BMl5BanBnXkFtZTgwMTkzMjEyMjE@._V1_.jpg",
-        "???": "https://m.media-amazon.com/images/M/MV5BN2MyZmVlNzAtOGYwOS00YTdiLTgyNDYtMWVhNGQ5YjgwMzdhXkEyXkFqcGc@._V1_.jpg",
-    },
-    "10539853": {
-        "?????????": "https://m.media-amazon.com/images/M/MV5BMjU3MWI2NjAtOTBhZi00OGVhLWIxYmItNTU3YzlkMmZkZTY0XkEyXkFqcGc@._V1_.jpg",
-        "???????": "https://m.media-amazon.com/images/M/MV5BY2NjYjA4MjAtYTM0Ni00OGM4LWEyNzQtNGUxODhiZTNlNjA2XkEyXkFqcGc@._V1_.jpg",
-        "?????": "https://m.media-amazon.com/images/M/MV5BZjhhYWNiN2MtNmVkZS00ZTAyLThjNTEtYjQ4MDMwODQ4YmQ5XkEyXkFqcGc@._V1_.jpg",
-        "????????": "https://m.media-amazon.com/images/M/MV5BMGJjODI2MTUtNmMwOS00YjM3LWIzMDUtMWI4MmE0OWM2M2VlXkEyXkFqcGc@._V1_.jpg",
-    },
-    "30238385": {
-        "?????": "https://m.media-amazon.com/images/M/MV5BMTk4NjMyNzY3MV5BMl5BanBnXkFtZTgwNDY0Nzg0ODE@._V1_.jpg",
-        "?????": "https://m.media-amazon.com/images/M/MV5BMTc1NDkwMTQ2MF5BMl5BanBnXkFtZTcwMzY0ODkyMg@@._V1_.jpg",
-    },
-})
 
 TITLE_PEOPLE_METADATA: dict[str, dict[str, object]] = {
-    "????": {
-        "douban_id": "1304447",
-        "year": 2000,
-        "directors": ["????????"],
-        "casts": ["?????", "??-????"],
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["1304447"],
-    },
-    "?????": {
-        "douban_id": "35235502",
-        "year": 2021,
-        "directors": ["????"],
-        "casts": ["????", "????"],
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["35235502"],
-    },
-    "????": {
-        "douban_id": "35052676",
-        "year": 2021,
-        "directors": ["???"],
-        "casts": ["???", "???"],
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["35052676"],
-    },
-    "?????": {
-        "douban_id": "10539853",
-        "year": 2013,
-        "directors": ["?????????"],
-        "casts": ["???????", "?????", "????????"],
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["10539853"],
-    },
-    "????????": {
-        "douban_id": "30238385",
-        "year": 2019,
-        "directors": ["?????", "?????"],
-        "casts": ["??????"],
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["30238385"],
-    },
     "海街日记": {
         "douban_id": "25895901",
         "year": 2015,
+        "genres": ["剧情", "家庭"],
+        "countries": ["日本"],
         "directors": ["是枝裕和"],
         "casts": ["绫濑遥", "长泽雅美", "夏帆", "广濑铃"],
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["25895901"],
@@ -232,6 +252,8 @@ TITLE_PEOPLE_METADATA: dict[str, dict[str, object]] = {
     "少年的你": {
         "douban_id": "30166972",
         "year": 2019,
+        "genres": ["剧情", "爱情"],
+        "countries": ["中国大陆"],
         "directors": ["曾国祥"],
         "casts": ["周冬雨", "易烊千玺", "尹昉", "周也"],
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["30166972"],
@@ -260,7 +282,7 @@ PEOPLE_PHOTOS_BY_DOUBAN_ID.update({
         "汤姆·希林": "https://m.media-amazon.com/images/M/MV5BZjhhYWNiN2MtNmVkZS00ZTAyLThjNTEtYjQ4MDMwODQ4YmQ5XkEyXkFqcGc@._V1_.jpg",
         "卡塔琳娜·舒特勒": "https://m.media-amazon.com/images/M/MV5BMGJjODI2MTUtNmMwOS00YjM3LWIzMDUtMWI4MmE0OWM2M2VlXkEyXkFqcGc@._V1_.jpg",
     },
-    "30238385": {
+    "30424374": {
         "蒂姆·米勒": "https://m.media-amazon.com/images/M/MV5BMTk4NjMyNzY3MV5BMl5BanBnXkFtZTgwNDY0Nzg0ODE@._V1_.jpg",
         "大卫·芬奇": "https://m.media-amazon.com/images/M/MV5BMTc1NDkwMTQ2MF5BMl5BanBnXkFtZTcwMzY0ODkyMg@@._V1_.jpg",
     },
@@ -285,6 +307,8 @@ TITLE_PEOPLE_METADATA.update({
     "记忆碎片": {
         "douban_id": "1304447",
         "year": 2000,
+        "genres": ["剧情", "悬疑", "惊悚"],
+        "countries": ["美国"],
         "directors": ["克里斯托弗·诺兰"],
         "casts": ["盖·皮尔斯", "凯瑞-安·莫斯"],
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["1304447"],
@@ -310,6 +334,8 @@ TITLE_PEOPLE_METADATA.update({
     "驾驶我的车": {
         "douban_id": "35235502",
         "year": 2021,
+        "genres": ["剧情"],
+        "countries": ["日本"],
         "directors": ["滨口龙介"],
         "casts": ["西岛秀俊", "三浦透子"],
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["35235502"],
@@ -317,6 +343,8 @@ TITLE_PEOPLE_METADATA.update({
     "兹山鱼谱": {
         "douban_id": "35052676",
         "year": 2021,
+        "genres": ["剧情", "历史"],
+        "countries": ["韩国"],
         "directors": ["李濬益"],
         "casts": ["薛景求", "卞约汉"],
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["35052676"],
@@ -324,16 +352,20 @@ TITLE_PEOPLE_METADATA.update({
     "我们的父辈": {
         "douban_id": "10539853",
         "year": 2013,
+        "genres": ["剧情", "历史", "战争"],
+        "countries": ["德国"],
         "directors": ["菲利普·卡德尔巴赫"],
         "casts": ["沃尔克·布鲁赫", "汤姆·希林", "卡塔琳娜·舒特勒"],
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["10539853"],
     },
     "爱，死亡和机器人": {
-        "douban_id": "30238385",
+        "douban_id": "30424374",
         "year": 2019,
+        "genres": ["喜剧", "科幻", "动画"],
+        "countries": ["美国"],
         "directors": ["蒂姆·米勒", "大卫·芬奇"],
         "casts": ["成人动画短篇群像"],
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["30238385"],
+        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["30424374"],
     },
 })
 
@@ -362,7 +394,7 @@ PEOPLE_PHOTOS_BY_DOUBAN_ID.update({
         "李帝勋": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Lee_Je-hoon_in_November_2025.png/330px-Lee_Je-hoon_in_November_2025.png",
         "金惠秀": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Kim_Hye-soo_in_March_2025.png/330px-Kim_Hye-soo_in_March_2025.png",
     },
-    "34943015": {
+    "33464863": {
         "申元浩": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Shin_Won-ho_%EC%8B%A0%EC%9B%90%ED%98%B8.png/330px-Shin_Won-ho_%EC%8B%A0%EC%9B%90%ED%98%B8.png",
         "曹政奚": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/24/Jo_Jung-suk_in_June_2026.png/330px-Jo_Jung-suk_in_June_2026.png",
         "柳演锡": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Yoo_Yeon-seok_-_Bean_Pole_catalogue_2015_Spring-Summer_02_%28cropped%29.jpg/330px-Yoo_Yeon-seok_-_Bean_Pole_catalogue_2015_Spring-Summer_02_%28cropped%29.jpg",
@@ -426,14 +458,14 @@ TITLE_PEOPLE_METADATA.update({
         "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["26310143"],
     },
     "机智医生生活": {
-        "douban_id": "34943015",
+        "douban_id": "33464863",
         "year": 2020,
         "genres": ["剧情", "喜剧"],
         "countries": ["韩国"],
         "directors": ["申元浩"],
         "casts": ["曹政奚", "柳演锡", "郑敬淘"],
         "cover": "https://static.tvmaze.com/uploads/images/original_untouched/323/807792.jpg",
-        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["34943015"],
+        "people_photos": PEOPLE_PHOTOS_BY_DOUBAN_ID["33464863"],
     },
     "傲骨贤妻": {
         "year": 2009,
@@ -574,6 +606,75 @@ def _should_replace_people(names: list[str] | tuple[str, ...] | None) -> bool:
     return not clean or any(is_curated_placeholder_person(name) for name in clean)
 
 
+_CURATED_IDENTITY_REPAIR_SOURCES = {
+    "title_seed",
+    "curated_seed",
+    "premium_seed",
+    "premium_expansion",
+}
+
+_STALE_PROVIDER_RAW_FIELDS = {
+    "aliases",
+    "comment_count",
+    "duration",
+    "original_title",
+    "people_photos",
+    "provider_ids",
+    "rating_votes",
+    "ratings",
+    "release_date",
+    "review_count",
+    "stills",
+}
+
+
+def _is_seeded_identity(item: MediaItem) -> bool:
+    source = str(item.source or "").strip().lower()
+    return any(source == value or source.startswith(f"{value}|") for value in _CURATED_IDENTITY_REPAIR_SOURCES)
+
+
+def _repair_curated_identity(item: MediaItem, metadata: dict[str, object]) -> bool:
+    metadata_id = str(metadata.get("douban_id") or "").strip()
+    current_id = str(item.douban_id or "").strip()
+    if not metadata_id:
+        return False
+    if not isinstance(item.raw, dict):
+        item.raw = {}
+    repaired_from = str(item.raw.get("identity_repaired_from") or "").strip()
+    pending_cleanup = bool(
+        metadata_id == current_id
+        and repaired_from
+        and not item.raw.get("identity_repair_sanitized")
+    )
+    if metadata_id == current_id and not pending_cleanup:
+        return False
+    # Synthetic ids already represent the same curated title and only need an
+    # identity upgrade. A destructive reset is reserved for a conflicting
+    # numeric seed, which proves stale provider data may already be attached.
+    if not pending_cleanup and (not current_id.isdigit() or not _is_seeded_identity(item)):
+        return False
+
+    prior_id = repaired_from or current_id
+    for key in _STALE_PROVIDER_RAW_FIELDS:
+        item.raw.pop(key, None)
+    if prior_id:
+        item.raw["identity_repaired_from"] = prior_id
+    item.raw["identity_repair_sanitized"] = True
+
+    item.douban_id = metadata_id
+    item.url = f"https://movie.douban.com/subject/{metadata_id}/"
+    item.douban_rating = None
+    item.vote_count = None
+    item.summary = str(metadata.get("summary") or "").strip()
+    item.cover = ""
+    item.genres = []
+    item.countries = []
+    item.languages = []
+    item.directors = []
+    item.casts = []
+    return True
+
+
 def apply_curated_posters(items: list[MediaItem]) -> list[MediaItem]:
     for item in items:
         subject_id = str(item.douban_id or "").strip()
@@ -587,9 +688,12 @@ def apply_curated_people_photos(items: list[MediaItem]) -> list[MediaItem]:
     for item in items:
         title_metadata = TITLE_PEOPLE_METADATA.get(item.title or "")
         if title_metadata:
+            repaired_identity = _repair_curated_identity(item, title_metadata)
             metadata_id = str(title_metadata.get("douban_id") or "").strip()
             current_id = str(item.douban_id or "").strip()
-            metadata_overrides_synthetic = bool(metadata_id and (not current_id or not current_id.isdigit()))
+            metadata_overrides_synthetic = bool(
+                repaired_identity or (metadata_id and (not current_id or not current_id.isdigit()))
+            )
             if metadata_overrides_synthetic:
                 item.douban_id = metadata_id
                 item.url = f"https://movie.douban.com/subject/{metadata_id}/"
@@ -728,6 +832,161 @@ def curated_seed_candidates() -> list[MediaItem]:
             seen.add(item.douban_id)
     return apply_curated_people_photos(apply_curated_posters(items))
 
+
+# High-visibility local metadata keeps older saved sessions useful even when
+# one provider returned an empty genre field. Unknown works fall back to their
+# media type in the serializers rather than receiving invented genres.
+_COMMON_TITLE_GENRE_METADATA: dict[str, list[str]] = {
+    "千与千寻": ["动画", "奇幻", "冒险"],
+    "美丽人生": ["剧情", "喜剧", "爱情"],
+    "三傻大闹宝莱坞": ["剧情", "喜剧", "爱情"],
+    "熔炉": ["剧情"],
+    "教父": ["剧情", "犯罪"],
+    "哈利·波特与魔法石": ["奇幻", "冒险", "家庭"],
+    "搏击俱乐部": ["剧情", "悬疑", "犯罪"],
+    "人生切割术": ["剧情", "科幻", "悬疑"],
+    "去他*的世界": ["剧情", "喜剧", "爱情"],
+    "黑镜": ["剧情", "科幻", "悬疑"],
+    "怪奇物语": ["剧情", "科幻", "悬疑"],
+    "伦敦生活": ["剧情", "喜剧"],
+    "办公室": ["喜剧"],
+    "王冠": ["剧情", "历史"],
+    "暗黑": ["剧情", "科幻", "悬疑"],
+    "浴血黑帮": ["剧情", "犯罪"],
+    "万物生灵": ["剧情", "喜剧"],
+    "纸牌屋": ["剧情", "政治"],
+    "瑞克和莫蒂": ["动画", "喜剧", "科幻"],
+    "马男波杰克": ["动画", "剧情", "喜剧"],
+    "探险活宝": ["动画", "喜剧", "奇幻"],
+    "花园墙外": ["动画", "奇幻", "冒险"],
+    "蓝眼武士": ["动画", "动作", "剧情"],
+    "科拉传奇": ["动画", "动作", "奇幻"],
+    "恶魔城": ["动画", "动作", "奇幻"],
+    "电脑线圈": ["动画", "科幻", "冒险"],
+    "昭和元禄落语心中": ["动画", "剧情"],
+    "心理测量者": ["动画", "科幻", "悬疑"],
+}
+
+_COMMON_TITLE_SUMMARY_METADATA: dict[str, str] = {
+    "冰血暴": "黑色幽默包裹的犯罪群像剧：小城秩序、偶然失控与人物选择彼此牵引，节奏克制但后劲很强。",
+    "去他*的世界": "两个边缘少年踏上一段失控的公路旅程，在黑色幽默、危险与成长之间逐渐建立真实关系。",
+    "王冠": "以英国王室与时代变迁为背景，聚焦责任、权力和私人生活之间长期而克制的拉扯。",
+    "暗黑": "小镇失踪案牵出跨越数代的家庭秘密与时间谜局，结构严密，氛围冷峻。",
+    "浴血黑帮": "一战后的伯明翰，谢尔比家族在犯罪、权力与时代震荡中不断扩大自己的边界。",
+    "恶魔城": "吸血鬼、宗教与复仇交织的暗黑奇幻动画剧集，动作场面凌厉，人物关系有持续推进。",
+    "万物生灵": "英国乡野兽医与邻里日常组成的温柔群像，幽默、生活感和人与动物的情感都很扎实。",
+    "伦敦生活": "一位伦敦女性在亲密关系、家庭创伤与自我防御之间寻找出口，辛辣又诚实。",
+    "瑞克和莫蒂": "天才科学家与外孙穿梭于荒诞宇宙，在科幻冒险中讨论家庭、自由与存在感。",
+    "办公室": "以纪录片式视角观察办公室日常，把同事关系、尴尬时刻与普通人的小小愿望拍得鲜活。",
+    "教父": "围绕柯里昂家族展开的黑帮家族史诗，权力继承、家庭责任与个人选择层层推进。",
+    "真探": "每一季都以阴郁案件为入口，深入人物创伤、信念与社会阴影，强调氛围和心理张力。",
+    "傲骨贤妻": "律师在家庭危机后重返职场，在法庭攻防与复杂关系中重新建立自己的生活。",
+    "9号秘事": "每集都是独立的黑色喜剧或悬疑小品，常在有限空间里完成反转、荒诞与人性观察。",
+    "纸牌屋": "华盛顿权力场中的政治交易与个人野心，冷静展示权力如何改变关系与道德边界。",
+    "成瘾剂量": "从药物危机切入医疗、资本与监管系统，聚焦一场公共灾难如何被制造与掩盖。",
+    "怪奇物语": "小镇少年寻找失踪同伴时发现平行世界与实验阴谋，友情、成长和复古科幻气质并行。",
+    "搏击俱乐部": "一名陷入空虚的上班族遇见神秘人物后加入地下搏击组织，身份、消费社会与自我意识逐渐失控。",
+    "蓝眼武士": "一位混血剑客在江户时代踏上复仇之路，动作设计、身份冲突与人物意志都极具力度。",
+    "科拉传奇": "新一代神通在现代化世界中面对政治冲突、社会变革与自我成长，冒险规模不断扩展。",
+    "电脑线圈": "孩子们在增强现实与现实生活交错的城市中追查神秘事件，想象力与成长主题结合得很漂亮。",
+    "昭和元禄落语心中": "以落语艺人的师徒、友情与时代变迁为线索，讲述艺术传承与人生选择的长线故事。",
+    "心理测量者": "在由系统评估人心的未来社会中，执法者必须面对秩序、自由与人性的冲突。",
+    "马男波杰克": "过气明星在自毁、孤独与关系修复之间反复挣扎，喜剧外壳下是尖锐的情绪观察。",
+    "探险活宝": "两个伙伴在奇幻大陆展开自由奔放的冒险，轻盈想象力背后也有持续生长的世界观与情感线。",
+    "花园墙外": "两个兄弟误入神秘森林，在童话般的旅程中面对恐惧、记忆与回家的愿望。",
+    "七武士": "村民为了抵御山贼请来七位武士，群像、战斗与牺牲共同构成一部经典的人性史诗。",
+    "罗生门": "同一场案件被不同人物讲出完全不同的版本，真相在视角、欲望与记忆之间不断摇摆。",
+    "饮食男女": "一位父亲与三个女儿围绕家庭、爱情和人生变化重新寻找相处方式，细腻而有生活质感。",
+    "我们的父辈": "五位年轻人在战争年代走向不同命运，个人成长与时代创伤交织成一部沉重群像。",
+    "三傻大闹宝莱坞": "三个大学好友在教育压力、家庭期待与人生选择之间寻找真正适合自己的道路，幽默而有情感力量。",
+}
+
+_CURATED_METADATA_INDEX: dict[tuple[str, str], dict[str, object]] | None = None
+
+
+def _metadata_snapshot(item: MediaItem | dict[str, object]) -> dict[str, object]:
+    if isinstance(item, MediaItem):
+        return {
+            "title": item.title,
+            "douban_id": item.douban_id,
+            "year": item.year,
+            "media_type": item.media_type,
+            "genres": list(item.genres),
+            "summary": item.summary,
+            "countries": list(item.countries),
+            "directors": list(item.directors),
+            "casts": list(item.casts),
+        }
+    return {
+        key: value
+        for key, value in item.items()
+        if key in {"title", "douban_id", "year", "media_type", "genres", "countries", "directors", "casts", "summary"}
+    }
+
+
+def _build_curated_metadata_index() -> dict[tuple[str, str], dict[str, object]]:
+    index: dict[tuple[str, str], dict[str, object]] = {}
+
+    def add(metadata: dict[str, object], aliases: list[str] | tuple[str, ...] = ()) -> None:
+        snapshot = _metadata_snapshot(metadata)
+        title = str(snapshot.get("title") or "").strip()
+        douban_id = str(snapshot.get("douban_id") or "").strip()
+        keys: list[tuple[str, str]] = []
+        if title:
+            keys.append(("title", normalize_title(title)))
+        if douban_id:
+            keys.append(("douban", douban_id))
+        for alias in aliases:
+            clean_alias = str(alias or "").strip()
+            if clean_alias:
+                keys.append(("title", normalize_title(clean_alias)))
+        for key in keys:
+            if not key[1]:
+                continue
+            current = index.get(key)
+            if current is None:
+                index[key] = dict(snapshot)
+                continue
+            merged = dict(current)
+            for field, value in snapshot.items():
+                if value in (None, "", [], {}):
+                    continue
+                if isinstance(value, list) and isinstance(merged.get(field), list):
+                    merged[field] = list(dict.fromkeys([*merged[field], *value]))
+                else:
+                    merged[field] = value
+            index[key] = merged
+
+    for title, metadata in TITLE_PEOPLE_METADATA.items():
+        if isinstance(metadata, dict):
+            add({"title": title, **metadata})
+    for title, genres in _COMMON_TITLE_GENRE_METADATA.items():
+        add({"title": title, "genres": genres})
+    for title, summary in _COMMON_TITLE_SUMMARY_METADATA.items():
+        add({"title": title, "summary": summary})
+    for item in curated_seed_candidates():
+        aliases = item.raw.get("aliases", []) if isinstance(item.raw, dict) else []
+        add(item, aliases if isinstance(aliases, (list, tuple)) else ())
+    return index
+
+
+def curated_metadata_for_title(title: str = "", douban_id: str = "") -> dict[str, object]:
+    """Return trusted local metadata for a title without mutating the caller."""
+    global _CURATED_METADATA_INDEX
+    if _CURATED_METADATA_INDEX is None:
+        _CURATED_METADATA_INDEX = _build_curated_metadata_index()
+    clean_id = str(douban_id or "").strip()
+    clean_title = normalize_title(str(title or "").strip())
+    metadata = (
+        _CURATED_METADATA_INDEX.get(("douban", clean_id)) if clean_id else None
+    ) or (
+        _CURATED_METADATA_INDEX.get(("title", clean_title)) if clean_title else None
+    )
+    if not metadata:
+        return {}
+    return {key: list(value) if isinstance(value, list) else value for key, value in metadata.items()}
+
+
 PREMIUM_CREATOR_POOLS = {
     "电影": {"directors": ["镜头语言专家"], "casts": ["戏剧张力担当", "银幕群像核心"], "genres": [["剧情"]], "countries": [["中国大陆"]], "tags": ["电影", "高分"]},
     "电视剧": {"directors": ["剧集统筹"], "casts": ["长线角色担当"], "genres": [["剧情"]], "countries": [["美国"]], "tags": ["电视剧", "高分"]},
@@ -742,153 +1001,153 @@ def _designed_cover_svg(title: str, media_type: str, index: int) -> str:
 
 PREMIUM_DISPLAY_TITLES: dict[str, str] = {
     '12 Angry Men': '十二怒漢 (電影)',
-    'A Better Tomorrow': '???? 058',
+    'A Better Tomorrow': '英雄本色',
     'A Brighter Summer Day': '牯嶺街少年殺人事件',
     'A Place Further than the Universe': '比宇宙更远的地方',
-    "A Record of a Mortal's Journey to Immortality": '???? 226',
-    'A Separation': '???? 019',
-    'Adventure Time': '???? 177',
-    'Aftersun': '???? 070',
-    'All Creatures Great and Small': '???? 091',
-    'Amelie': '???? 064',
+    "A Record of a Mortal's Journey to Immortality": '凡人修仙传',
+    'A Separation': '一次别离',
+    'Adventure Time': '探险活宝',
+    'Aftersun': '晒后假日',
+    'All Creatures Great and Small': '万物生灵',
+    'Amelie': '天使爱美丽',
     'Anatomy of a Fall': '坠落的审判',
     'Arcane': '英雄联盟：双城之战',
-    'Arrival': '???? 012',
+    'Arrival': '降临',
     'Attack on Titan': '進擊的巨人 (2015年電影)',
-    'Attack on Titan Final Season': '???? 219',
+    'Attack on Titan Final Season': '进击的巨人 最终季',
     'Avatar The Last Airbender': '降世神通：最后的气宗',
-    'Babylon Berlin': '???? 108',
+    'Babylon Berlin': '巴比伦柏林',
     "Barrack O'Karma": '金宵大廈',
-    'Beastars': '???? 222',
+    'Beastars': '动物狂想曲',
     'Better Call Saul': '絕命律師',
     'Big Little Lies': '小謊言 (電視劇)',
-    'Birdman': '???? 053',
-    'Black Coal Thin Ice': '???? 036',
-    'Black Mirror': '???? 086',
-    'Blade Runner 2049': '???? 013',
-    'Blossoms Shanghai': '???? 148',
-    'Blue Eye Samurai': '???? 179',
+    'Birdman': '鸟人',
+    'Black Coal Thin Ice': '白日焰火',
+    'Black Mirror': '黑镜',
+    'Blade Runner 2049': '银翼杀手2049',
+    'Blossoms Shanghai': '繁花',
+    'Blue Eye Samurai': '蓝眼武士',
     'BoJack Horseman': '马男波杰克',
-    'Bocchi the Rock': '???? 162',
-    'Breaking Bad': '???? 078',
+    'Bocchi the Rock': '孤独摇滚！',
+    'Breaking Bad': '绝命毒师',
     'Burning': '燃燒烈愛',
-    'Capernaum': '???? 020',
+    'Capernaum': '何以为家',
     'Castlevania': '恶魔城系列',
-    'Chainsaw Man': '???? 209',
-    'Chernobyl': '???? 089',
-    'Chungking Express': '???? 027',
+    'Chainsaw Man': '电锯人',
+    'Chernobyl': '切尔诺贝利',
+    'Chungking Express': '重庆森林',
     'Cinema Paradiso': '新天堂樂園',
-    'City of God': '???? 065',
-    'Comrades Almost a Love Story': '???? 029',
+    'City of God': '上帝之城',
+    'Comrades Almost a Love Story': '甜蜜蜜',
     'Cowboy Bebop': '星際牛仔',
     'Crazy Stone': '疯狂的石头',
     'Cyberpunk Edgerunners': '赛博浪客',
-    "DOTA Dragon's Blood": '???? 180',
-    'Dark': '???? 107',
+    "DOTA Dragon's Blood": 'DOTA：龙之血',
+    'Dark': '暗黑',
     'Dead Poets Society': '死亡诗社',
-    'Decision to Leave': '???? 075',
-    'Demon Slayer': '???? 211',
+    'Decision to Leave': '分手的决心',
+    'Demon Slayer': '鬼灭之刃',
     'Dennou Coil': '電腦線圈',
-    'Departures': '???? 022',
+    'Departures': '入殓师',
     'Derry Girls': '德里女孩',
-    'Dopesick': '???? 101',
+    'Dopesick': '成瘾剂量',
     'Drive My Car': '驾驶我的车',
-    'Dying to Survive': '???? 034',
+    'Dying to Survive': '我不是药神',
     'Eat Drink Man Woman': '饮食男女 (电影)',
-    'Fake It Till You Make It': '???? 151',
-    'Fargo': '???? 085',
+    'Fake It Till You Make It': '装腔启示录',
+    'Fargo': '冰血暴',
     'Fight Club': '鬥陣俱樂部',
-    'Fleabag': '???? 092',
-    'Flower of Evil': '???? 132',
+    'Fleabag': '伦敦生活',
+    'Flower of Evil': '恶之花',
     'Fog Hill of Five Elements': '雾山五行',
     'Forrest Gump': '阿甘正传',
-    'Friends': '???? 112',
+    'Friends': '老友记',
     "Frieren Beyond Journey's End": '葬送的芙莉莲',
     'Fullmetal Alchemist Brotherhood': '钢之炼金术师 FULLMETAL ALCHEMIST',
-    'Gattaca': '???? 060',
+    'Gattaca': '千钧一发',
     'Generation War': '我们的父辈',
-    'Ghost in the Shell SAC': '???? 204',
+    'Ghost in the Shell SAC': '攻壳机动队 SAC',
     'Gintama': '银魂',
     'Girls Last Tour': '少女终末旅行',
-    'Gold Leaf': '???? 140',
-    'Gone Girl': '???? 011',
+    'Gold Leaf': '茶金',
+    'Gone Girl': '消失的爱人',
     'Good Will Hunting': '心灵捕手',
     'Green Book': '幸福綠皮書',
-    "Grey's Anatomy": '???? 121',
+    "Grey's Anatomy": '实习医生格蕾',
     'Gurren Lagann': '天元突破 紅蓮螺巖',
     'Haikyu': '排球少年！！',
-    'Her': '???? 014',
-    'Hilda': '???? 181',
-    'Homeland': '???? 099',
-    'Hope': '???? 046',
+    'Her': '她',
+    'Hilda': '希尔达',
+    'Homeland': '国土安全',
+    'Hope': '素媛',
     'Hospital Playlist': '機智醫生生活',
-    'House M.D.': '???? 119',
-    'House of Cards': '???? 100',
+    'House M.D.': '豪斯医生',
+    'House of Cards': '纸牌屋',
     'Hunter x Hunter': 'HUNTER×HUNTER',
-    'I Am Yu Huanshui': '???? 146',
-    'In the Mood for Love': '???? 026',
-    'Infernal Affairs': '???? 028',
-    'Inside No. 9': '???? 122',
+    'I Am Yu Huanshui': '我是余欢水',
+    'In the Mood for Love': '花样年华',
+    'Infernal Affairs': '无间道',
+    'Inside No. 9': '9号秘事',
     'Invincible': '无敌少侠',
-    "JoJo's Bizarre Adventure": '???? 218',
-    'Joint Security Area': '???? 044',
-    'Jujutsu Kaisen': '???? 210',
-    'Kaguya-sama Love Is War': '???? 213',
-    'Kemonozume': '???? 199',
-    'Kill la Kill': '???? 207',
-    'King of Comedy': '???? 030',
-    'Kingdom': '???? 134',
+    "JoJo's Bizarre Adventure": 'JOJO的奇妙冒险',
+    'Joint Security Area': '共同警备区',
+    'Jujutsu Kaisen': '咒术回战',
+    'Kaguya-sama Love Is War': '辉夜大小姐想让我告白',
+    'Kemonozume': '兽爪',
+    'Kill la Kill': '斩服少女',
+    'King of Comedy': '喜剧之王',
+    'Kingdom': '王国',
     "Kino's Journey": '奇諾之旅',
     'La La Land': '樂來越愛你',
-    'Laid-Back Camp': '???? 197',
+    'Laid-Back Camp': '摇曳露营',
     'Let the Bullets Fly': '让子弹飞',
-    'Life Is Beautiful 1997': '???? 067',
+    'Life Is Beautiful 1997': '美丽人生',
     'Ling Cage': '灵笼',
     'Link Click': '时光代理人',
     'Love Death and Robots': '爱，死亡和机器人',
     'Love, Death & Robots': '爱，死亡和机器人',
     'Mad Men': '广告狂人',
-    'Made in Abyss': '???? 186',
-    'March Comes in Like a Lion': '???? 188',
+    'Made in Abyss': '来自深渊',
+    'March Comes in Like a Lion': '三月的狮子',
     'Mare of Easttown': '東城奇案',
     'Memento': '记忆碎片',
     'Memories of Murder': '殺人回憶',
-    'Misaeng': '???? 131',
-    'Mob Psycho 100': '???? 160',
-    'Modern Family': '???? 110',
+    'Misaeng': '未生',
+    'Mob Psycho 100': '灵能百分百',
+    'Modern Family': '摩登家庭',
     'Mononoke': '怪化猫',
     'Monster 2023': '怪物 (2023年電影)',
     'Moonlight': '月光男孩',
     'Moral Peanuts': '史努比 The Peanuts Movie',
-    'Move to Heaven': '???? 133',
+    'Move to Heaven': '移动到天堂',
     'Mushishi': '蟲師',
-    'Mushoku Tensei': '???? 220',
+    'Mushoku Tensei': '无职转生',
     'My Liberation Notes': '我的出走日記',
     'My Mister': '我的大叔',
-    'Narcos': '???? 125',
+    'Narcos': '毒枭',
     "Natsume's Book of Friends": '夏目友人帳',
-    'Neon Genesis Evangelion': '???? 205',
-    'Nothing But You': '???? 152',
-    'Odd Taxi': '???? 163',
-    'Oldboy': '???? 043',
-    'One Piece': '???? 215',
+    'Neon Genesis Evangelion': '新世纪福音战士',
+    'Nothing But You': '爱情而已',
+    'Odd Taxi': '奇巧计程车',
+    'Oldboy': '老男孩',
+    'One Piece': '航海王',
     'One Punch Man': '一拳超人',
-    'Ordinary Greatness': '???? 150',
-    'Over the Garden Wall': '???? 178',
-    'PSYCHO-PASS': '???? 185',
+    'Ordinary Greatness': '警察荣誉',
+    'Over the Garden Wall': '花园墙外',
+    'PSYCHO-PASS': '心理测量者',
     'Panty and Stocking with Garterbelt': '吊带袜天使',
     'Paranoia Agent': '妄想代理人',
-    'Parasite': '???? 054',
+    'Parasite': '寄生虫',
     'Past Lives': '之前的我們',
-    'Peaky Blinders': '???? 124',
-    'Perfect Days': '???? 073',
-    'Person of Interest': '???? 098',
+    'Peaky Blinders': '浴血黑帮',
+    'Perfect Days': '完美的日子',
+    'Person of Interest': '疑犯追踪',
     'Ping Pong the Animation': '乒乓 (漫畫)',
     'Pulp Fiction': '低俗小说',
-    'Rakshasa Street': '???? 230',
-    'Ranking of Kings': '???? 223',
+    'Rakshasa Street': '镇魂街',
+    'Ranking of Kings': '王样排名',
     'Rashomon': '羅生門 (電影)',
-    'Reset': '???? 147',
+    'Reset': '开端',
     'Rick and Morty': '瑞克和莫蒂',
     'Run with the Wind': '強風吹拂',
     'Samurai Champloo': '混沌武士',
@@ -897,83 +1156,83 @@ PREMIUM_DISPLAY_TITLES: dict[str, str] = {
     'Se7en': '七宗罪 (電影)',
     'Seven Samurai': '七武士',
     'Severance': '人生切割術',
-    'Shameless': '???? 109',
-    'Sherlock': '???? 123',
-    'Shirobako': '???? 194',
-    'Shoplifters': '???? 021',
-    'Showa Genroku Rakugo Shinju': '???? 189',
+    'Shameless': '无耻之徒',
+    'Sherlock': '神探夏洛克',
+    'Shirobako': '白箱',
+    'Shoplifters': '小偷家族',
+    'Showa Genroku Rakugo Shinju': '昭和元禄落语心中',
     'Signal': '信号 (信息论)',
-    'Silenced': '???? 045',
+    'Silenced': '熔炉',
     'Silicon Valley': '硅谷',
     'Six Feet Under': '六呎風雲',
-    'So Long My Son': '???? 035',
-    'Someday or One Day': '???? 136',
+    'So Long My Son': '地久天长',
+    'Someday or One Day': '想见你',
     'Spy x Family': 'SPY×FAMILY間諜家家酒',
     'Steins Gate': '命运石之门',
     'Stranger': '陌生人',
-    'Stranger Things': '???? 087',
-    'Succession': '???? 088',
+    'Stranger Things': '怪奇物语',
+    'Succession': '继承之战',
     'Taxi Driver': '計程車司機 (消歧義)',
-    'Tears on Fire': '???? 139',
+    'Tears on Fire': '火神的眼泪',
     'The Assassin': '阿薩辛',
-    'The Bad Kids': '???? 077',
-    'The Big Bang Theory': '???? 113',
+    'The Bad Kids': '隐秘的角落',
+    'The Big Bang Theory': '生活大爆炸',
     'The Book of Fish': '兹山鱼谱',
     'The Crown': '王冠 (电视剧)',
     'The Daily Life of the Immortal King': '浴血黑幫：不朽傳奇',
     'The Dark Knight': '黑暗騎士',
-    'The Degenerate-Drawing Jianghu': '???? 229',
+    'The Degenerate-Drawing Jianghu': '画江湖之不良人',
     'The End of the F***ing World': '这个破世界的末日',
-    'The Father': '???? 069',
+    'The Father': '困在时间里的父亲',
     'The French Dispatch': '法蘭西特派週報',
-    'The Glory': '???? 135',
-    'The Good Doctor': '???? 120',
+    'The Glory': '黑暗荣耀',
+    'The Good Doctor': '良医',
     'The Good Fight': '傲骨之战',
     'The Good Wife': '「法」妻',
     'The Grand Budapest Hotel': '布达佩斯大饭店',
     "The Handmaid's Tale": '使女的故事',
-    'The Hunt': '???? 018',
-    'The Island of Siliang': '???? 227',
-    'The Knockout': '???? 149',
-    'The Legend of Korra': '???? 182',
-    'The Lives of Others': '???? 068',
+    'The Hunt': '狩猎',
+    'The Island of Siliang': '眷思量',
+    'The Knockout': '狂飙',
+    'The Legend of Korra': '科拉传奇',
+    'The Lives of Others': '窃听风暴',
     'The Long Night': '权力的游戏 (电视剧)',
-    'The Long Season': '???? 076',
+    'The Long Season': '漫长的季节',
     'The Making of an Ordinary Woman': '非凡家庭',
     'The Marvelous Mrs. Maisel': '漫才梅索太太',
-    'The Newsroom': '???? 096',
-    'The Office': '???? 111',
+    'The Newsroom': '新闻编辑室',
+    'The Office': '办公室',
     'The Outcast': '白幽灵传奇之绝命逃亡',
-    'The Pianist': '???? 063',
+    'The Pianist': '钢琴家',
     'The Prestige': '頂尖對決',
     'The Shawshank Redemption': '肖申克的救赎',
     'The Silence of the Lambs': '沉默的羔羊',
     'The Sopranos': '黑道家族',
-    'The Truman Show': '???? 059',
-    'The West Wing': '???? 097',
-    'The Wild Goose Lake': '???? 037',
+    'The Truman Show': '楚门的世界',
+    'The West Wing': '白宫风云',
+    'The Wild Goose Lake': '南方车站的聚会',
     'The Wire': '火线重案组',
-    'The World Between Us': '???? 137',
-    'This Is Going to Hurt': '???? 102',
-    'Three Billboards Outside Ebbing Missouri': '???? 017',
-    'To Be Hero': '???? 231',
-    'To Live': '???? 031',
-    'To Your Eternity': '???? 221',
+    'The World Between Us': '我们与恶的距离',
+    'This Is Going to Hurt': '疼痛难免',
+    'Three Billboards Outside Ebbing Missouri': '三块广告牌',
+    'To Be Hero': '凸变英雄',
+    'To Live': '活着',
+    'To Your Eternity': '致不灭的你',
     'Tokyo Story': '東京物語',
-    'True Detective': '???? 084',
-    'Vinland Saga': '???? 190',
-    'Violet Evergarden': '???? 198',
-    'Whiplash': '???? 052',
-    'White Cat Legend': '???? 224',
-    'White War': '???? 142',
-    'Why Try to Change Me Now': '???? 153',
-    'Witness for the Prosecution': '???? 057',
-    "Wolf's Rain": '???? 203',
-    'Workers': '???? 141',
+    'True Detective': '真探',
+    'Vinland Saga': '海盗战记',
+    'Violet Evergarden': '紫罗兰永恒花园',
+    'Whiplash': '爆裂鼓手',
+    'White Cat Legend': '大理寺日志',
+    'White War': '战毒',
+    'Why Try to Change Me Now': '平原上的摩西',
+    'Witness for the Prosecution': '控方证人',
+    "Wolf's Rain": '狼雨',
+    'Workers': '做工的人',
     'Yao Chinese Folktales': '中国奇谭',
     'Yi Yi': '一一',
-    'Your Lie in April': '???? 187',
-    'Zhen Dao Ge': '???? 228',
+    'Your Lie in April': '四月是你的谎言',
+    'Zhen Dao Ge': '枕刀歌',
 }
 
 PREMIUM_DISPLAY_TITLE_OVERRIDES: dict[str, str] = {
@@ -1179,6 +1438,30 @@ PREMIUM_DISPLAY_TITLE_OVERRIDES: dict[str, str] = {
 }
 
 CRITICAL_PREMIUM_DISPLAY_TITLES = PREMIUM_DISPLAY_TITLE_OVERRIDES
+
+
+_CURATED_DISPLAY_TITLE_ALIAS_INDEX: dict[str, str] | None = None
+
+
+def curated_display_title_for_alias(value: object) -> str:
+    """Resolve a trusted Chinese display title from a known source alias."""
+
+    global _CURATED_DISPLAY_TITLE_ALIAS_INDEX
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    direct = PREMIUM_DISPLAY_TITLE_OVERRIDES.get(text) or PREMIUM_DISPLAY_TITLES.get(text)
+    if direct:
+        return direct
+    if _CURATED_DISPLAY_TITLE_ALIAS_INDEX is None:
+        index: dict[str, str] = {}
+        for mapping in (PREMIUM_DISPLAY_TITLES, PREMIUM_DISPLAY_TITLE_OVERRIDES):
+            for alias, title in mapping.items():
+                key = normalize_title(alias)
+                if key:
+                    index[key] = title
+        _CURATED_DISPLAY_TITLE_ALIAS_INDEX = index
+    return _CURATED_DISPLAY_TITLE_ALIAS_INDEX.get(normalize_title(text), "")
 
 
 def _looks_ascii_or_mojibake(title: str) -> bool:

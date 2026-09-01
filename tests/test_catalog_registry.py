@@ -23,9 +23,82 @@ class CatalogRegistryTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def register(self, items, now=100.0, user_id="272042071"):
+    def register(self, items, now=100.0, user_id="123456789"):
         with self.database.connection() as connection:
             return CatalogRegistry.register_sync_items(connection, user_id, items, now)
+
+    def test_enriched_people_photo_map_replaces_stale_provider_placeholders(self):
+        item_key = "douban:42"
+        existing = MediaItem(
+            title="Portrait cleanup",
+            douban_id="42",
+            directors=["Director A"],
+            casts=["Actor B"],
+            raw={
+                "people_photos": {
+                    "Director A": "https://img1.doubanio.com/f/vendors/pics/personage-default-medium.png",
+                    "Actor B": "https://img1.doubanio.com/actor.jpg",
+                }
+            },
+        )
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES(?, ?, 'candidate', 'test', 1, 1)
+                """,
+                (item_key, json.dumps(existing.__dict__, ensure_ascii=False)),
+            )
+            enriched = MediaItem(
+                title="Portrait cleanup",
+                douban_id="42",
+                directors=["Director A"],
+                casts=["Actor B"],
+                raw={"people_photos": {"Actor B": "https://img1.doubanio.com/actor.jpg"}},
+            )
+            CatalogRegistry.register_enriched_item(connection, item_key, enriched, 2.0)
+            row = connection.execute(
+                "SELECT payload_json FROM library_items WHERE item_key=?",
+                (item_key,),
+            ).fetchone()
+
+        photos = json.loads(str(row["payload_json"]))["raw"]["people_photos"]
+        self.assertEqual({"Actor B": "https://img1.doubanio.com/actor.jpg"}, photos)
+
+    def test_verified_douban_people_lists_replace_stale_library_people(self):
+        item_key = "douban:1304102"
+        existing = MediaItem(
+            title="谍影重重",
+            douban_id="1304102",
+            directors=["捷克", "道格·里曼"],
+            casts=["马特·达蒙", "弗朗卡·波滕特", "克里斯·库珀"],
+            raw={},
+        )
+        enriched = MediaItem(
+            title="谍影重重",
+            douban_id="1304102",
+            directors=["道格·里曼"],
+            casts=["马特·达蒙", "弗朗卡·波滕特", "克里斯·库珀"],
+            raw={"people_credit_source": "douban:1304102"},
+        )
+
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO library_items(item_key, payload_json, state, source, created_at, updated_at)
+                VALUES(?, ?, 'watched', 'douban_user:collect', 1, 1)
+                """,
+                (item_key, json.dumps(existing.__dict__, ensure_ascii=False)),
+            )
+            CatalogRegistry.register_enriched_item(connection, item_key, enriched, 2.0)
+            row = connection.execute(
+                "SELECT payload_json FROM library_items WHERE item_key=?",
+                (item_key,),
+            ).fetchone()
+
+        payload = json.loads(str(row["payload_json"]))
+        self.assertEqual(["道格·里曼"], payload["directors"])
+        self.assertEqual(["马特·达蒙", "弗朗卡·波滕特", "克里斯·库珀"], payload["casts"])
 
     def test_collect_maps_to_watched_wish_maps_to_wish_and_watched_wins(self):
         with self.database.connection() as connection:
@@ -85,7 +158,7 @@ class CatalogRegistryTests(unittest.TestCase):
         self.assertEqual(by_key["douban:101"]["state"], "watched")
         self.assertEqual(by_key["douban:102"]["state"], "wish")
         self.assertEqual(by_key["douban:103"]["state"], "candidate")
-        self.assertEqual(by_key["douban:101"]["source"], "douban-sync:272042071:watched")
+        self.assertEqual(by_key["douban:101"]["source"], "douban-sync:123456789:watched")
         self.assertEqual(
             json.loads(str(by_key["douban:101"]["payload_json"]))["summary"],
             "authoritative watched payload",
@@ -115,7 +188,7 @@ class CatalogRegistryTests(unittest.TestCase):
                 "SELECT payload_json, state, source FROM library_items WHERE item_key='douban:101'"
             ).fetchone()
         self.assertEqual(row["state"], "watched")
-        self.assertEqual(row["source"], "douban-sync:272042071:watched")
+        self.assertEqual(row["source"], "douban-sync:123456789:watched")
         self.assertEqual(json.loads(str(row["payload_json"]))["summary"], "authoritative watched payload")
 
     def test_creates_deterministic_media_people_and_douban_provider_identities(self):
@@ -256,7 +329,7 @@ class CatalogRegistryTests(unittest.TestCase):
         )
         self.assertEqual(library_times["created_at"], 10.0)
         self.assertEqual(library_times["updated_at"], 20.0)
-        self.assertEqual(active_user, "272042071")
+        self.assertEqual(active_user, "123456789")
 
     def test_registry_does_not_commit_outside_the_callers_sync_transaction(self):
         item = MediaItem(
@@ -270,7 +343,7 @@ class CatalogRegistryTests(unittest.TestCase):
                 connection.execute(
                     """
                     INSERT INTO sync_jobs(id, user_id, state, request_json, result_json, created_at, updated_at)
-                    VALUES('job-1', '272042071', 'running', '{}', '{}', 1, 1)
+                    VALUES('job-1', '123456789', 'running', '{}', '{}', 1, 1)
                     """
                 )
                 connection.execute(
@@ -279,7 +352,7 @@ class CatalogRegistryTests(unittest.TestCase):
                     VALUES('job-1', 'douban:8001', '{}', 'douban_user:collect', 'ready')
                     """
                 )
-                CatalogRegistry.register_sync_items(connection, "272042071", [item], 1.0)
+                CatalogRegistry.register_sync_items(connection, "123456789", [item], 1.0)
                 raise RuntimeError("abort sync")
 
         with self.database.connection() as connection:
@@ -346,7 +419,7 @@ class CatalogRegistryTests(unittest.TestCase):
             ).fetchone()
         payload = json.loads(row["payload_json"])
         self.assertEqual(row["state"], "watched")
-        self.assertTrue(str(row["source"]).startswith("douban-sync:272042071:watched"))
+        self.assertTrue(str(row["source"]).startswith("douban-sync:123456789:watched"))
         self.assertEqual(payload["my_rating"], 5)
         self.assertEqual(payload["douban_rating"], 9.1)
         self.assertEqual(payload["summary"], "Rich public synopsis")

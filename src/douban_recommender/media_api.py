@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .database import AppDatabase
+from .douban_sources import (
+    POSTER_SEARCH_ALIASES,
+    STATIC_POSTER_IDS_BY_TITLE,
+    STATIC_POSTER_URLS_BY_TITLE,
+)
 from .media.orchestrator import MediaOrchestrator, MediaResolutionRequest
 from .media.providers.base import AssetQuery
 from .media.store import MediaStore, StoredAsset
@@ -183,13 +188,36 @@ class MediaApi:
                 for key in ("title", "year", "media_type", "countries", "directors", "casts"):
                     if not hydrated.get(key):
                         hydrated[key] = metadata.get(key) or library.get(key)
+                raw = library.get("raw") if isinstance(library.get("raw"), dict) else {}
+                hydrated["original_titles"] = _merge_unique(
+                    hydrated.get("original_titles") or hydrated.get("originalTitles"),
+                    metadata.get("original_titles"),
+                    library.get("original_titles"),
+                    raw.get("aliases"),
+                )
+                configured_aliases: list[str] = []
+                for known_title in _merge_unique(hydrated.get("title"), hydrated.get("original_titles")):
+                    configured_aliases.extend(POSTER_SEARCH_ALIASES.get(known_title, ()))
+                hydrated["original_titles"] = _merge_unique(
+                    hydrated.get("original_titles"),
+                    configured_aliases,
+                )
                 source_keys = (
                     ("backdrop_url", "backdrop") if kind == "backdrop"
                     else ("cover_url", "cover")
                 )
-                raw = library.get("raw") if isinstance(library.get("raw"), dict) else {}
+                exact_titles = _merge_unique(
+                    hydrated.get("title"),
+                    hydrated.get("original_titles"),
+                )
+                static_source_urls = [
+                    STATIC_POSTER_URLS_BY_TITLE[title]
+                    for title in exact_titles
+                    if title in STATIC_POSTER_URLS_BY_TITLE
+                ] if kind == "poster" else []
                 hydrated["source_urls"] = _merge_unique(
                     hydrated.get("source_urls") or hydrated.get("sourceUrls") or hydrated.get("source_url") or hydrated.get("sourceUrl"),
+                    static_source_urls,
                     metadata.get(source_keys[0]),
                     library.get(source_keys[1]),
                     raw.get(source_keys[1]),
@@ -203,6 +231,16 @@ class MediaApi:
                     entity_ids,
                 ).fetchall()
         discovered_ids = {str(row["provider"]): str(row["provider_id"]) for row in provider_rows}
+        if kind != "portrait":
+            exact_titles = _merge_unique(hydrated.get("title"), hydrated.get("original_titles"))
+            static_identity = next(
+                (STATIC_POSTER_IDS_BY_TITLE[title] for title in exact_titles if title in STATIC_POSTER_IDS_BY_TITLE),
+                "",
+            )
+            if "-" in static_identity:
+                provider, provider_id = static_identity.split("-", 1)
+                if provider and provider_id:
+                    discovered_ids.setdefault(provider, provider_id)
         hydrated["provider_ids"] = {**discovered_ids, **_provider_ids(hydrated.get("provider_ids") or hydrated.get("providerIds"))}
         return hydrated
 
@@ -259,14 +297,31 @@ class MediaApi:
             asset_row = connection.execute(
                 "SELECT COUNT(*) AS total, COALESCE(SUM(byte_size), 0) AS bytes FROM asset_files"
             ).fetchone()
+            asset_kind_rows = connection.execute(
+                """
+                SELECT overrides.kind, COUNT(*) AS count
+                FROM user_asset_overrides AS overrides
+                JOIN asset_files AS assets ON assets.asset_id = overrides.asset_id
+                WHERE overrides.decision = 'selected'
+                  AND overrides.asset_id IS NOT NULL
+                  AND assets.status = 'ready'
+                GROUP BY overrides.kind
+                """
+            ).fetchall()
             job_rows = connection.execute(
                 "SELECT state, COUNT(*) AS count FROM resolution_jobs GROUP BY state"
             ).fetchall()
+        asset_counts = {"poster": 0, "backdrop": 0, "portrait": 0}
+        for row in asset_kind_rows:
+            kind = str(row["kind"] or "").strip().lower()
+            if kind in asset_counts:
+                asset_counts[kind] = int(row["count"])
         return {
             "schema_version": 2,
             "assets": {
                 "total": int(asset_row["total"]),
                 "bytes": int(asset_row["bytes"]),
+                "by_kind": asset_counts,
             },
             "jobs": {str(row["state"]): int(row["count"]) for row in job_rows},
             "delivery": "local-only",

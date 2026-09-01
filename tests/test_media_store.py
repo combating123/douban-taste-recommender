@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -13,7 +14,7 @@ from douban_recommender.media.store import MediaStore
 from douban_recommender.media.validator import MediaValidationError, validate_image_bytes
 
 
-def image_bytes(size=(160, 240), image_format="PNG", color="navy"):
+def image_bytes(size=(180, 270), image_format="PNG", color="navy"):
     output = io.BytesIO()
     Image.new("RGB", size, color).save(output, format=image_format)
     return output.getvalue()
@@ -30,7 +31,7 @@ class MediaValidatorTests(unittest.TestCase):
 
     def test_decodes_dimensions_format_and_hash(self):
         result = validate_image_bytes(image_bytes())
-        self.assertEqual((result.width, result.height), (160, 240))
+        self.assertEqual((result.width, result.height), (180, 270))
         self.assertEqual((result.extension, result.mime_type), (".png", "image/png"))
         self.assertEqual(len(result.sha256), 64)
 
@@ -41,6 +42,18 @@ class MediaValidatorTests(unittest.TestCase):
     def test_rejects_declared_non_image_even_when_bytes_decode(self):
         with self.assertRaisesRegex(MediaValidationError, "declared content type"):
             validate_image_bytes(image_bytes(), "text/html")
+
+    def test_rejects_landscape_or_tiny_artwork_when_used_as_poster(self):
+        with self.assertRaisesRegex(MediaValidationError, "poster"):
+            validate_image_bytes(image_bytes(size=(270, 216)), kind="poster")
+        with self.assertRaisesRegex(MediaValidationError, "poster"):
+            validate_image_bytes(image_bytes(size=(100, 140)), kind="poster")
+
+    def test_accepts_portrait_poster_and_square_person_portrait(self):
+        poster = validate_image_bytes(image_bytes(size=(500, 750)), kind="poster")
+        portrait = validate_image_bytes(image_bytes(size=(320, 320)), kind="portrait")
+        self.assertEqual((poster.width, poster.height), (500, 750))
+        self.assertEqual((portrait.width, portrait.height), (320, 320))
 
 
 class MediaStoreTests(unittest.TestCase):
@@ -64,6 +77,15 @@ class MediaStoreTests(unittest.TestCase):
         with self.database.connection() as connection:
             count = connection.execute("SELECT COUNT(*) FROM asset_files").fetchone()[0]
         self.assertEqual(count, 1)
+
+    def test_store_refuses_to_persist_generic_landscape_image_as_poster(self):
+        validated = validate_image_bytes(image_bytes(size=(270, 216)))
+
+        with self.assertRaisesRegex(ValueError, "poster"):
+            self.store.put(validated, "https://img.example/still.png", "poster")
+
+        with self.database.connection() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM asset_files").fetchone()[0], 0)
 
     def test_same_bytes_can_bind_as_poster_and_backdrop(self):
         validated = validate_image_bytes(image_bytes(size=(320, 480)))
@@ -289,8 +311,79 @@ class MediaStoreTests(unittest.TestCase):
 
         self.assertIsNone(self.store.lookup(asset_id))
 
+    def test_lookup_rejects_legacy_asset_that_violates_its_manifest_kind(self):
+        validated = validate_image_bytes(image_bytes(size=(270, 216), color="navy"))
+        relative = Path(validated.sha256[:2]) / f"{validated.sha256}{validated.extension}"
+        path = self.store.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(validated.data)
+
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO asset_files(
+                    asset_id, sha256, relative_path, mime_type, extension,
+                    width, height, byte_size, source_url, kind, status,
+                    created_at, last_verified_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'poster', 'ready', 0, 0)
+                """,
+                (
+                    validated.sha256,
+                    validated.sha256,
+                    relative.as_posix(),
+                    validated.mime_type,
+                    validated.extension,
+                    validated.width,
+                    validated.height,
+                    len(validated.data),
+                    "https://img.example/legacy-landscape.png",
+                ),
+            )
+
+        self.assertIsNone(self.store.lookup(validated.sha256))
+
+    def test_lookup_reuses_verified_immutable_asset_until_its_file_stat_changes(self):
+        validated = validate_image_bytes(image_bytes(size=(240, 360), color="navy"), kind="poster")
+        relative = Path(validated.sha256[:2]) / f"{validated.sha256}{validated.extension}"
+        path = self.store.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(validated.data)
+        with self.database.connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO asset_files(
+                    asset_id, sha256, relative_path, mime_type, extension,
+                    width, height, byte_size, source_url, kind, status,
+                    created_at, last_verified_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'poster', 'ready', 0, 0)
+                """,
+                (
+                    validated.sha256,
+                    validated.sha256,
+                    relative.as_posix(),
+                    validated.mime_type,
+                    validated.extension,
+                    validated.width,
+                    validated.height,
+                    len(validated.data),
+                    "https://img.example/cached.png",
+                ),
+            )
+
+        with mock.patch(
+            "douban_recommender.media.store.validate_image_bytes",
+            wraps=validate_image_bytes,
+        ) as validate:
+            self.assertIsNotNone(self.store.lookup(validated.sha256))
+            self.assertIsNotNone(self.store.lookup(validated.sha256))
+            self.assertEqual(1, validate.call_count)
+
+            path.write_bytes(image_bytes(size=(240, 360), color="green"))
+            self.assertIsNone(self.store.lookup(validated.sha256))
+            self.assertEqual(2, validate.call_count)
+
     def test_lookup_rejects_manifest_metadata_that_does_not_match_decoded_image(self):
-        validated = validate_image_bytes(image_bytes(size=(160, 240), color="navy"))
+        validated = validate_image_bytes(image_bytes(size=(180, 270), color="navy"))
         stored = self.store.put(validated, "https://img.example/a.png", "poster")
         cases = (
             ("mime_type", "image/jpeg"),

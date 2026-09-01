@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import inspect
 import os
@@ -7,28 +8,31 @@ import threading
 import time
 import uuid
 import webbrowser
+from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 import urllib.error
 import urllib.request
 
 from .candidate_planner import build_candidate_plan
 from .catalog_api import CatalogApi, CatalogApiError, build_default_catalog_api
+from .catalog_hydration import CatalogHydrationCoordinator
 from .crawler import crawl_user_collections, normalize_douban_user_id, redact_cookie_from_message
 from .curated_catalog import apply_curated_people_photos, apply_curated_posters, backfill_missing_media_types
 from .database import AppDatabase
 from .diagnostics import build_diagnostics, unknown_diagnostics
 from .douban_sources import enrich_media_items, enrich_missing_posters_from_subject_suggest, enrich_missing_posters_from_web_sources, fetch_candidates_from_plan, fetch_douban_candidates, fetch_url_candidates
 from .douban_sources import needs_external_poster_rescue, poster_source_config_from_dict
-from .douban_sources import build_url_opener
+from .douban_sources import build_retry_url_opener, build_url_opener
 from .io import load_media_csv, load_media_csv_from_text, read_text_file
 from .media_api import MediaApi, build_default_media_api
+from .media.url_candidates import image_request_headers, image_url_candidates as shared_image_url_candidates
 from .models import MediaItem, is_safe_route_segment
 from .profiler import build_taste_profile
 from .recommendation_api import RecommendationApi, RecommendationApiError, build_default_recommendation_api
 from .recommender import recommend
-from .runtime_paths import resolve_database_path
+from .runtime_paths import resolve_data_dir, resolve_database_path
 from .serialization import media_item_from_dict, media_item_to_dict
 from .storage import CacheStore, default_cache_dir
 from .sync_api import SyncApi, build_default_sync_api
@@ -43,10 +47,26 @@ POSTER_JOBS: dict[str, dict[str, object]] = {}
 POSTER_JOBS_LOCK = threading.Lock()
 MAX_POSTER_JOB_EVENTS = 80
 IMAGE_PROXY_CACHE: dict[str, tuple[bytes, str]] = {}
+IMAGE_PROXY_NEGATIVE_CACHE: dict[str, tuple[float, str]] = {}
+IMAGE_PROXY_INFLIGHT: dict[str, Future[tuple[bytes, str]]] = {}
 MAX_IMAGE_PROXY_CACHE_ITEMS = 512
+IMAGE_PROXY_NEGATIVE_TTL_SECONDS = 300.0
+IMAGE_PROXY_REQUEST_TIMEOUT_SECONDS = 3.0
+IMAGE_PROXY_TOTAL_BUDGET_SECONDS = 6.0
+MAX_IMAGE_PROXY_NETWORK_ATTEMPTS = 4
+IMAGE_PROXY_CACHE_LOCK = threading.RLock()
+IMAGE_PROXY_DISK_CACHE_DIR = resolve_data_dir() / "image-proxy-cache"
+IMAGE_PROXY_CONTENT_TYPE_EXTENSIONS = {
+    "image/avif": ".avif",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
 CINESCOPE_SYNC_ENRICH_LIMIT = 40
 PUBLIC_PEOPLE_PHOTO_CACHE: dict[str, str] = {}
-PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE: set[str] = set()
+PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE: dict[str, float] = {}
+PUBLIC_PEOPLE_NEGATIVE_TTL_SECONDS = 120.0
 MEDIA_API: MediaApi | None = None
 MEDIA_API_LOCK = threading.Lock()
 SYNC_API: SyncApi | None = None
@@ -55,6 +75,8 @@ RECOMMENDATION_API: RecommendationApi | None = None
 RECOMMENDATION_API_LOCK = threading.Lock()
 CATALOG_API: CatalogApi | None = None
 CATALOG_API_LOCK = threading.Lock()
+CATALOG_HYDRATOR: CatalogHydrationCoordinator | None = None
+CATALOG_HYDRATOR_LOCK = threading.Lock()
 CATALOG_SCHEMA_VERSION = 2
 PUBLIC_PEOPLE_QUERY_ALIASES: dict[str, str] = {
     "黑泽明": "Akira Kurosawa",
@@ -132,6 +154,16 @@ def get_catalog_api() -> CatalogApi:
         if CATALOG_API is None:
             CATALOG_API = build_default_catalog_api()
     return CATALOG_API
+
+
+def get_catalog_hydrator() -> CatalogHydrationCoordinator:
+    global CATALOG_HYDRATOR
+    if CATALOG_HYDRATOR is not None:
+        return CATALOG_HYDRATOR
+    with CATALOG_HYDRATOR_LOCK:
+        if CATALOG_HYDRATOR is None:
+            CATALOG_HYDRATOR = CatalogHydrationCoordinator(get_catalog_api())
+    return CATALOG_HYDRATOR
 
 
 def get_runtime_diagnostics() -> dict[str, object]:
@@ -447,45 +479,77 @@ def build_image_request(url: str) -> urllib.request.Request:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("invalid image url")
-    return urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
-        "Referer": "https://m.douban.com/" if "doubanio.com" in parsed.netloc else "https://movie.douban.com/",
-        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-    })
+    return urllib.request.Request(url, headers=image_request_headers(url))
 
 
 def image_url_candidates(url: str) -> list[str]:
-    clean_url = str(url or "").strip()
-    candidates = [clean_url] if clean_url else []
-    parsed = urlparse(clean_url)
-    if (
-        parsed.scheme in {"http", "https"}
-        and parsed.netloc.endswith("upload.wikimedia.org")
-        and "/wikipedia/commons/" in parsed.path
-        and "/wikipedia/commons/thumb/" not in parsed.path
-    ):
-        filename = parsed.path.rsplit("/", 1)[-1]
-        if filename:
-            thumb_path = parsed.path.replace("/wikipedia/commons/", "/wikipedia/commons/thumb/", 1)
-            thumb_url = parsed._replace(path=f"{thumb_path}/330px-{filename}").geturl()
-            if thumb_url not in candidates:
-                candidates.append(thumb_url)
-    return candidates
+    return list(shared_image_url_candidates(url))
+
+
+def _validate_proxy_image_payload(data: bytes, content_type: str) -> tuple[bytes, str]:
+    clean_type = (content_type or "image/jpeg").split(";")[0].strip().lower()
+    head = (data or b"")[:80].lstrip().lower()
+    if not clean_type.startswith("image/") or head.startswith((b"<script", b"<!doctype", b"<html")):
+        raise ValueError("remote image returned non-image content")
+    if clean_type == "image/png" and len(data or b"") < 64:
+        raise ValueError("remote image returned an empty transparent placeholder")
+    return data, clean_type
+
+
+def _image_proxy_disk_key(url: str) -> str:
+    return hashlib.sha256(str(url or "").strip().encode("utf-8")).hexdigest()
+
+
+def _read_image_proxy_disk_cache(url: str) -> tuple[bytes, str] | None:
+    stem = _image_proxy_disk_key(url)
+    root = Path(IMAGE_PROXY_DISK_CACHE_DIR)
+    for content_type, extension in IMAGE_PROXY_CONTENT_TYPE_EXTENSIONS.items():
+        path = root / f"{stem}{extension}"
+        try:
+            if not path.is_file():
+                continue
+            return _validate_proxy_image_payload(path.read_bytes(), content_type)
+        except (OSError, ValueError):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return None
+
+
+def _write_image_proxy_disk_cache(url: str, data: bytes, content_type: str) -> None:
+    extension = IMAGE_PROXY_CONTENT_TYPE_EXTENSIONS.get(content_type)
+    if not extension:
+        return
+    root = Path(IMAGE_PROXY_DISK_CACHE_DIR)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        destination = root / f"{_image_proxy_disk_key(url)}{extension}"
+        temporary = root / f".{destination.name}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        temporary.write_bytes(data)
+        temporary.replace(destination)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
 
 
 def fetch_proxy_image(url: str) -> tuple[bytes, str]:
-    def validate_image_payload(data: bytes, content_type: str) -> tuple[bytes, str]:
-        clean_type = (content_type or "image/jpeg").split(";")[0].strip().lower()
-        head = (data or b"")[:80].lstrip().lower()
-        if not clean_type.startswith("image/") or head.startswith((b"<script", b"<!doctype", b"<html")):
-            raise ValueError("remote image returned non-image content")
-        return data, clean_type
 
     def read_with_opener(opener, image_url: str) -> tuple[bytes, str]:
+        nonlocal network_attempts
+        if network_attempts >= MAX_IMAGE_PROXY_NETWORK_ATTEMPTS:
+            raise TimeoutError("image proxy attempt budget exhausted")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("image proxy time budget exhausted")
+        network_attempts += 1
         request = build_image_request(image_url)
-        with opener.open(request, timeout=12) as response:
+        timeout = min(IMAGE_PROXY_REQUEST_TIMEOUT_SECONDS, max(0.1, remaining))
+        with opener.open(request, timeout=timeout) as response:
             content_type = response.headers.get("Content-Type") or "image/jpeg"
-            return validate_image_payload(response.read(), content_type)
+            return _validate_proxy_image_payload(response.read(), content_type)
 
     def closed_http_error_details(error: urllib.error.HTTPError) -> tuple[int, str]:
         try:
@@ -494,54 +558,109 @@ def fetch_proxy_image(url: str) -> tuple[bytes, str]:
             error.close()
 
     cache_key = str(url or "").strip()
-    cached = IMAGE_PROXY_CACHE.get(cache_key)
+    with IMAGE_PROXY_CACHE_LOCK:
+        cached = IMAGE_PROXY_CACHE.get(cache_key)
     if cached:
         return cached
+    disk_cached = _read_image_proxy_disk_cache(cache_key)
+    if disk_cached:
+        with IMAGE_PROXY_CACHE_LOCK:
+            IMAGE_PROXY_CACHE[cache_key] = disk_cached
+            IMAGE_PROXY_NEGATIVE_CACHE.pop(cache_key, None)
+        return disk_cached
 
-    last_error: urllib.error.URLError | tuple[int, str] | None = None
-    result: tuple[bytes, str] | None = None
-    for candidate_url in image_url_candidates(cache_key):
-        try:
-            result = read_with_opener(build_url_opener(), candidate_url)
-            break
-        except urllib.error.HTTPError as exc:
-            last_error = closed_http_error_details(exc)
-            try:
-                direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                result = read_with_opener(direct_opener, candidate_url)
-                break
-            except urllib.error.HTTPError as direct_exc:
-                last_error = closed_http_error_details(direct_exc)
-                continue
-            except urllib.error.URLError as direct_exc:
-                last_error = direct_exc
-                continue
-        except urllib.error.URLError as exc:
-            last_error = exc
-            try:
-                direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                result = read_with_opener(direct_opener, candidate_url)
-                break
-            except urllib.error.HTTPError as direct_exc:
-                last_error = closed_http_error_details(direct_exc)
-                continue
-            except urllib.error.URLError as direct_exc:
-                last_error = direct_exc
-                continue
-    if result is None:
-        if isinstance(last_error, tuple):
-            status_code, reason = last_error
-            error = urllib.error.HTTPError("", status_code, reason, hdrs=None, fp=None)
-            error.close()
-            raise error
-        if last_error:
-            raise last_error
-        raise ValueError("invalid image url")
-    if len(IMAGE_PROXY_CACHE) >= MAX_IMAGE_PROXY_CACHE_ITEMS:
-        IMAGE_PROXY_CACHE.pop(next(iter(IMAGE_PROXY_CACHE)), None)
-    IMAGE_PROXY_CACHE[cache_key] = result
-    return result
+    with IMAGE_PROXY_CACHE_LOCK:
+        cached = IMAGE_PROXY_CACHE.get(cache_key)
+        if cached:
+            return cached
+        now = time.monotonic()
+        negative_cached = IMAGE_PROXY_NEGATIVE_CACHE.get(cache_key)
+        if negative_cached and negative_cached[0] <= now:
+            IMAGE_PROXY_NEGATIVE_CACHE.pop(cache_key, None)
+            negative_cached = None
+        if negative_cached:
+            raise urllib.error.URLError(negative_cached[1])
+        inflight = IMAGE_PROXY_INFLIGHT.get(cache_key)
+        is_owner = inflight is None
+        if inflight is None:
+            inflight = Future()
+            IMAGE_PROXY_INFLIGHT[cache_key] = inflight
 
+    if not is_owner:
+        return inflight.result()
+
+    try:
+        last_error: Exception | tuple[int, str] | None = None
+        result: tuple[bytes, str] | None = None
+        deadline = time.monotonic() + IMAGE_PROXY_TOTAL_BUDGET_SECONDS
+        network_attempts = 0
+        for candidate_url in image_url_candidates(cache_key):
+            if network_attempts >= MAX_IMAGE_PROXY_NETWORK_ATTEMPTS or time.monotonic() >= deadline:
+                break
+            try:
+                result = read_with_opener(build_url_opener(), candidate_url)
+                break
+            except urllib.error.HTTPError as exc:
+                last_error = closed_http_error_details(exc)
+                try:
+                    result = read_with_opener(build_retry_url_opener(), candidate_url)
+                    break
+                except urllib.error.HTTPError as direct_exc:
+                    last_error = closed_http_error_details(direct_exc)
+                    continue
+                except (urllib.error.URLError, ValueError, TimeoutError) as direct_exc:
+                    last_error = direct_exc
+                    continue
+            except urllib.error.URLError as exc:
+                last_error = exc
+                try:
+                    result = read_with_opener(build_retry_url_opener(), candidate_url)
+                    break
+                except urllib.error.HTTPError as direct_exc:
+                    last_error = closed_http_error_details(direct_exc)
+                    continue
+                except (urllib.error.URLError, ValueError, TimeoutError) as direct_exc:
+                    last_error = direct_exc
+                    continue
+            except (ValueError, TimeoutError) as exc:
+                last_error = exc
+                continue
+        if result is None:
+            if isinstance(last_error, tuple):
+                failure_message = f"HTTP {last_error[0]}: {last_error[1]}"
+            else:
+                failure_message = str(last_error or "image unavailable")
+            with IMAGE_PROXY_CACHE_LOCK:
+                if len(IMAGE_PROXY_NEGATIVE_CACHE) >= MAX_IMAGE_PROXY_CACHE_ITEMS:
+                    IMAGE_PROXY_NEGATIVE_CACHE.pop(next(iter(IMAGE_PROXY_NEGATIVE_CACHE)), None)
+                IMAGE_PROXY_NEGATIVE_CACHE[cache_key] = (
+                    time.monotonic() + IMAGE_PROXY_NEGATIVE_TTL_SECONDS,
+                    failure_message,
+                )
+            if isinstance(last_error, tuple):
+                status_code, reason = last_error
+                error = urllib.error.HTTPError(cache_key, status_code, reason, hdrs=None, fp=None)
+                error.close()
+                raise error
+            if last_error:
+                raise last_error
+            raise ValueError("invalid image url")
+        with IMAGE_PROXY_CACHE_LOCK:
+            if len(IMAGE_PROXY_CACHE) >= MAX_IMAGE_PROXY_CACHE_ITEMS:
+                IMAGE_PROXY_CACHE.pop(next(iter(IMAGE_PROXY_CACHE)), None)
+            IMAGE_PROXY_CACHE[cache_key] = result
+            IMAGE_PROXY_NEGATIVE_CACHE.pop(cache_key, None)
+        _write_image_proxy_disk_cache(cache_key, result[0], result[1])
+    except BaseException as exc:
+        inflight.set_exception(exc)
+        raise
+    else:
+        inflight.set_result(result)
+        return result
+    finally:
+        with IMAGE_PROXY_CACHE_LOCK:
+            if IMAGE_PROXY_INFLIGHT.get(cache_key) is inflight:
+                IMAGE_PROXY_INFLIGHT.pop(cache_key, None)
 
 def visible_people_names_for_item(item: MediaItem) -> set[str]:
     return {
@@ -654,8 +773,11 @@ def resolve_public_people_photos(names: list[str] | tuple[str, ...] | set[str]) 
         if name in PUBLIC_PEOPLE_PHOTO_CACHE:
             resolved[name] = PUBLIC_PEOPLE_PHOTO_CACHE[name]
             continue
-        if name in PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE:
+        now = time.monotonic()
+        negative_at = PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE.get(name)
+        if negative_at is not None and now - negative_at < PUBLIC_PEOPLE_NEGATIVE_TTL_SECONDS:
             continue
+        PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE.pop(name, None)
         found = ""
         for query in _public_people_query_candidates(name):
             languages = ["en", "zh", "ja", "ko"] if all(ord(ch) < 128 for ch in query) else ["zh", "en", "ja", "ko"]
@@ -694,7 +816,7 @@ def resolve_public_people_photos(names: list[str] | tuple[str, ...] | set[str]) 
             PUBLIC_PEOPLE_PHOTO_CACHE[name] = found
             resolved[name] = found
         else:
-            PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE.add(name)
+            PUBLIC_PEOPLE_PHOTO_NEGATIVE_CACHE[name] = now
     return resolved
 
 
@@ -732,8 +854,20 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/image-proxy":
                 query = parse_qs(parsed.query)
                 image_url = query.get("url", [""])[0]
-                data, content_type = fetch_proxy_image(image_url)
-                self.send_bytes(data, content_type=content_type)
+                try:
+                    data, content_type = fetch_proxy_image(image_url)
+                except (urllib.error.URLError, ValueError, TimeoutError):
+                    self.send_json(
+                        {"error": "image unavailable"},
+                        status=404,
+                        cache_control="public, max-age=300",
+                    )
+                    return
+                self.send_bytes(
+                    data,
+                    content_type=content_type,
+                    cache_control="public, max-age=2592000, immutable",
+                )
             elif path.startswith("/media/"):
                 route_filename = path.removeprefix("/media/")
                 asset = get_media_api().asset(route_filename)
@@ -747,30 +881,48 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/v2/media/health":
                 self.send_json(get_media_api().health())
+            elif path == "/api/v2/catalog/hydration":
+                self.send_json({"schema_version": 2, **get_catalog_hydrator().status()})
             elif path == "/api/v2/diagnostics":
                 self.send_json(get_runtime_diagnostics())
             elif path.startswith("/api/v2/media/jobs/"):
                 job_id = path.rsplit("/", 1)[-1]
                 data = get_media_api().get_job(job_id)
-                self.send_json(data, status=404 if data.get("error") else 200)
+                self.send_json(data, status=404 if data.get("error") == "media job not found" else 200)
+            elif path == "/api/v2/titles/search":
+                self.send_json(get_catalog_api().search_titles(parse_qs(parsed.query)))
+            elif path == "/api/v2/discovery/similar":
+                self.send_json(get_catalog_api().similar_titles(parse_qs(parsed.query)))
+            elif path == "/api/v2/discovery/multi":
+                self.send_json(get_catalog_api().multi_focus_titles(parse_qs(parsed.query)))
             elif path.startswith("/api/v2/titles/"):
-                title_id = path.removeprefix("/api/v2/titles/").strip("/")
+                title_id = unquote(path.removeprefix("/api/v2/titles/").strip("/"))
                 if not is_safe_route_segment(title_id):
                     self.send_json(catalog_error_payload("not found"), status=404)
                     return
                 self.send_json(get_catalog_api().get_title(title_id))
             elif path.startswith("/api/v2/people/"):
-                person_id = path.removeprefix("/api/v2/people/").strip("/")
+                person_id = unquote(path.removeprefix("/api/v2/people/").strip("/"))
                 if not is_safe_route_segment(person_id):
                     self.send_json(catalog_error_payload("not found"), status=404)
                     return
                 self.send_json(get_catalog_api().get_person(person_id))
             elif path == "/api/v2/library":
                 self.send_json(get_catalog_api().list_library(parse_qs(parsed.query)))
+            elif path == "/api/v2/recent":
+                self.send_json(get_catalog_api().recent(parse_qs(parsed.query)))
+            elif path == "/api/v2/discovery/latest":
+                self.send_json(get_catalog_api().latest(parse_qs(parsed.query)))
+            elif path == "/api/v2/observatory":
+                self.send_json(get_catalog_api().observatory(parse_qs(parsed.query)))
             elif path == "/api/v2/taste":
                 self.send_json(get_catalog_api().taste(parse_qs(parsed.query)))
             elif path == "/api/v2/universe":
                 self.send_json(get_catalog_api().universe(parse_qs(parsed.query)))
+            elif path == "/api/v2/sync/settings":
+                self.send_json(get_sync_api().get_settings())
+            elif path == "/api/v2/sync/browser-auth":
+                self.send_json(get_sync_api().get_browser_authorization())
             elif path.startswith("/api/v2/sync/jobs/"):
                 job_id = path.removeprefix("/api/v2/sync/jobs/").strip("/")
                 if not job_id or "/" in job_id:
@@ -822,8 +974,33 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.handle_enrich_people(payload)
             elif path == "/api/poster-jobs":
                 data = self.handle_poster_job_create(payload)
+            elif path == "/api/v2/discovery/query":
+                data = get_catalog_api().discovery_query(payload)
+            elif path == "/api/v2/discovery/blend":
+                data = get_catalog_api().blend_titles(payload)
+            elif path.startswith("/api/v2/titles/") and path.endswith("/enrich"):
+                title_id = unquote(path.removeprefix("/api/v2/titles/")[: -len("/enrich")].strip("/"))
+                if not title_id or "/" in title_id:
+                    self.send_json({"error": "not found"}, status=404)
+                    return
+                data = get_catalog_api().enrich_title(title_id, cookie=str(payload.get("cookie") or ""))
             elif path == "/api/v2/media/jobs":
                 data = get_media_api().create_job(payload)
+            elif path == "/api/v2/sync/browser-auth":
+                try:
+                    data = get_sync_api().start_browser_authorization(payload)
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                    return
+                except RuntimeError as exc:
+                    self.send_json({"error": str(exc)}, status=503)
+                    return
+            elif path == "/api/v2/sync/run-now":
+                try:
+                    data = get_sync_api().run_now()
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+                    return
             elif path == "/api/v2/sync/jobs":
                 try:
                     data = get_sync_api().create_job(payload)
@@ -874,11 +1051,33 @@ class Handler(BaseHTTPRequestHandler):
             cookie = payload.get("cookie") if isinstance(payload, dict) else ""
             self.send_json({"error": redact_cookie_from_message(str(exc), cookie or "")}, status=500)
 
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            if not isinstance(payload, dict):
+                self.send_json({"error": "JSON body must be an object"}, status=400)
+                return
+            if path == "/api/v2/sync/settings":
+                try:
+                    self.send_json(get_sync_api().update_settings(payload))
+                except ValueError as exc:
+                    self.send_json({"error": str(exc)}, status=400)
+            else:
+                self.send_json({"error": "not found"}, status=404)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_json({"error": "invalid JSON body"}, status=400)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=500)
+
     def do_DELETE(self) -> None:
         path = urlparse(self.path).path
         try:
             if path == "/api/cache":
                 self.send_json(self.handle_cache_delete())
+            elif path == "/api/v2/sync/jobs":
+                self.send_json(get_sync_api().clear_history())
             else:
                 self.send_json({"error": "not found"}, status=404)
         except Exception as exc:
@@ -1029,17 +1228,10 @@ class Handler(BaseHTTPRequestHandler):
         wants_enrichment = bool(payload.get("enrich_details", True)) and bool(recs)
         defer_slow_enrichment = wants_enrichment and target_limit > CINESCOPE_SYNC_ENRICH_LIMIT
         if wants_enrichment and not defer_slow_enrichment:
-            poster_enrich_limit = max(1, min(160, len(recs), target_limit))
-            call_poster_enricher(
-                [rec.item for rec in recs],
-                limit=poster_enrich_limit,
-                sleep_seconds=0.01,
-                max_seconds=90.0,
-                source_config=poster_source_config,
-            )
             enrich_limit = max(1, min(24, len(recs), target_limit))
-            enrich_media_items([rec.item for rec in recs[:enrich_limit]], limit=enrich_limit)
+            call_detail_enricher([rec.item for rec in recs[:enrich_limit]], limit=enrich_limit)
         poster_rescue_pending = sum(1 for rec in recs if needs_external_poster_rescue(rec.item))
+        deferred_enrichment = defer_slow_enrichment or poster_rescue_pending > 0
         return {
             "profile": profile.summary(),
             "counts": {
@@ -1051,7 +1243,7 @@ class Handler(BaseHTTPRequestHandler):
                 "returned": len(recs),
                 "candidate_target": target_candidate_total or len(candidates),
                 "deferred_douban_fetch": defer_live_douban_fetch,
-                "deferred_enrichment": defer_slow_enrichment,
+                "deferred_enrichment": deferred_enrichment,
                 "poster_rescue_pending": poster_rescue_pending,
             },
             "poster_sources": poster_config_public_summary(poster_source_config),
@@ -1219,6 +1411,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _write_response_body(self, data: bytes) -> bool:
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return False
+        return True
+
     def send_bytes(
         self,
         data: bytes,
@@ -1232,15 +1431,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(data)
+        self._write_response_body(data)
 
-    def send_json(self, payload: dict, status: int = 200) -> None:
+    def send_json(
+        self,
+        payload: dict,
+        status: int = 200,
+        cache_control: str | None = None,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
-        self.wfile.write(data)
+        self._write_response_body(data)
 
 
 def count_crawl_sources(items) -> tuple[int, int]:
@@ -1264,6 +1470,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(argv)
 
+    sync_api = get_sync_api()
+    catalog_hydrator = get_catalog_hydrator()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}"
     print(f"豆瓣口味影视推荐器已启动：{url}")
@@ -1275,7 +1483,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n已停止。")
     finally:
-        server.server_close()
+        try:
+            catalog_hydrator.close()
+        finally:
+            try:
+                sync_api.close()
+            finally:
+                server.server_close()
     return 0
 
 

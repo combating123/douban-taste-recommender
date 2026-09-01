@@ -4,7 +4,8 @@ from datetime import datetime
 from douban_recommender.intent_parser import RecommendationIntent
 from douban_recommender.models import MediaItem
 from douban_recommender.profiler import TasteProfile
-from douban_recommender.ranking import rank_candidates
+from douban_recommender.ranking import protect_first_batch_story_evidence, rank_candidates
+from douban_recommender.recommender import Recommendation
 
 
 def media(
@@ -36,6 +37,146 @@ def media(
 
 
 class ExplainableRankingTests(unittest.TestCase):
+    def test_watched_identity_alias_excludes_same_title_year_type_when_primary_key_differs(self):
+        watched = media("同一部电影", year=2024)
+        watched.douban_id = "123456"
+        watched.my_rating = 8.0
+        candidate = media("同一部电影", year=2024)
+
+        ranked = rank_candidates(
+            [watched],
+            [candidate],
+            TasteProfile(),
+            RecommendationIntent(media_types=(candidate.media_type,)),
+        )
+
+        self.assertEqual(ranked, [])
+
+    def test_hard_exclusion_tokens_remove_permanently_avoided_candidate(self):
+        candidate = media("不感兴趣的作品", year=2024)
+
+        ranked = rank_candidates(
+            [],
+            [candidate],
+            TasteProfile(),
+            RecommendationIntent(media_types=(candidate.media_type,)),
+            hard_excluded_tokens={"title-year-type:不感兴趣的作品|2024|电影"},
+        )
+
+        self.assertEqual(ranked, [])
+
+    def test_story_complete_candidates_fill_the_first_batch_before_thin_live_rows(self):
+        complete = [
+            MediaItem(
+                title=f"Complete {index}",
+                douban_id=f"complete-{index}",
+                media_type="电影",
+                douban_rating=8.5,
+                vote_count=50000,
+                year=2010 + index,
+                genres=["剧情"],
+                countries=["美国"],
+                directors=[f"Director {index}"],
+                casts=[f"Actor {index}"],
+                summary="A complete synopsis with enough story evidence.",
+            )
+            for index in range(12)
+        ]
+        thin = MediaItem(
+            title="Thin live candidate",
+            douban_id="thin-live",
+            media_type="电影",
+            douban_rating=9.8,
+            vote_count=200000,
+            directors=["Famous Director"],
+            casts=["Famous Actor"],
+        )
+
+        ranked = rank_candidates(
+            [],
+            [thin, *complete],
+            TasteProfile(),
+            RecommendationIntent(quality_floor=8.0),
+        )
+
+        self.assertNotIn("Thin live candidate", [row.item.title for row in ranked[:12]])
+        self.assertEqual("Thin live candidate", ranked[12].item.title)
+
+    def test_first_batch_reserves_a_quality_controlled_online_exploration_slot(self):
+        def complete(title, score, source="title_seed", raw=None):
+            return Recommendation(
+                MediaItem(
+                    title=title,
+                    media_type="\u7535\u5f71",
+                    year=2024,
+                    genres=["\u5267\u60c5"],
+                    summary="\u5b8c\u6574\u7684\u5267\u60c5\u8bc1\u636e",
+                    source=source,
+                    raw=dict(raw or {}),
+                ),
+                score=score,
+            )
+
+        local_head = [complete(f"Local {index}", 100 - index) for index in range(12)]
+        online = complete(
+            "Online discovery",
+            88.4,
+            source="global:tmdb_trending_movie",
+            raw={"discovery_sources": ["tmdb"]},
+        )
+        rows = [*local_head, online, complete("Local tail", 88.0)]
+
+        protected = protect_first_batch_story_evidence(rows, first_batch_size=12)
+
+        first_titles = [row.item.title for row in protected[:12]]
+        self.assertIn("Online discovery", first_titles)
+        promoted = next(row for row in protected if row.item.title == "Online discovery")
+        self.assertIn("\u5728\u7ebf\u63a2\u7d22\u4f4d", promoted.badges)
+        self.assertEqual("online-exploration", promoted.score_breakdown.get("slate_role"))
+
+    def test_first_batch_does_not_promote_a_low_scoring_online_candidate(self):
+        def complete(title, score, source="title_seed"):
+            return Recommendation(
+                MediaItem(
+                    title=title,
+                    media_type="\u7535\u5f71",
+                    year=2024,
+                    genres=["\u5267\u60c5"],
+                    summary="\u5b8c\u6574\u7684\u5267\u60c5\u8bc1\u636e",
+                    source=source,
+                ),
+                score=score,
+            )
+
+        rows = [
+            *[complete(f"Local {index}", 100 - index) for index in range(12)],
+            complete("Low confidence online", 70.0, source="global:tmdb_quality_movie"),
+        ]
+
+        protected = protect_first_batch_story_evidence(rows, first_batch_size=12)
+
+        self.assertNotIn("Low confidence online", [row.item.title for row in protected[:12]])
+
+    def test_story_evidence_protection_does_not_reorder_batches_after_the_first_twelve(self):
+        def complete(index):
+            return Recommendation(
+                MediaItem(
+                    title=f"Complete {index}",
+                    year=2000 + index,
+                    genres=["剧情"],
+                    summary="完整剧情证据。",
+                ),
+                score=100 - index,
+            )
+
+        thin_head = Recommendation(MediaItem(title="Thin head"), score=101)
+        thin_tail = Recommendation(MediaItem(title="Thin tail"), score=70)
+        rows = [thin_head, *[complete(index) for index in range(12)], thin_tail, complete(12)]
+
+        protected = protect_first_batch_story_evidence(rows, first_batch_size=12)
+
+        self.assertEqual([f"Complete {index}" for index in range(12)], [row.item.title for row in protected[:12]])
+        self.assertEqual(["Thin head", "Thin tail", "Complete 12"], [row.item.title for row in protected[12:]])
     def test_recent_high_quality_title_gets_current_relevance_without_excluding_classics(self):
         current_year = datetime.now().year
         recent = media("Recent acclaimed", rating=8.9, votes=120000, year=current_year - 1)

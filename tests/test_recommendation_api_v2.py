@@ -2,6 +2,7 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -13,6 +14,8 @@ from PIL import Image
 
 from douban_recommender.database import AppDatabase
 from douban_recommender.catalog_api import CatalogApi
+from douban_recommender.catalog_registry import CatalogRegistry
+from douban_recommender.global_discovery import GlobalDiscoveryReport
 from douban_recommender.intent_parser import RecommendationIntent, parse_recommendation_intent
 from douban_recommender.media.orchestrator import MediaOrchestrator
 from douban_recommender.media.store import MediaStore
@@ -131,7 +134,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
     def create_verified_media_asset(self):
         output = io.BytesIO()
-        Image.new("RGB", (160, 240), "navy").save(output, format="PNG")
+        Image.new("RGB", (180, 270), "navy").save(output, format="PNG")
         validated = validate_image_bytes(output.getvalue(), "image/png")
         return self.media_store.put(validated, "https://source.example/poster.png", "poster")
 
@@ -253,6 +256,34 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
         self.assertTrue(changed)
 
+    def test_restored_session_hydrates_visible_items_from_newer_catalog_metadata(self):
+        created = self.create_session(batch_size=1)
+        channel_name, channel = self.first_nonempty_channel(created)
+        original = channel["batch"]["items"][0]
+        item_key = original["item_key"]
+        richer_summary = "这是后台核对后写入片库的真实剧情简介。"
+
+        with self.api.database.connection() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM library_items WHERE item_key=?",
+                (item_key,),
+            ).fetchone()
+            self.assertIsNotNone(row)
+            payload = json.loads(row["payload_json"])
+            payload["summary"] = richer_summary
+            payload["directors"] = ["后台补齐导演"]
+            connection.execute(
+                "UPDATE library_items SET payload_json=?, updated_at=updated_at+1 WHERE item_key=?",
+                (json.dumps(payload, ensure_ascii=False), item_key),
+            )
+
+        restored = self.get_json(f"/api/v2/recommend/sessions/{created['id']}")
+        hydrated = restored["channels"][channel_name]["batch"]["items"][0]
+
+        self.assertEqual(hydrated["summary"], richer_summary)
+        self.assertEqual(hydrated["directors"], ["后台补齐导演"])
+        self.assertEqual(hydrated["score_breakdown"], original["score_breakdown"])
+
     def insert_library_item(self, item, state, source="douban-sync"):
         payload = media_item_to_dict(media_item_from_dict(dict(item)))
         key = recommendation_item_key(payload)
@@ -312,6 +343,167 @@ class RecommendationApiV2Tests(unittest.TestCase):
 
     def create_session(self, **overrides):
         return self.post_json("/api/v2/recommend/sessions", self.session_payload(**overrides))
+
+    def test_global_discovery_merges_local_index_and_exposes_public_diagnostics(self):
+        from douban_recommender.recommendation_api import RecommendationApi
+
+        local_item = MediaItem(
+            title="本地索引佳作",
+            media_type="电影",
+            year=2022,
+            douban_rating=8.9,
+            vote_count=120000,
+            genres=["剧情", "悬疑"],
+            douban_id="local-index-1",
+            summary="已经缓存在本地候选索引中的完整剧情片。",
+            source="global-cache:tmdb",
+            raw={"ratings": {"tmdb": 8.6}, "provider_ids": {"tmdb": "111"}},
+        )
+        with self.api.database.connection() as connection:
+            CatalogRegistry.register_sync_items(connection, "", [local_item], time.time())
+
+        calls = []
+
+        def discoverer(intent, profile, **kwargs):
+            calls.append({"intent": intent, "profile": profile, **kwargs})
+            config = kwargs["config"]
+            return GlobalDiscoveryReport(
+                items=[MediaItem(
+                    title="全网实时佳作",
+                    media_type="电影",
+                    year=2024,
+                    douban_rating=9.1,
+                    vote_count=230000,
+                    genres=["剧情", "科幻"],
+                    douban_id="global-live-1",
+                    summary="来自在线多源发现的新鲜高口碑影片。",
+                    source="global:tmdb_trending_movie",
+                    raw={
+                        "ratings": {"tmdb": 8.7, "imdb": 8.5},
+                        "provider_ids": {"tmdb": "222", "imdb": "tt222"},
+                        "backdrop": "https://image.example/global-wide.jpg",
+                    },
+                )],
+                source_counts={"tmdb": 1, "tvmaze": 0, "anilist": 0, "jikan": 0},
+                source_status={"tmdb": {"state": "ready", "count": 1}},
+                query_keywords=("剧情", "科幻"),
+                config=config.public_summary(),
+                status="complete",
+                generated_at=1_720_000_000.0,
+            )
+
+        api = RecommendationApi(
+            self.api.database,
+            media_store=self.media_store,
+            global_discoverer=discoverer,
+        )
+        response = api.create_session(self.session_payload(
+            candidates_csv="",
+            fetch_global=True,
+            use_local_index=True,
+            global_discovery={"tmdb_api_key": "do-not-echo-this-key"},
+            batch_size=24,
+        ))
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["config"].tmdb_api_key, "do-not-echo-this-key")
+        self.assertIsNotNone(self.find_item_by_id(response, "local-index-1"))
+        live = self.find_item_by_id(response, "global-live-1")
+        self.assertEqual(live["source_ratings"], {"tmdb": 8.7, "imdb": 8.5})
+        self.assertEqual(live["provider_ids"], {"tmdb": "222", "imdb": "tt222"})
+        self.assertEqual((live.get("candidate_origin") or {}).get("kind"), "online")
+        self.assertEqual((live.get("candidate_origin") or {}).get("providers"), ["tmdb"])
+        self.assertEqual((live.get("candidate_origin") or {}).get("label"), "\u5728\u7ebf\u53d1\u73b0 \u00b7 TMDb")
+        origin_counts = response.get("discovery", {}).get("recommendation_origin_counts", {}).get("\u7535\u5f71", {})
+        self.assertEqual(origin_counts.get("online"), 1)
+        self.assertGreaterEqual(origin_counts.get("catalog", 0), 1)
+        self.assertEqual(response["discovery"]["status"], "complete")
+        self.assertEqual(response["discovery"]["local_index_size"], 1)
+        self.assertEqual(response["discovery"]["live_size"], 1)
+        self.assertEqual(response["discovery"]["source_counts"]["tmdb"], 1)
+        self.assert_no_secret_echo(response, "do-not-echo-this-key")
+
+    def test_global_discovery_configuration_must_be_an_object(self):
+        self.assert_bad_request_field(
+            "/api/v2/recommend/sessions",
+            self.session_payload(fetch_global=True, global_discovery="not-an-object"),
+            "global_discovery",
+        )
+
+    def test_global_discovery_failure_keeps_local_recommendations_available(self):
+        from douban_recommender.recommendation_api import RecommendationApi
+
+        def failing_discoverer(*_args, **_kwargs):
+            raise RuntimeError("provider failed with api_key=must-not-leak")
+
+        api = RecommendationApi(
+            self.api.database,
+            media_store=self.media_store,
+            global_discoverer=failing_discoverer,
+        )
+        response = api.create_session(self.session_payload(
+            fetch_global=True,
+            use_local_index=True,
+            global_discovery={"tmdb_api_key": "must-not-leak"},
+        ))
+
+        self.assertGreater(response["candidate_counts"]["returned_size"], 0)
+        self.assertEqual(response["discovery"]["status"], "failed")
+        self.assert_no_secret_echo(response, "must-not-leak")
+
+    def test_local_and_live_provider_versions_merge_into_one_richer_candidate(self):
+        from douban_recommender.recommendation_api import RecommendationApi
+
+        local = MediaItem(
+            title="同一部全网作品",
+            media_type="电影",
+            year=2025,
+            vote_count=80000,
+            genres=["剧情", "悬疑"],
+            douban_id="tmdb-movie-7001",
+            cover="https://image.example/tmdb.jpg",
+            summary="本地索引保存的剧情简介。",
+            source="global-cache:tmdb",
+            raw={"ratings": {"tmdb": 8.6}, "provider_ids": {"tmdb": "7001"}},
+        )
+        with self.api.database.connection() as connection:
+            CatalogRegistry.register_sync_items(connection, "", [local], time.time())
+
+        def discoverer(_intent, _profile, **kwargs):
+            return GlobalDiscoveryReport(
+                items=[MediaItem(
+                    title="同一部全网作品",
+                    media_type="电影",
+                    year=2025,
+                    vote_count=150000,
+                    genres=["剧情", "悬疑"],
+                    douban_id="imdb-tt7001",
+                    summary="在线来源补充的更完整剧情简介与人物线索。",
+                    source="global:omdb",
+                    raw={"ratings": {"imdb": 8.8}, "provider_ids": {"imdb": "tt7001"}},
+                )],
+                source_counts={"omdb": 1},
+                config=kwargs["config"].public_summary(),
+            )
+
+        api = RecommendationApi(self.api.database, media_store=self.media_store, global_discoverer=discoverer)
+        response = api.create_session(self.session_payload(
+            candidates_csv="",
+            fetch_global=True,
+            use_local_index=True,
+            batch_size=24,
+        ))
+        matches = [
+            item
+            for channel in response["channels"].values()
+            for item in channel["batch"]["items"]
+            if item["title"] == "同一部全网作品"
+        ]
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["source_ratings"], {"tmdb": 8.6, "imdb": 8.8})
+        self.assertEqual(matches[0]["provider_ids"], {"tmdb": "7001", "imdb": "tt7001"})
+        self.assertIn("更完整剧情简介", matches[0]["summary"])
 
     def test_latest_session_route_restores_the_most_recent_server_session(self):
         first = self.create_session(profile_key="first-profile")
@@ -886,7 +1078,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
             },
             "wish",
         )
-        self.api.database.set_meta("active_douban_user_id", "272042071")
+        self.api.database.set_meta("active_douban_user_id", "123456789")
 
         created = self.create_session(rated_items=[])
         visible_keys = {
@@ -898,7 +1090,7 @@ class RecommendationApiV2Tests(unittest.TestCase):
         self.assertNotIn(watched_key, visible_keys)
         self.assertEqual(created["personalization"], {
             "source": "douban-sync",
-            "user_id": "272042071",
+            "user_id": "123456789",
             "watched_count": 1,
             "wish_count": 1,
             "rated_count": 1,
@@ -928,6 +1120,45 @@ class RecommendationApiV2Tests(unittest.TestCase):
             self.assertNotIn("CineScope 精选扩展池", factual_blob)
             self.assertNotIn("镜头语言专家", factual_blob)
             self.assertNotIn("戏剧张力担当", factual_blob)
+
+    def test_legacy_recommendation_batch_serialization_repairs_known_genres(self):
+        from douban_recommender.recommendation_api import _normalize_batch_item
+
+        item = _normalize_batch_item({
+            "title": "\u6211\u4eec\u7684\u7236\u8f88",
+            "media_type": "\u7535\u89c6\u5267",
+            "douban_id": "legacy-parent-batch",
+            "genres": [],
+            "cover": "",
+            "summary": "\u65e7\u4f1a\u8bdd\u4e2d\u7684\u6761\u76ee\u3002",
+        }, self.media_store)
+
+        self.assertEqual(["\u5267\u60c5", "\u5386\u53f2", "\u6218\u4e89"], item["genres"])
+
+    def test_legacy_recommendation_batch_serialization_repairs_curated_seed_genres(self):
+        from douban_recommender.recommendation_api import _normalize_batch_item
+
+        item = _normalize_batch_item({
+            "title": "控方证人",
+            "media_type": "电影",
+            "douban_id": "1296141",
+            "genres": [],
+            "cover": "",
+        }, self.media_store)
+
+        self.assertEqual(["剧情", "悬疑", "犯罪"], item["genres"])
+
+    def test_legacy_recommendation_batch_keeps_a_visible_type_when_genre_data_is_unknown(self):
+        from douban_recommender.recommendation_api import _normalize_batch_item
+
+        item = _normalize_batch_item({
+            "title": "未补全条目",
+            "media_type": "电视剧",
+            "genres": [],
+            "cover": "",
+        }, self.media_store)
+
+        self.assertEqual(["电视剧"], item["genres"])
 
     def test_watched_seen_semantics_merge_into_duplicate_caller_rated_item(self):
         created = self.create_session(batch_size=4)

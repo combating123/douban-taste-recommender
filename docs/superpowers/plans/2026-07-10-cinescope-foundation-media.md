@@ -1,4 +1,4 @@
-# CineScope Foundation and Trusted Media Implementation Plan
+﻿# CineScope Foundation and Trusted Media Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -218,20 +218,20 @@ git commit -m "feat: add verified local media store"
 
 ```python
 def test_same_title_wrong_year_is_rejected():
-    expected = WorkIdentity("英雄", (), 2002, "电影", ("中国大陆",), ("张艺谋",), (), None)
-    candidate = WorkIdentity("英雄", (), 1997, "电影", ("香港",), (), (), None)
+    expected = WorkIdentity("鑻遍泟", (), 2002, "鐢靛奖", ("涓浗澶ч檰",), ("寮犺壓璋?,), (), None)
+    candidate = WorkIdentity("鑻遍泟", (), 1997, "鐢靛奖", ("棣欐腐",), (), (), None)
     decision = match_work_identity(expected, candidate)
     self.assertFalse(decision.accepted)
 
 def test_exact_title_type_year_and_director_is_accepted():
-    expected = WorkIdentity("奇巧计程车", ("ODDTAXI",), 2021, "动漫", ("日本",), ("木下麦",), (), 13)
-    candidate = WorkIdentity("ODDTAXI", ("奇巧计程车",), 2021, "动漫", ("日本",), ("木下麦",), (), 13)
+    expected = WorkIdentity("濂囧阀璁＄▼杞?, ("ODDTAXI",), 2021, "鍔ㄦ极", ("鏃ユ湰",), ("鏈ㄤ笅楹?,), (), 13)
+    candidate = WorkIdentity("ODDTAXI", ("濂囧阀璁＄▼杞?,), 2021, "鍔ㄦ极", ("鏃ユ湰",), ("鏈ㄤ笅楹?,), (), 13)
     self.assertGreaterEqual(match_work_identity(expected, candidate).confidence, 0.92)
 
 def test_same_name_person_requires_work_context():
-    expected = PersonIdentity("王伟", (), ("导演",), ("作品甲",), {})
-    wrong = PersonIdentity("王伟", (), ("演员",), ("作品乙",), {})
-    self.assertFalse(match_person_identity(expected, wrong, {"作品甲"}).accepted)
+    expected = PersonIdentity("鐜嬩紵", (), ("瀵兼紨",), ("浣滃搧鐢?,), {})
+    wrong = PersonIdentity("鐜嬩紵", (), ("婕斿憳",), ("浣滃搧涔?,), {})
+    self.assertFalse(match_person_identity(expected, wrong, {"浣滃搧鐢?}).accepted)
 ```
 
 - [ ] **Step 2: Run focused tests and verify failure**
@@ -295,11 +295,11 @@ git commit -m "feat: add strict media identity confidence"
 
 ```python
 def test_anime_series_provider_order():
-    names = [provider.name for provider in providers_for("poster", "动漫")]
+    names = [provider.name for provider in providers_for("poster", "鍔ㄦ极")]
     self.assertEqual(names[:2], ["anilist", "jikan"])
 
 def test_series_people_provider_order():
-    names = [provider.name for provider in providers_for("portrait", "电视剧")]
+    names = [provider.name for provider in providers_for("portrait", "鐢佃鍓?)]
     self.assertEqual(names[:2], ["tvmaze", "wikidata"])
 ```
 
@@ -351,7 +351,7 @@ git commit -m "refactor: wrap media sources behind provider contract"
 ```python
 def test_rejects_wrong_first_candidate_and_accepts_verified_second():
     wrong = FakeProvider("first", [candidate(year=1990)])
-    right = FakeProvider("second", [candidate(year=2021, director="木下麦")])
+    right = FakeProvider("second", [candidate(year=2021, director="鏈ㄤ笅楹?)])
     orchestrator = make_orchestrator([wrong, right])
     result = orchestrator.resolve(anime_request())
     self.assertEqual((result.status, result.source), ("ready", "second"))
@@ -430,7 +430,7 @@ def test_local_media_route_returns_immutable_asset(self):
 
 def test_media_job_payload_does_not_echo_cookie(self):
     response = self.post_json("/api/v2/media/jobs", {
-        "kind": "portrait", "person_name": "演员甲", "cookie": "secret-cookie"
+        "kind": "portrait", "person_name": "婕斿憳鐢?, "cookie": "secret-cookie"
     })
     self.assertNotIn("secret-cookie", json.dumps(response, ensure_ascii=False))
 ```
@@ -492,8 +492,8 @@ git commit -m "feat: serve verified local media assets"
 
 ```python
 def test_profile_url_normalizes_user_id():
-    value = "https://www.douban.com/people/272042071/?_dtcc=1&_i=fixture"
-    self.assertEqual(normalize_douban_user(value), "272042071")
+    value = "https://www.douban.com/people/<your-douban-id>/"
+    self.assertEqual(normalize_douban_user(value), "<your-douban-id>")
 
 def test_proxy_detection_only_returns_local_http_endpoint():
     endpoint = detect_local_http_proxy(lambda port: port == 7897)
@@ -547,7 +547,7 @@ The crawler stops on empty pages, repeated pages, or authentication interception
 ```python
 def test_sync_response_never_echoes_cookie(self):
     response = self.post_json("/api/v2/sync/jobs", {
-        "user": "272042071", "cookie": "secret-cookie"
+        "user": "<your-douban-id>", "cookie": "secret-cookie"
     })
     self.assertNotIn("secret-cookie", json.dumps(response, ensure_ascii=False))
 ```
@@ -579,8 +579,8 @@ git commit -m "feat: add resumable privacy-safe douban sync"
 ```python
 def test_migration_drops_numbered_placeholder_and_stale_premium_cover():
     rows = [
-        {"title": "电影候选 17", "source": "curated-placeholder"},
-        {"title": "社交网络", "cover": "https://img.doubanio.com/wrong.jpg", "source": "premium"},
+        {"title": "鐢靛奖鍊欓€?17", "source": "curated-placeholder"},
+        {"title": "绀句氦缃戠粶", "cover": "https://img.doubanio.com/wrong.jpg", "source": "premium"},
     ]
     report = migrate_legacy_recommendations(rows, self.db)
     self.assertEqual(report.dropped_placeholders, 1)
@@ -627,7 +627,7 @@ def test_readme_documents_local_media_and_cookie_boundary(self):
     text = Path("README.md").read_text(encoding="utf-8")
     self.assertIn("CINESCOPE_DATA_DIR", text)
     self.assertIn("/api/v2/media/health", text)
-    self.assertIn("Cookie 只保存在 sessionStorage", text)
+    self.assertIn("Cookie 鍙繚瀛樺湪 sessionStorage", text)
 ```
 
 - [ ] **Step 2: Run documentation test**

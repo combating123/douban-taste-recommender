@@ -1,4 +1,4 @@
-# CineScope Five-Space Experience UI Implementation Plan
+﻿# CineScope Five-Space Experience UI Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -17,10 +17,10 @@
 - Every visible `<img>` must use a same-origin `/media/*` URL and may enter the DOM only after successful decode; designed fallbacks use HTML/CSS, never `data:` or remote `<img>` sources.
 - Left navigation defaults to 72px and can be completely hidden.
 - Movie, series, and animated-series channels keep independent batches.
-- Every `/api/v2` JSON POST must use `schema_version: 2`; route slugs map explicitly as `movie -> 电影`, `series -> 电视剧`, and `anime-series -> 动漫`.
+- Every `/api/v2` JSON POST must use `schema_version: 2`; route slugs map explicitly as `movie -> 鐢靛奖`, `series -> 鐢佃鍓, and `anime-series -> 鍔ㄦ极`.
 - Refresh and deep links must restore state instead of returning to sync step one.
 - Motion uses transform/opacity and honors `prefers-reduced-motion`.
-- Text must not overflow at 1440×900, 1280×800, 1024×768, or 390×844.
+- Text must not overflow at 1440脳900, 1280脳800, 1024脳768, or 390脳844.
 
 ---
 
@@ -125,7 +125,7 @@ git commit -m "feat: add modular cinescope v3 shell"
 - Produces: `createStore(initialState, reducer)`
 - Produces: `persistUiState(state)` and `restoreUiState()` with `schemaVersion: 3`
 - Produces: `postV2(path, payload) -> Promise<object>` with forced `schema_version: 2`
-- Produces: `backendChannel(routeSlug) -> "电影" | "电视剧" | "动漫"`
+- Produces: `backendChannel(routeSlug) -> "鐢靛奖" | "鐢佃鍓? | "鍔ㄦ极"`
 
 - [ ] **Step 1: Write contract tests for routes and persistence**
 
@@ -149,9 +149,9 @@ def test_store_never_persists_cookie():
 def test_v2_client_forces_schema_and_maps_route_channels():
     js = ui_text("js/core/api.js")
     self.assertIn("schema_version", js)
-    self.assertIn('"anime-series": "动漫"', js)
-    self.assertIn('"series": "电视剧"', js)
-    self.assertIn('"movie": "电影"', js)
+    self.assertIn('"anime-series": "鍔ㄦ极"', js)
+    self.assertIn('"series": "鐢佃鍓?', js)
+    self.assertIn('"movie": "鐢靛奖"', js)
 ```
 
 - [ ] **Step 2: Run and verify failure**
@@ -183,7 +183,7 @@ The router must save outgoing scroll, render incoming route, then restore scroll
 
 ```javascript
 export const V2_SCHEMA_VERSION = 2;
-export const CHANNEL_KEYS = Object.freeze({ movie: "电影", series: "电视剧", "anime-series": "动漫" });
+export const CHANNEL_KEYS = Object.freeze({ movie: "鐢靛奖", series: "鐢佃鍓?, "anime-series": "鍔ㄦ极" });
 
 export function postV2(path, payload = {}) {
   return request(path, { method: "POST", body: { ...payload, schema_version: V2_SCHEMA_VERSION } });
@@ -271,7 +271,7 @@ export function renderMediaFrame(asset) {
   if (isLocalMediaUrl(asset.localUrl) && asset.status === "ready") {
     preloadLocalMedia(asset.localUrl).then((image) => {
       if (image) {
-        image.alt = asset.title ? `${asset.title} 海报` : "";
+        image.alt = asset.title ? `${asset.title} 娴锋姤` : "";
         frame.replaceChildren(image);
       }
     });
@@ -333,7 +333,7 @@ def test_command_lens_has_editable_intent_chips_and_ctrl_k():
     self.assertIn("intent-chip", js)
 
 def test_session_response_returns_grounded_intent_chips():
-    response = self.create_session(intent_text="90分钟内的悬疑电影")
+    response = self.create_session(intent_text="90鍒嗛挓鍐呯殑鎮枒鐢靛奖")
     self.assertTrue(response["chips"])
     self.assertEqual({"key", "label", "value", "removable"}, set(response["chips"][0]))
 ```
@@ -419,7 +419,7 @@ Render a full-page hero, sticky tabs, explainable score grid, verified facts, ho
 
 - [ ] **Step 4: Implement person sheet and full page**
 
-The sheet must retain title context and expose “查看 TA 参与的全部候选”. Unverified portraits render a named identity card with a status label, never a remote URL.
+The sheet must retain title context and expose 鈥滄煡鐪?TA 鍙備笌鐨勫叏閮ㄥ€欓€夆€? Unverified portraits render a named identity card with a status label, never a remote URL.
 
 - [ ] **Step 5: Run tests and syntax checks**
 
@@ -503,7 +503,7 @@ git commit -m "feat: add on-demand taste universe"
 def test_sync_uses_session_cookie_and_auto_pagination_copy():
     js = ui_text("js/features/sync.js")
     self.assertIn("sessionStorage", js)
-    self.assertIn("自动抓取到末页", js)
+    self.assertIn("鑷姩鎶撳彇鍒版湯椤?, js)
     self.assertNotIn("localStorage.setItem(COOKIE", js)
 
 def test_health_renders_live_media_sources_and_job_progress():

@@ -1,4 +1,4 @@
-# CineScope Global Polish Implementation Plan
+﻿# CineScope Global Polish Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -23,8 +23,8 @@
 ### Task 1: Curated fallback catalog
 
 **Files:**
-- Create: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\curated_catalog.py`
-- Test: `C:\Users\11616\douban-taste-recommender\tests\test_curated_catalog.py`
+- Create: `C:\path\to\douban-taste-recommender\src\douban_recommender\curated_catalog.py`
+- Test: `C:\path\to\douban-taste-recommender\tests\test_curated_catalog.py`
 
 **Interfaces:**
 - Produces: `curated_seed_candidates() -> list[MediaItem]`
@@ -37,8 +37,8 @@
 ### Task 2: Douban source resilience
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\douban_sources.py`
-- Test: `C:\Users\11616\douban-taste-recommender\tests\test_douban_sources.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\douban_sources.py`
+- Test: `C:\path\to\douban-taste-recommender\tests\test_douban_sources.py`
 
 **Interfaces:**
 - Produces: `fetch_explore(..., fetcher=None)` raising on Douban security JSON.
@@ -53,8 +53,8 @@
 ### Task 3: Recommendation API fallback and proxy image behavior
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web.py`
-- Test: `C:\Users\11616\douban-taste-recommender\tests\test_web_api.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web.py`
+- Test: `C:\path\to\douban-taste-recommender\tests\test_web_api.py`
 
 **Interfaces:**
 - Consumes: `backfill_missing_media_types()`
@@ -69,8 +69,8 @@
 ### Task 4: Global UI polish
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\src\douban_recommender\web_ui.py`
-- Test: `C:\Users\11616\douban-taste-recommender\tests\test_ui_html.py`
+- Modify: `C:\path\to\douban-taste-recommender\src\douban_recommender\web_ui.py`
+- Test: `C:\path\to\douban-taste-recommender\tests\test_ui_html.py`
 
 **Interfaces:**
 - Produces: `imageResilienceGuide()`
@@ -87,11 +87,11 @@
 ### Task 5: Documentation and verification
 
 **Files:**
-- Modify: `C:\Users\11616\douban-taste-recommender\README.md`
-- Test: `C:\Users\11616\douban-taste-recommender\tests\test_readme.py`
+- Modify: `C:\path\to\douban-taste-recommender\README.md`
+- Test: `C:\path\to\douban-taste-recommender\tests\test_readme.py`
 
 - [x] Document `DOUBAN_RECOMMENDER_HTTP_PROXY`, Clash and V2Ray local-port setup.
-- [x] State “不要粘贴订阅地址”.
+- [x] State 鈥滀笉瑕佺矘璐磋闃呭湴鍧€鈥?
 - [x] Run full `python -m unittest discover -s tests -v`.
 - [x] Run CLI smoke to `output\cinescope-smoke.html`.
 - [x] Run browser visual smoke against `http://127.0.0.1:7861`.

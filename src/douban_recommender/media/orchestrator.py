@@ -81,11 +81,13 @@ class MediaOrchestrator:
         self._provider_semaphores: dict[str, threading.BoundedSemaphore] = {}
         self._provider_lock = threading.Lock()
         self._jobs: dict[str, dict[str, object]] = {}
+        self._active_job_by_identity: dict[tuple[str, str], str] = {}
         self._jobs_lock = threading.Lock()
         self._queue: queue.PriorityQueue[tuple[int, int, str, MediaResolutionRequest | None]] = queue.PriorityQueue()
         self._sequence = itertools.count()
         self._closed = threading.Event()
         self._workers: list[threading.Thread] = []
+        self._reconcile_interrupted_jobs()
         for index in range(self.max_workers):
             worker = threading.Thread(
                 target=self._worker_loop,
@@ -94,6 +96,28 @@ class MediaOrchestrator:
             )
             worker.start()
             self._workers.append(worker)
+
+    def _reconcile_interrupted_jobs(self) -> None:
+        now = time.time()
+        interrupted_states = (
+            "queued",
+            "pending",
+            "processing",
+            "resolving",
+            "downloading",
+            "validating",
+        )
+        placeholders = ",".join("?" for _ in interrupted_states)
+        with self.database.connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE resolution_jobs
+                SET state = 'degraded', error = 'interrupted_by_restart',
+                    next_retry_at = ?, updated_at = ?
+                WHERE state IN ({placeholders})
+                """,
+                (now, now, *interrupted_states),
+            )
 
     def _providers_for(self, query: AssetQuery) -> list[MediaProvider]:
         if self._providers is not None:
@@ -208,12 +232,16 @@ class MediaOrchestrator:
                     identity_attempt["status"] = "identity-rejected"
                     attempts.append(identity_attempt)
                     continue
-                candidate_urls = image_url_candidates(candidate.url)
-                if not candidate_urls:
+                fallback_urls = image_url_candidates(candidate.url)
+                if not fallback_urls:
                     identity_attempt["status"] = "asset-rejected"
                     identity_attempt["error"] = "invalid image url"
                     attempts.append(identity_attempt)
                     continue
+                candidate_urls = (
+                    str(candidate.url),
+                    *(url for url in fallback_urls if url != str(candidate.url)),
+                )
                 for candidate_url in candidate_urls:
                     attempt = dict(identity_attempt)
                     try:
@@ -224,6 +252,7 @@ class MediaOrchestrator:
                             content_type or candidate.declared_type,
                             min_width=min_width,
                             min_height=min_height,
+                            kind=request.kind,
                         )
                         stored = self.store.put(validated, candidate_url, request.kind)
                         self.store.bind_asset(
@@ -259,6 +288,7 @@ class MediaOrchestrator:
     def enqueue(self, request: MediaResolutionRequest) -> str:
         if self._closed.is_set():
             raise RuntimeError("media orchestrator is closed")
+        active_key = (str(request.kind or "").strip().lower(), str(request.identity_key or "").strip())
         job_id = uuid.uuid4().hex
         now = time.time()
         job = {
@@ -274,26 +304,38 @@ class MediaOrchestrator:
             "error": "",
         }
         with self._jobs_lock:
+            existing_id = self._active_job_by_identity.get(active_key)
+            existing = self._jobs.get(existing_id or "")
+            if existing and str(existing.get("state") or "") in {"queued", "resolving"}:
+                return str(existing_id)
+            self._active_job_by_identity.pop(active_key, None)
             self._jobs[job_id] = job
-        with self.database.connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO resolution_jobs(
-                    id, entity_kind, entity_id, kind, priority, state,
-                    current_source, attempts_json, error, next_retry_at,
-                    created_at, updated_at
-                ) VALUES(?, ?, ?, ?, ?, 'queued', '', '[]', '', NULL, ?, ?)
-                """,
-                (
-                    job_id,
-                    "person" if request.kind == "portrait" else "media",
-                    request.identity_key,
-                    request.kind,
-                    int(request.priority),
-                    now,
-                    now,
-                ),
-            )
+            self._active_job_by_identity[active_key] = job_id
+            try:
+                with self.database.connection() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO resolution_jobs(
+                            id, entity_kind, entity_id, kind, priority, state,
+                            current_source, attempts_json, error, next_retry_at,
+                            created_at, updated_at
+                        ) VALUES(?, ?, ?, ?, ?, 'queued', '', '[]', '', NULL, ?, ?)
+                        """,
+                        (
+                            job_id,
+                            "person" if request.kind == "portrait" else "media",
+                            request.identity_key,
+                            request.kind,
+                            int(request.priority),
+                            now,
+                            now,
+                        ),
+                    )
+            except Exception:
+                self._jobs.pop(job_id, None)
+                if self._active_job_by_identity.get(active_key) == job_id:
+                    self._active_job_by_identity.pop(active_key, None)
+                raise
         self._queue.put((-int(request.priority), next(self._sequence), job_id, request))
         return job_id
 
@@ -338,6 +380,13 @@ class MediaOrchestrator:
                         "error": error,
                     }
                 )
+                if state not in {"queued", "resolving"}:
+                    active_key = (
+                        str(current.get("kind") or "").strip().lower(),
+                        str(current.get("identity_key") or "").strip(),
+                    )
+                    if self._active_job_by_identity.get(active_key) == job_id:
+                        self._active_job_by_identity.pop(active_key, None)
 
     def _worker_loop(self) -> None:
         while not self._closed.is_set():

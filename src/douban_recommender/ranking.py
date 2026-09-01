@@ -1,20 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from math import log10
 
+from .candidate_origin import is_online_discovery
 from .eligibility import ScoreSignal, evaluate_eligibility
 from .intent_parser import RecommendationIntent
-from .models import MediaItem, normalize_title, recommendation_item_key
+from .models import MediaItem, recommendation_identity_tokens, recommendation_item_key
 from .profiler import TasteProfile
+from .ratings import fused_rating
 from .recommender import Recommendation, item_quality, score_item
+from .semantic import build_semantic_taste_model
 
 
 @dataclass(frozen=True)
 class ScoreBreakdown:
     quality: float
     taste: float
+    semantic: float
     context: float
     exploration: float
     total: float
@@ -36,16 +40,23 @@ def _clamp(value: float, minimum: float = 0.0, maximum: float = 100.0) -> float:
 def calibrated_quality(item: MediaItem) -> tuple[float, list[ScoreSignal]]:
     prior_rating = 7.6
     prior_votes = 5000.0
-    rating = float(item.douban_rating) if item.douban_rating is not None else 7.0
-    votes = max(0.0, float(item.vote_count or 0))
+    fused = fused_rating(item)
+    rating = float(fused.rating) if fused.rating is not None else 7.0
+    votes = max(0.0, float(fused.vote_count or item.vote_count or 0))
     bayesian_rating = (votes / (votes + prior_votes)) * rating + (prior_votes / (votes + prior_votes)) * prior_rating
     score = bayesian_rating * 10.0
+    signal_code = "multi-source-quality" if fused.providers and fused.providers != ("douban",) else "bayesian-rating"
+    signal_label = "多源质量融合" if signal_code == "multi-source-quality" else "贝叶斯质量评分"
     signals = [
         ScoreSignal(
-            "bayesian-rating",
-            "贝叶斯质量评分",
+            signal_code,
+            signal_label,
             round(score, 3),
-            (f"rating={rating:g}", f"votes={int(votes)}"),
+            (
+                f"rating={rating:g}",
+                f"votes={int(votes)}",
+                *(f"{provider}={fused.provider_ratings[provider]:g}" for provider in fused.providers),
+            ),
         )
     ]
     completeness = 0.0
@@ -67,7 +78,7 @@ def calibrated_quality(item: MediaItem) -> tuple[float, list[ScoreSignal]]:
     if completeness:
         score += completeness
         signals.append(ScoreSignal("metadata-completeness", "资料完整度", completeness))
-    if item.douban_rating is None:
+    if fused.rating is None:
         score -= 8.0
         signals.append(ScoreSignal("quality-rating-missing", "缺少稳定评分", -8.0))
     return _clamp(score), signals
@@ -104,7 +115,8 @@ def context_score(item: MediaItem, intent: RecommendationIntent) -> tuple[float,
         score += 6.0
         signals.append(ScoreSignal("context-country", "当前地区匹配", 6.0, tuple(sorted(country_hits))))
 
-    if item.year is not None and item.douban_rating is not None and float(item.douban_rating) >= 7.8:
+    fused = fused_rating(item)
+    if item.year is not None and fused.rating is not None and fused.rating >= 7.8:
         age = datetime.now().year - int(item.year)
         freshness = {0: 9.0, 1: 8.0, 2: 6.0, 3: 4.0}.get(max(0, age)) if -1 <= age <= 3 else None
         if freshness:
@@ -114,7 +126,7 @@ def context_score(item: MediaItem, intent: RecommendationIntent) -> tuple[float,
                     "current-relevance",
                     "近期高口碑",
                     freshness,
-                    (str(item.year), f"rating={float(item.douban_rating):g}"),
+                    (str(item.year), f"rating={fused.rating:g}"),
                 )
             )
 
@@ -163,10 +175,12 @@ def exploration_score(item: MediaItem, profile: TasteProfile, intent: Recommenda
 
 def confidence_score(item: MediaItem, profile: TasteProfile) -> float:
     confidence = 0.28
-    if item.douban_rating is not None:
-        confidence += 0.20
-    if item.vote_count:
-        confidence += min(0.18, max(0.0, log10(max(item.vote_count, 1)) - 2.0) * 0.05)
+    fused = fused_rating(item)
+    if fused.rating is not None:
+        confidence += 0.20 * fused.confidence
+    votes = fused.vote_count or item.vote_count or 0
+    if votes:
+        confidence += min(0.18, max(0.0, log10(max(votes, 1)) - 2.0) * 0.05)
     if item.summary and item.genres:
         confidence += 0.12
     if item.year and item.countries:
@@ -184,10 +198,7 @@ def _seen_keys(rated_items: list[MediaItem]) -> set[str]:
         tags = set(item.tags or [])
         if item.my_rating is None and "看过" not in tags and not str(item.source or "").endswith(":collect"):
             continue
-        seen.add(recommendation_item_key(item))
-        if item.title and item.year is None:
-            seen.add(normalize_title(item.title))
-            seen.add(item.title)
+        seen.update(recommendation_identity_tokens(item))
     return seen
 
 
@@ -234,14 +245,79 @@ def diversity_rerank(
     return selected
 
 
+def _has_story_evidence(item: MediaItem) -> bool:
+    """Return whether a title has enough metadata to explain why it is worth watching.
+
+    Live discovery feeds occasionally expose a high rating before they expose a year,
+    genres or synopsis.  Those rows are still useful as reserve candidates, but they
+    must not displace fully described titles in the first screenful.
+    """
+
+    return bool(item.summary and item.genres and item.year)
+
+
+def protect_first_batch_story_evidence(
+    recommendations: list[Recommendation],
+    *,
+    first_batch_size: int = 12,
+) -> list[Recommendation]:
+    """Protect first-screen evidence while reserving one quality-controlled live slot."""
+
+    protected_size = min(max(0, int(first_batch_size)), len(recommendations))
+    if protected_size == 0:
+        return recommendations
+
+    protected_indices = [
+        index
+        for index, row in enumerate(recommendations)
+        if _has_story_evidence(row.item)
+    ][:protected_size]
+    if len(protected_indices) >= protected_size:
+        protected_set = set(protected_indices)
+        protected = [
+            *(recommendations[index] for index in protected_indices),
+            *(row for index, row in enumerate(recommendations) if index not in protected_set),
+        ]
+    else:
+        protected = recommendations
+
+    if any(is_online_discovery(row.item) for row in protected[:protected_size]):
+        return protected
+
+    score_floor = protected[protected_size - 1].score - 6.0
+    eligible_online = [
+        (index, row)
+        for index, row in enumerate(protected[protected_size:], start=protected_size)
+        if _has_story_evidence(row.item)
+        and is_online_discovery(row.item)
+        and row.score >= score_floor
+    ]
+    if not eligible_online:
+        return protected
+
+    promoted_index, promoted = max(eligible_online, key=lambda pair: (pair[1].score, -pair[0]))
+    exploration_badge = "\u5728\u7ebf\u63a2\u7d22\u4f4d"
+    promoted = replace(
+        promoted,
+        badges=[*promoted.badges, *([] if exploration_badge in promoted.badges else [exploration_badge])],
+        score_breakdown={**promoted.score_breakdown, "slate_role": "online-exploration"},
+    )
+    adjusted = list(protected)
+    adjusted.pop(promoted_index)
+    adjusted.insert(protected_size - 1, promoted)
+    return adjusted
+
+
 def rank_candidates(
     rated_items: list[MediaItem],
     candidates: list[MediaItem],
     profile: TasteProfile,
     intent: RecommendationIntent,
     limit: int | None = None,
+    hard_excluded_tokens: set[str] | tuple[str, ...] | list[str] | None = None,
 ) -> list[Recommendation]:
     seen = _seen_keys(rated_items)
+    seen.update(str(token).strip() for token in (hard_excluded_tokens or ()) if str(token).strip())
     deduped: dict[str, MediaItem] = {}
     for item in candidates:
         key = recommendation_item_key(item)
@@ -250,6 +326,7 @@ def rank_candidates(
             deduped[key] = item
 
     recommendations: list[Recommendation] = []
+    semantic_model = build_semantic_taste_model(rated_items, profile, intent)
     costume_opt_in = "古装" in intent.genres or ("古装" in intent.free_text and "古装" not in intent.avoid)
     for item in deduped.values():
         eligibility = evaluate_eligibility(item, seen, intent)
@@ -258,17 +335,41 @@ def rank_candidates(
         baseline = score_item(item, profile, apply_costume_penalty=not costume_opt_in)
         quality, quality_signals = calibrated_quality(item)
         taste = _clamp(baseline.score)
+        semantic_result = semantic_model.score(item)
+        semantic = _clamp(semantic_result.score)
         context, context_signals = context_score(item, intent)
         exploration, exploration_signals = exploration_score(item, profile, intent)
-        signals = [*quality_signals, *context_signals, *exploration_signals, *eligibility.penalties]
+        semantic_signals = [
+            ScoreSignal(
+                "semantic-affinity",
+                "语义口味相似度",
+                round(semantic, 3),
+                semantic_result.evidence,
+            )
+        ]
+        signals = [
+            *quality_signals,
+            *semantic_signals,
+            *context_signals,
+            *exploration_signals,
+            *eligibility.penalties,
+        ]
         penalty_total = sum(signal.value for signal in eligibility.penalties)
-        total = 0.30 * quality + 0.35 * taste + 0.20 * context + 0.15 * exploration + penalty_total
+        total = (
+            0.28 * quality
+            + 0.25 * taste
+            + 0.20 * semantic
+            + 0.17 * context
+            + 0.10 * exploration
+            + penalty_total
+        )
         total = _clamp(total)
         conflicts = [signal.label for signal in signals if signal.value <= -7.0]
         conflicts.extend(baseline.warnings[:2])
         breakdown = ScoreBreakdown(
             quality=round(quality, 2),
             taste=round(taste, 2),
+            semantic=round(semantic, 2),
             context=round(context, 2),
             exploration=round(exploration, 2),
             total=round(total, 2),
@@ -285,4 +386,5 @@ def rank_candidates(
 
     recommendations.sort(key=lambda row: row.score, reverse=True)
     target = len(recommendations) if limit is None else max(0, int(limit))
-    return diversity_rerank(recommendations, target)
+    reranked = diversity_rerank(recommendations, target)
+    return protect_first_batch_story_evidence(reranked)
