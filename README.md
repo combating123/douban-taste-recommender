@@ -28,10 +28,23 @@
 
 <p align="center">
   <a href="./assets/readme/showcase-library.webp"><img src="./assets/readme/showcase-library.webp" width="49%" alt="CineScope Studio 本地片库、海报与横向剧照界面"></a>
-  <a href="./assets/readme/showcase-observatory.webp"><img src="./assets/readme/showcase-observatory.webp" width="49%" alt="CineScope Studio 多焦点融合观影雷达界面"></a>
+  <a href="./assets/readme/showcase-radar-detail.webp"><img src="./assets/readme/showcase-radar-detail.webp" width="49%" alt="CineScope Studio 观影雷达总览与在线发现界面"></a>
 </p>
 
 片库把海报、剧照、评分、简介和观看状态放在同一张可扫描卡片中；观影雷达允许手动搜索第一部作品，再加入最多三部兴趣焦点，通过类型、气质、主创、口碑与语义交集重组推荐。
+
+### 六个空间，一眼看懂 CineScope
+
+<p align="center">
+  <a href="./assets/readme/showcase-tonight-wide.webp"><img src="./assets/readme/showcase-tonight-wide.webp" width="32%" alt="今晚推荐空间"></a>
+  <a href="./assets/readme/showcase-library.webp"><img src="./assets/readme/showcase-library.webp" width="32%" alt="片库空间"></a>
+  <a href="./assets/readme/showcase-radar-detail.webp"><img src="./assets/readme/showcase-radar-detail.webp" width="32%" alt="观影雷达空间"></a>
+</p>
+<p align="center">
+  <a href="./assets/readme/showcase-taste.webp"><img src="./assets/readme/showcase-taste.webp" width="32%" alt="口味 DNA 空间"></a>
+  <a href="./assets/readme/showcase-detail.webp"><img src="./assets/readme/showcase-detail.webp" width="32%" alt="作品详情空间"></a>
+  <a href="./assets/readme/showcase-settings.webp"><img src="./assets/readme/showcase-settings.webp" width="32%" alt="健康与同步空间"></a>
+</p>
 
 ## 它解决什么问题
 

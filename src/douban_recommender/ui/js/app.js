@@ -56,7 +56,6 @@ function textValue(value, fallback = "") {
 }
 
 function navigationPath(path) {
-  if (path === "/observatory") return "/library";
   return path.startsWith("/tonight") ? "/tonight" : path;
 }
 
